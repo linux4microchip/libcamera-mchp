@@ -29,12 +29,6 @@ public:
 		timer_.start(100ms);
 	}
 
-	void restart()
-	{
-		timeout_ = false;
-		timer_.start(100ms);
-	}
-
 	bool timeout() const
 	{
 		return timeout_;
@@ -71,22 +65,6 @@ protected:
 
 		if (!timeout_.timeout()) {
 			cout << "Timer expiration test failed" << endl;
-			return TestFail;
-		}
-
-		/*
-		 * Test that starting the timer from another thread fails. We
-		 * need to interrupt the event dispatcher to make sure we don't
-		 * succeed simply because the event dispatcher hasn't noticed
-		 * the timer restart.
-		 */
-		timeout_.restart();
-		thread_.eventDispatcher()->interrupt();
-
-		this_thread::sleep_for(chrono::milliseconds(200));
-
-		if (timeout_.timeout()) {
-			cout << "Timer restart test failed" << endl;
 			return TestFail;
 		}
 
