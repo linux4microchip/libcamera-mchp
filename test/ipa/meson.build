@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: CC0-1.0
 
+subdir('rkisp1')
+
 ipa_test = [
     {'name': 'ipa_module_test', 'sources': ['ipa_module_test.cpp']},
     {'name': 'ipa_interface_test', 'sources': ['ipa_interface_test.cpp']},
