@@ -16,6 +16,11 @@ option('cam',
         value : 'auto',
         description : 'Compile the cam test application')
 
+option('mchpcam',
+        type : 'feature',
+        value : 'auto',
+        description : 'Compile the mchpcam test applications')
+
 option('documentation',
         type : 'feature',
         description : 'Generate the project documentation')
@@ -49,6 +54,7 @@ option('pipelines',
             'imx8-isi',
             'ipu3',
             'mali-c55',
+            'microchip-isc',
             'rkisp1',
             'rpi/vc4',
             'simple',
