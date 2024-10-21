@@ -140,6 +140,7 @@ private:
 		return static_cast<MicrochipISCCameraData *>(camera->_d());
 	}
 
+	int processControl(ControlList *controls, unsigned int id, const ControlValue &value);
 	int processControls(MicrochipISCCameraData *data, Request *request);
 	void bufferReady(FrameBuffer *buffer);
 	Size findOptimalSize(const std::vector<MicrochipISCCameraData::Configuration>& configs,
@@ -479,30 +480,48 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 	return 0;
 }
 
+int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned int id,
+				       const ControlValue &value)
+
+{
+	uint32_t cid;
+
+	if (id == controls::Brightness)
+		cid = V4L2_CID_BRIGHTNESS;
+	else if (id == controls::Contrast)
+		cid = V4L2_CID_CONTRAST;
+	else
+		return -EINVAL;
+
+	switch (cid) {
+	case V4L2_CID_BRIGHTNESS:
+	case V4L2_CID_CONTRAST: {
+		const ControlInfo &v4l2Info = controls->infoMap()->at(cid);
+		int32_t min = v4l2Info.min().get<int32_t>();
+		int32_t max = v4l2Info.max().get<int32_t>();
+
+		float fval = value.get<float>();
+		int32_t val = static_cast<int32_t>(lroundf(fval));
+		controls->set(cid, std::clamp(val, min, max));
+		break;
+	}
+
+	default: {
+		LOG(MicrochipISC, Debug) << "Control not yet supported";
+		controls->set(cid, 0); /* Todo */
+		break;
+	}
+	}
+
+	return 0;
+}
+
 int PipelineHandlerMicrochipISC::processControls(MicrochipISCCameraData *data, Request *request)
 {
 	ControlList controls(data->iscVideo_->controls());
 
 	for (const auto &[id, value] : request->controls()) {
-		if (id == controls::Brightness.id()) {
-			float brightnessFloat = value.get<float>();
-			int32_t brightness = static_cast<int32_t>(brightnessFloat * 1023.0f);
-			controls.set(V4L2_CID_BRIGHTNESS, std::clamp(brightness, -1024, 1023));
-		} else if (id == controls::Contrast.id()) {
-			float contrastFloat = value.get<float>();
-			int32_t contrast = static_cast<int32_t>((contrastFloat - 1.0f) * 1023.0f);
-			controls.set(V4L2_CID_CONTRAST, std::clamp(contrast, -2048, 2047));
-		} else if (id == controls::AwbEnable.id()) {
-			controls.set(V4L2_CID_AUTO_WHITE_BALANCE, value.get<bool>());
-		} else if (id == V4L2_CID_DO_WHITE_BALANCE) {
-			controls.set(V4L2_CID_DO_WHITE_BALANCE, 0);  /* Trigger manual white balance */
-		} else if (id == controls::Gamma.id()) {
-			float gammaFloat = value.get<float>();  /* Assuming gamma range in V4L2 is 0-255, subject to change */
-			int32_t gamma = static_cast<int32_t>(gammaFloat * 127.5f);
-			controls.set(V4L2_CID_GAMMA, std::clamp(gamma, 0, 255));
-		} else {
-			LOG(MicrochipISC, Debug) << "Unsupported control: " << id;
-		}
+		processControl(&controls, id, value);
 	}
 
 	if (controls.empty()) {
