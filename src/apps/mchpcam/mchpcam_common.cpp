@@ -93,16 +93,18 @@ int MchpCamCommon::init(const std::string &cameraId)
 	stream_ = config_->at(0).stream();
 	const std::vector<std::unique_ptr<FrameBuffer>> &buffers = allocator_->buffers(stream_);
 	for (unsigned int i = 0; i < buffers.size(); ++i) {
-	std::unique_ptr<Request> request = camera_->createRequest();
-	if (!request) {
-	    std::cerr << "Can't create request" << std::endl;
-	    return -ENOMEM;
-	}
-	if (request->addBuffer(stream_, buffers[i].get()) < 0) {
-	    std::cerr << "Can't set buffer for request" << std::endl;
-	    return -ENOMEM;
-	}
-	requests_.push_back(std::move(request));
+		std::unique_ptr<Request> request = camera_->createRequest();
+		if (!request) {
+			std::cerr << "Can't create request" << std::endl;
+			return -ENOMEM;
+		}
+
+		if (request->addBuffer(stream_, buffers[i].get()) < 0) {
+			std::cerr << "Can't set buffer for request" << std::endl;
+			return -ENOMEM;
+		}
+
+		requests_.push_back(std::move(request));
 	}
 
 	camera_->requestCompleted.connect(this, &MchpCamCommon::requestComplete);
