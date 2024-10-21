@@ -104,6 +104,12 @@ int MchpCamCommon::init(const std::string &cameraId)
 			return -ENOMEM;
 		}
 
+		ControlList &controls = request->controls();
+		controls.set(controls::Brightness, brightness_);
+		controls.set(controls::Contrast, contrast_);
+		controls.set(controls::AwbEnable, whiteBalanceAutomatic_);
+		controls.set(controls::Gamma, gamma_);
+
 		requests_.push_back(std::move(request));
 	}
 
@@ -214,30 +220,20 @@ bool MchpCamCommon::isControlSupported(const libcamera::ControlId *id) const
 
 void MchpCamCommon::setBrightness(int value)
 {
-	if (isControlSupported(&controls::Brightness)) {
-		const auto &ctrl = camera_->controls().at(&controls::Brightness);
-		brightness_ = std::clamp(value, ctrl.min().get<int32_t>(), ctrl.max().get<int32_t>());
-	}
+	brightness_ = value;
 }
 
 void MchpCamCommon::setContrast(int value)
 {
-	if (isControlSupported(&controls::Contrast)) {
-		const auto &ctrl = camera_->controls().at(&controls::Contrast);
-		contrast_ = std::clamp(value, ctrl.min().get<int32_t>(), ctrl.max().get<int32_t>());
-	}
+	contrast_ = value;
 }
 
 void MchpCamCommon::setWhiteBalanceAutomatic(bool value)
 {
-	if (isControlSupported(&controls::AwbEnable))
-		whiteBalanceAutomatic_ = value;
+	whiteBalanceAutomatic_ = value;
 }
 
 void MchpCamCommon::setGamma(int value)
 {
-	if (isControlSupported(&controls::Gamma)) {
-		const auto &ctrl = camera_->controls().at(&controls::Gamma);
-		gamma_ = std::clamp(value, ctrl.min().get<int32_t>(), ctrl.max().get<int32_t>());
-	}
+	gamma_ = value;
 }
