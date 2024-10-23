@@ -671,8 +671,8 @@ int MicrochipISCCameraData::init()
 	LOG(MicrochipISC, Debug) << "About to initialize ControlInfoMap";
 	/* Initialize controlInfo_ */
 	controlInfo_ = ControlInfoMap({
-			{ &controls::Brightness, ControlInfo(-1.0f, 1.0f, 0.0f) },
-			{ &controls::Contrast, ControlInfo(0.0f, 2.0f, 1.0f) },
+			{ &controls::Brightness, ControlInfo(-1024.0f, 1024.0f, 0.0f) },
+			{ &controls::Contrast, ControlInfo(-2048.0f, 2048.0f, 16.0f) },
 			{ &controls::AwbEnable, ControlInfo(false, true, true) },
 			{ &controls::Gamma, ControlInfo(0.0f, 0.0f, 0.0f) },/* actual min, max, default */
 			}, controls::controls);
