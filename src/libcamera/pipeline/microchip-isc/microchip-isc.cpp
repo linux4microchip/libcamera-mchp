@@ -490,6 +490,8 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 		cid = V4L2_CID_BRIGHTNESS;
 	else if (id == controls::Contrast)
 		cid = V4L2_CID_CONTRAST;
+	else if (id == controls::AwbEnable)
+		cid = V4L2_CID_AUTO_WHITE_BALANCE;
 	else
 		return -EINVAL;
 
@@ -503,6 +505,12 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 		float fval = value.get<float>();
 		int32_t val = static_cast<int32_t>(lroundf(fval));
 		controls->set(cid, std::clamp(val, min, max));
+		break;
+	}
+
+	case V4L2_CID_AUTO_WHITE_BALANCE: {
+		bool bval = value.get<bool>();
+		controls->set(cid, static_cast<int32_t>(bval));
 		break;
 	}
 
