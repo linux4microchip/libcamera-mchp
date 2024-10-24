@@ -128,10 +128,11 @@ void MchpCamCommon::stop()
 		camera_->stop();
 		allocator_->free(stream_);
 		camera_->release();
+		camera_.reset();
 	}
 
-	camera_.reset();
-	cameraManager_->stop();
+	if (cameraManager_)
+		cameraManager_->stop();
 }
 
 void MchpCamCommon::setResolution(unsigned int width, unsigned int height)

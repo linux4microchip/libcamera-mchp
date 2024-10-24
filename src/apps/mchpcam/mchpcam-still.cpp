@@ -303,11 +303,12 @@ int main(int argc, char **argv)
 			app->setGamma(std::stoi(optarg));
 			break;
 		case 'H':
-			printUsage(argv[0]);
-			return 0;
 		default:
 			printUsage(argv[0]);
-			return 1;
+			if (app)
+				app->stop();
+
+			exit(0);
 		}
 	}
 
