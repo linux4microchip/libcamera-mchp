@@ -204,8 +204,6 @@ void MchpCamCommon::initializeControls()
 				const ControlInfo &info = ctrls.at(id);
 				if (!info.values().empty()) {
 					value = info.def().template get<typename std::remove_reference<decltype(value)>::type>();
-				} else {
-					std::cerr << "Warning: Control " << id->name() << " has no valid values." << std::endl;
 				}
 			}
 		};
