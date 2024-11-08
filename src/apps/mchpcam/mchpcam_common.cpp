@@ -21,7 +21,7 @@ MchpCamCommon::MchpCamCommon()
 	pixelFormat_(formats::YUYV),
 	running_(false),
 	brightness_(0),
-	contrast_(0),
+	contrast_(16),
 	whiteBalanceAutomatic_(true),
 	gamma_(0)
 {
