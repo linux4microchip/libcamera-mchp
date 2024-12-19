@@ -38,6 +38,15 @@ public:
 	virtual void setContrast(int value);
 	virtual void setWhiteBalanceAutomatic(bool value);
 	virtual void setGamma(int value);
+	virtual void setRedGain(int value);
+	virtual void setGreenRedGain(int value);
+	virtual void setBlueGain(int value);
+	virtual void setGreenBlueGain(int value);
+	virtual void setRedOffset(int value);
+	virtual void setGreenRedOffset(int value);
+	virtual void setBlueOffset(int value);
+	virtual void setGreenBlueOffset(int value);
+
 
 protected:
 	std::unique_ptr<libcamera::CameraManager> cameraManager_;
@@ -55,6 +64,14 @@ protected:
 	int contrast_;
 	bool whiteBalanceAutomatic_;
 	int gamma_;
+	int red_component_gain_;
+        int blue_component_gain_;
+        int green_red_component_gain_;
+        int green_blue_component_gain_;
+        int red_component_offset_;
+        int blue_component_offset_;
+        int green_red_component_offset_;
+        int green_blue_component_offset_;
 
 	void requestComplete(libcamera::Request *request);
 	virtual void processFrame(const libcamera::FrameBuffer *buffer);

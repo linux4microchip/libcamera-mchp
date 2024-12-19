@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+#
+# Copyright (C) 2025, Microchip Technology Inc
+#
+%YAML 1.1
+---
+# Microchip ISC specific vendor controls
+vendor: microchip
+controls:
+  - RedGain:
+      type: int32_t
+      description: Red Gain Component
+      min: 0
+      max: 8191
+      default: 512
+
+  - BlueGain:
+      type: int32_t
+      description: Blue Gain Component
+      min: 0
+      max: 8191
+      default: 512
+
+  - GreenRedGain:
+      type: int32_t
+      description: Green-Red Gain Component
+      min: 0
+      max: 8191
+      default: 512
+
+  - GreenBlueGain:
+      type: int32_t
+      description: Green-Blue Gain Component
+      min: 0
+      max: 8191
+      default: 512
+
+  - RedOffset:
+      type: int32_t
+      description: Red Offset Component
+      min: -4095
+      max: 4095
+      default: 0
+
+  - BlueOffset:
+      type: int32_t
+      description: Blue Offset Component
+      min: -4095
+      max: 4095
+      default: 0
+
+  - GreenRedOffset:
+      type: int32_t
+      description: Green-Red Offset Component
+      min: -4095
+      max: 4095
+      default: 0
+
+  - GreenBlueOffset:
+      type: int32_t
+      description: Green-Blue Offset Component
+      min: -4095
+      max: 4095
+      default: 0
+...

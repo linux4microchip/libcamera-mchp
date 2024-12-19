@@ -20,10 +20,18 @@ MchpCamCommon::MchpCamCommon()
 	height_(480),
 	pixelFormat_(formats::YUYV),
 	running_(false),
-	brightness_(0),
-	contrast_(16),
-	whiteBalanceAutomatic_(true),
-	gamma_(0)
+	brightness_(1),
+	contrast_(18),
+	whiteBalanceAutomatic_(false),
+	gamma_(0),
+	red_component_gain_(1944),
+	blue_component_gain_(3404),
+	green_red_component_gain_(1103),
+	green_blue_component_gain_(1619),
+	red_component_offset_(-264),
+	blue_component_offset_(-256),
+	green_red_component_offset_(-272),
+	green_blue_component_offset_(-272)
 {
 }
 
@@ -111,6 +119,14 @@ int MchpCamCommon::init(const std::string &cameraId)
 		controls.set(controls::Contrast, contrast_);
 		controls.set(controls::AwbEnable, whiteBalanceAutomatic_);
 		controls.set(controls::Gamma, gamma_);
+		controls.set(controls::microchip::RedGain.id(), ControlValue(red_component_gain_));
+		controls.set(controls::microchip::BlueGain.id(), ControlValue(blue_component_gain_));
+		controls.set(controls::microchip::GreenRedGain.id(), ControlValue(green_red_component_gain_));
+		controls.set(controls::microchip::GreenBlueGain.id(),ControlValue(green_blue_component_gain_));
+		controls.set(controls::microchip::RedOffset.id(), ControlValue(red_component_offset_));
+		controls.set(controls::microchip::BlueOffset.id(), ControlValue(blue_component_offset_));
+		controls.set(controls::microchip::GreenRedOffset.id(), ControlValue(green_red_component_offset_));
+		controls.set(controls::microchip::GreenBlueOffset.id(), ControlValue(green_blue_component_offset_));
 
 		requests_.push_back(std::move(request));
 	}
@@ -212,6 +228,14 @@ void MchpCamCommon::initializeControls()
 		initControl(&controls::Contrast, contrast_);
 		initControl(&controls::AwbEnable, whiteBalanceAutomatic_);
 		initControl(&controls::Gamma, gamma_);
+		initControl(&controls::microchip::RedGain, red_component_gain_);
+		initControl(&controls::microchip::BlueGain, blue_component_gain_);
+		initControl(&controls::microchip::GreenRedGain, green_red_component_gain_);
+		initControl(&controls::microchip::GreenBlueGain, green_blue_component_gain_);
+		initControl(&controls::microchip::RedOffset, red_component_offset_);
+		initControl(&controls::microchip::BlueOffset, blue_component_offset_);
+		initControl(&controls::microchip::GreenRedOffset, green_red_component_offset_);
+		initControl(&controls::microchip::GreenBlueOffset, green_blue_component_offset_);
 	}
 }
 
@@ -238,4 +262,43 @@ void MchpCamCommon::setWhiteBalanceAutomatic(bool value)
 void MchpCamCommon::setGamma(int value)
 {
 	gamma_ = value;
+}
+void MchpCamCommon::setRedGain(int value)
+{
+	red_component_gain_ = value;
+}
+
+void MchpCamCommon::setGreenRedGain(int value)
+{
+	green_red_component_gain_ = value;
+}
+
+void MchpCamCommon::setBlueGain(int value)
+{
+	blue_component_gain_ = value;
+}
+
+void MchpCamCommon::setGreenBlueGain(int value)
+{
+	green_blue_component_gain_ = value;
+}
+
+void MchpCamCommon::setRedOffset(int value)
+{
+	red_component_offset_ = value;
+}
+
+void MchpCamCommon::setGreenRedOffset(int value)
+{
+	green_red_component_offset_ = value;
+}
+
+void MchpCamCommon::setBlueOffset(int value)
+{
+	blue_component_offset_ = value;
+}
+
+void MchpCamCommon::setGreenBlueOffset(int value)
+{
+	green_blue_component_offset_ = value;
 }

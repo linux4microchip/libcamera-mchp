@@ -44,6 +44,7 @@
 #include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/ipa_manager.h"
 
+
 namespace libcamera {
 
 LOG_DEFINE_CATEGORY(MicrochipISC)
@@ -481,29 +482,60 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 }
 
 int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned int id,
-				       const ControlValue &value)
-
+		const ControlValue &value)
 {
 	uint32_t cid;
-
+	/* Map libcamera controls to V4L2 controls */
 	if (id == controls::Brightness)
 		cid = V4L2_CID_BRIGHTNESS;
 	else if (id == controls::Contrast)
 		cid = V4L2_CID_CONTRAST;
 	else if (id == controls::AwbEnable)
 		cid = V4L2_CID_AUTO_WHITE_BALANCE;
+	else if (id == controls::microchip::RedGain)
+		cid = 0x009819c0; /* Red Gain */
+	else if (id == controls::microchip::BlueGain)
+		cid = 0x009819c1; /* Blue Gain */
+	else if (id == controls::microchip::GreenRedGain)
+		cid = 0x009819c2; /* Green-Red Gain */
+	else if (id == controls::microchip::GreenBlueGain)
+		cid = 0x009819c3; /* Green-Blue Gain */
+	else if (id == controls::microchip::RedOffset)
+		cid = 0x009819c4; /* Red Offset */
+	else if (id == controls::microchip::BlueOffset)
+		cid = 0x009819c5; /* Blue Offset */
+	else if (id == controls::microchip::GreenRedOffset)
+		cid = 0x009819c6; /* Green-Red Offset */
+	else if (id == controls::microchip::GreenBlueOffset)
+		cid = 0x009819c7; /* Green-Blue Offset */
 	else
 		return -EINVAL;
+
+	/* Validate and set the control value */
+	const ControlInfo &controlInfo = controls->infoMap()->at(cid);
 
 	switch (cid) {
 	case V4L2_CID_BRIGHTNESS:
 	case V4L2_CID_CONTRAST: {
-		const ControlInfo &v4l2Info = controls->infoMap()->at(cid);
-		int32_t min = v4l2Info.min().get<int32_t>();
-		int32_t max = v4l2Info.max().get<int32_t>();
-
 		float fval = value.get<float>();
-		int32_t val = static_cast<int32_t>(lroundf(fval));
+		int32_t val = static_cast<int32_t>(std::lroundf(fval));
+		int32_t min = controlInfo.min().get<int32_t>();
+		int32_t max = controlInfo.max().get<int32_t>();
+		controls->set(cid, std::clamp(val, min, max));
+		break;
+	}
+
+	case 0x009819c0: /* Red Gain */
+	case 0x009819c1: /* Blue Gain */
+	case 0x009819c2: /* Green-Red Gain */
+	case 0x009819c3: /* Green-Blue Gain */
+	case 0x009819c4: /* Red Offset */
+	case 0x009819c5: /* Blue Offset */
+	case 0x009819c6: /* Green-Red Offset */
+	case 0x009819c7: { /* Green-Blue Offset */
+		int32_t val = value.get<int32_t>();
+		int32_t min = controlInfo.min().get<int32_t>();
+		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
 	}
@@ -516,11 +548,10 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 
 	default: {
 		LOG(MicrochipISC, Debug) << "Control not yet supported";
-		controls->set(cid, 0); /* Todo */
+		controls->set(cid, 0);
 		break;
 	}
 	}
-
 	return 0;
 }
 
@@ -675,6 +706,15 @@ int MicrochipISCCameraData::init()
 			{ &controls::Contrast, ControlInfo(-2048.0f, 2048.0f, 16.0f) },
 			{ &controls::AwbEnable, ControlInfo(false, true, true) },
 			{ &controls::Gamma, ControlInfo(0.0f, 0.0f, 0.0f) },/* actual min, max, default */
+			/* Custom controls with values */
+			{ &controls::microchip::RedGain, ControlInfo(0, 8191, 512) },
+			{ &controls::microchip::BlueGain, ControlInfo(0, 8191, 512) },
+			{ &controls::microchip::GreenRedGain, ControlInfo(0, 8191, 512) },
+			{ &controls::microchip::GreenBlueGain, ControlInfo(0, 8191, 512) },
+			{ &controls::microchip::RedOffset, ControlInfo(-4095, 4095, 0) },
+			{ &controls::microchip::BlueOffset, ControlInfo(-4095, 4095, 0) },
+			{ &controls::microchip::GreenRedOffset, ControlInfo(-4095, 4095, 0) },
+			{ &controls::microchip::GreenBlueOffset, ControlInfo(-4095, 4095, 0) },
 			}, controls::controls);
 
 	LOG(MicrochipISC, Debug) << "ControlInfoMap initialized";

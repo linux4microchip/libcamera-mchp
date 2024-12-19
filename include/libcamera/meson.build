@@ -37,6 +37,7 @@ controls_map = {
         'draft': 'control_ids_draft.yaml',
         'core': 'control_ids_core.yaml',
         'rpi/vc4': 'control_ids_rpi.yaml',
+        'microchip-isc': 'control_ids_microchip.yaml',
     },
 
     'properties': {

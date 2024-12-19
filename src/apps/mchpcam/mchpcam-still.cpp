@@ -61,6 +61,15 @@ int MchpCamStill::captureStill(const std::string &filename)
 	setControl(&controls::Contrast, contrast_);
 	setControl(&controls::AwbEnable, whiteBalanceAutomatic_);
 	setControl(&controls::Gamma, gamma_);
+	setControl(&controls::microchip::RedGain, red_component_gain_);
+	setControl(&controls::microchip::GreenRedGain, green_red_component_gain_);
+	setControl(&controls::microchip::BlueGain, blue_component_gain_);
+	setControl(&controls::microchip::GreenBlueGain, green_blue_component_gain_);
+	setControl(&controls::microchip::RedOffset, red_component_offset_);
+	setControl(&controls::microchip::GreenRedOffset, green_red_component_offset_);
+	setControl(&controls::microchip::BlueOffset, blue_component_offset_);
+	setControl(&controls::microchip::GreenBlueOffset, green_blue_component_offset_);
+
 
 	int ret = camera_->start(&controls);
 	if (ret < 0) {
@@ -234,19 +243,27 @@ static void sigHandler([[maybe_unused]]int signal)
 
 void printUsage(const char *argv0)
 {
-	std::cout << "Usage: " << argv0 << " [options]" << std::endl;
-	std::cout << "Options:" << std::endl;
-	std::cout << "  -o, --output=FILE              Output file name (default: output.jpg)" << std::endl;
-	std::cout << "  -w, --width=WIDTH              Set capture width" << std::endl;
-	std::cout << "  -h, --height=HEIGHT            Set capture height" << std::endl;
-	std::cout << "  -f, --format=FORMAT            Set pixel format (YUYV, RGB565)" << std::endl;
-	std::cout << "  -i, --image-format=FORMAT      Set image format (jpeg, png)" << std::endl;
-	std::cout << "  -c, --camera=ID                Set camera ID" << std::endl;
-	std::cout << "  -b, --brightness=VALUE         Set brightness (-100 to 100)" << std::endl;
-	std::cout << "  -n, --contrast=VALUE           Set contrast (0 to 100)" << std::endl;
-	std::cout << "  -a, --white-balance-auto=VALUE Set white balance automatic (0 or 1)" << std::endl;
-	std::cout << "  -g, --gamma=VALUE              Set gamma (0 to 500)" << std::endl;
-	std::cout << "  -H, --help                     Print this help message" << std::endl;
+       std::cout << "Usage: " << argv0 << " [options]" << std::endl;
+       std::cout << "Options:" << std::endl;
+       std::cout << "  -o, --output=FILE              Output file name (default: output.jpg)" << std::endl;
+       std::cout << "  -w, --width=WIDTH              Set capture width" << std::endl;
+       std::cout << "  -h, --height=HEIGHT            Set capture height" << std::endl;
+       std::cout << "  -f, --format=FORMAT            Set pixel format (YUYV, RGB565)" << std::endl;
+       std::cout << "  -i, --image-format=FORMAT      Set image format (jpeg, png)" << std::endl;
+       std::cout << "  -c, --camera=ID                Set camera ID" << std::endl;
+       std::cout << "  -b, --brightness=VALUE         Set brightness (-100 to 100)" << std::endl;
+       std::cout << "  -n, --contrast=VALUE           Set contrast (0 to 100)" << std::endl;
+       std::cout << "  -a, --white-balance-auto=VALUE Set white balance automatic (0 or 1)" << std::endl;
+       std::cout << "  -g, --gamma=VALUE              Set gamma (0 to 500)" << std::endl;
+       std::cout << "  -r, --red-gain=VALUE           Set red component gain (0 to 8191)" << std::endl;
+       std::cout << "  -m, --blue-gain=VALUE          Set blue component gain (0 to 8191)" << std::endl;
+       std::cout << "  -v, --green-red-gain=VALUE     Set green-red component gain (0 to 8191)" << std::endl;
+       std::cout << "  -q, --green-blue-gain=VALUE    Set green-blue component gain (0 to 8191)" << std::endl;
+       std::cout << "  -R, --red-offset=VALUE         Set red component offset (-4095 to 4095)" << std::endl;
+       std::cout << "  -M, --blue-offset=VALUE        Set blue component offset (-4095 to 4095)" << std::endl;
+       std::cout << "  -V, --green-red-offset=VALUE   Set green-red component offset (-4095 to 4095)" << std::endl;
+       std::cout << "  -Q, --green-blue-offset=VALUE  Set green-blue component offset (-4095 to 4095)" << std::endl;
+       std::cout << "  -H, --help                     Print this help message" << std::endl;
 }
 
 int main(int argc, char **argv)
@@ -254,18 +271,26 @@ int main(int argc, char **argv)
 	app = MchpCamStill::getInstance();
 
 	static struct option long_options[] = {
-		{"output",   required_argument, 0, 'o'},
-		{"width",    required_argument, 0, 'w'},
-		{"height",   required_argument, 0, 'h'},
-		{"format",   required_argument, 0, 'f'},
-		{"camera",   required_argument, 0, 'c'},
-		{"brightness", required_argument, 0, 'b'},
-		{"contrast", required_argument, 0, 'n'},
-		{"white-balance-auto", required_argument, 0, 'a'},
-		{"gamma", required_argument, 0, 'g'},
-		{"help",     no_argument,       0, 'H'},
-		{0, 0, 0, 0}
-	};
+               {"output",               required_argument, 0, 'o'},
+               {"width",                required_argument, 0, 'w'},
+               {"height",               required_argument, 0, 'h'},
+               {"format",               required_argument, 0, 'f'},
+               {"camera",               required_argument, 0, 'c'},
+               {"brightness",           required_argument, 0, 'b'},
+               {"contrast",             required_argument, 0, 'n'},
+               {"white-balance-auto",   required_argument, 0, 'a'},
+               {"gamma",                required_argument, 0, 'g'},
+               {"red-gain",             required_argument, 0, 'r'},
+               {"blue-gain",            required_argument, 0, 'm'},
+               {"green-red-gain",       required_argument, 0, 'v'},
+               {"green-blue-gain",      required_argument, 0, 'q'},
+               {"red-offset",           required_argument, 0, 'R'},
+               {"blue-offset",          required_argument, 0, 'M'},
+               {"green-red-offset",     required_argument, 0, 'V'},
+               {"green-blue-offset",    required_argument, 0, 'Q'},
+               {"help",                 no_argument,       0, 'H'},
+               {0, 0, 0, 0}
+        };
 
 	int option_index = 0;
 	int c;
@@ -273,7 +298,7 @@ int main(int argc, char **argv)
 	std::string cameraId;
 	unsigned int width = 0, height = 0;
 
-	while ((c = getopt_long(argc, argv, "o:w:h:f:c:b:n:a:g:H", long_options, &option_index)) != -1) {
+	while ((c = getopt_long(argc, argv, "o:w:h:f:c:b:n:a:g:r:m:v:R:M:V:Q:H", long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'o':
 			output = optarg;
@@ -302,6 +327,30 @@ int main(int argc, char **argv)
 		case 'g':
 			app->setGamma(std::stoi(optarg));
 			break;
+		case 'r':
+                        app->setRedGain(std::stoi(optarg));  // Min: 0, Max: 8191
+                        break;
+                case 'm':
+                        app->setBlueGain(std::stoi(optarg));  // Min: 0, Max: 8191
+                        break;
+                case 'v':
+                        app->setGreenRedGain(std::stoi(optarg));  // Min: 0, Max: 8191
+                        break;
+                case 'q':
+                        app->setGreenBlueGain(std::stoi(optarg));  // Min: 0, Max: 8191
+                        break;
+                case 'R':
+                        app->setRedOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
+                        break;
+                case 'M':
+                        app->setBlueOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
+                        break;
+                case 'V':
+                        app->setGreenRedOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
+                        break;
+                case 'Q':
+                        app->setGreenBlueOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
+                        break;
 		case 'H':
 		default:
 			printUsage(argv[0]);
