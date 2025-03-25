@@ -49,7 +49,7 @@ namespace libcamera {
 
 LOG_DEFINE_CATEGORY(MicrochipISC)
 
-class PipelineHandlerMicrochipISC;
+	class PipelineHandlerMicrochipISC;
 
 class MicrochipISCCameraData : public Camera::Private
 {
@@ -182,75 +182,69 @@ const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::forma
 };
 
 std::unique_ptr<CameraConfiguration>
-PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
-						   Span<const StreamRole> roles)
-{
-	MicrochipISCCameraData *data = cameraData(camera);
-	std::unique_ptr<MicrochipISCCameraConfiguration> config =
-		std::make_unique<MicrochipISCCameraConfiguration>(data);
+	PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
+			Span<const StreamRole> roles)
+	{
+		MicrochipISCCameraData *data = cameraData(camera);
+		std::unique_ptr<MicrochipISCCameraConfiguration> config =
+			std::make_unique<MicrochipISCCameraConfiguration>(data);
 
-	if (roles.empty())
+		if (roles.empty())
+			return config;
+
+		for (StreamRole role : roles) {
+			StreamConfiguration cfg{};
+
+			switch (role) {
+				case StreamRole::StillCapture:
+					cfg.pixelFormat = formats::RGB565;
+					cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
+					cfg.bufferCount = 1;
+					break;
+
+				case StreamRole::VideoRecording:
+					cfg.pixelFormat = formats::YUYV;
+					cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
+					cfg.bufferCount = 4;
+					break;
+
+				case StreamRole::Viewfinder:
+					cfg.pixelFormat = formats::YUYV;
+					cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
+					cfg.bufferCount = 2;
+					break;
+
+				default:
+					cfg.pixelFormat = data->configs_[0].captureFormat;
+					cfg.size = data->configs_[0].captureSize;
+					cfg.bufferCount = 4;
+					break;
+			}
+
+			if (data->formats_.find(cfg.pixelFormat) == data->formats_.end()) {
+				LOG(MicrochipISC, Warning) << "Unsupported format " << cfg.pixelFormat.toString()
+					<< " for role " << static_cast<int>(role)
+					<< ". Falling back to default.";
+				cfg.pixelFormat = data->configs_[0].captureFormat;
+				cfg.size = data->configs_[0].captureSize;
+			}
+
+			if (!isSupportedConfiguration(data->configs_, cfg)) {
+				LOG(MicrochipISC, Warning) << "Unsupported configuration for role "
+					<< static_cast<int>(role) << ". Falling back to default.";
+				cfg.pixelFormat = data->configs_[0].captureFormat;
+				cfg.size = data->configs_[0].captureSize;
+			}
+
+			config->addConfiguration(cfg);
+		}
+
+		config->validate();
 		return config;
-
-	for (StreamRole role : roles) {
-		StreamConfiguration cfg{};
-
-		switch (role) {
-		case StreamRole::StillCapture:
-			cfg.pixelFormat = formats::RGB565;
-			cfg.size = data->sensor_->resolution();
-			cfg.bufferCount = 1;
-			break;
-
-		case StreamRole::VideoRecording:
-			cfg.pixelFormat = formats::YUYV;
-			cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
-			cfg.bufferCount = 4;
-			break;
-
-		case StreamRole::Viewfinder:
-			cfg.pixelFormat = formats::YUYV;
-			cfg.size = findOptimalSize(data->configs_, Size(640, 480));
-			cfg.bufferCount = 2;
-			break;
-
-		case StreamRole::Raw:
-			cfg.pixelFormat = findRawFormat(data->configs_);
-			cfg.size = data->sensor_->resolution();
-			cfg.bufferCount = 1;
-			break;
-
-		default:
-			cfg.pixelFormat = data->configs_[0].captureFormat;
-			cfg.size = data->configs_[0].captureSize;
-			cfg.bufferCount = 4;
-			break;
-		}
-
-		if (data->formats_.find(cfg.pixelFormat) == data->formats_.end()) {
-			LOG(MicrochipISC, Warning) << "Unsupported format " << cfg.pixelFormat.toString()
-				<< " for role " << static_cast<int>(role)
-				<< ". Falling back to default.";
-			cfg.pixelFormat = data->configs_[0].captureFormat;
-			cfg.size = data->configs_[0].captureSize;
-		}
-
-		if (!isSupportedConfiguration(data->configs_, cfg)) {
-			LOG(MicrochipISC, Warning) << "Unsupported configuration for role "
-				<< static_cast<int>(role) << ". Falling back to default.";
-			cfg.pixelFormat = data->configs_[0].captureFormat;
-			cfg.size = data->configs_[0].captureSize;
-		}
-
-		config->addConfiguration(cfg);
 	}
 
-	config->validate();
-	return config;
-}
-
 Size PipelineHandlerMicrochipISC::findOptimalSize(const std::vector<MicrochipISCCameraData::Configuration>& configs,
-						  const Size& target)
+		const Size& target)
 {
 	Size optimal = configs[0].captureSize;
 	for (const auto& config : configs) {
@@ -280,7 +274,7 @@ PixelFormat PipelineHandlerMicrochipISC::findRawFormat(const std::vector<Microch
 		formats::SGBRG12,
 		formats::SGRBG12,
 		formats::SRGGB12
-		/* Add more raw formats if needed */
+			/* Add more raw formats if needed */
 	};
 
 	for (const auto& config : configs) {
@@ -289,11 +283,11 @@ PixelFormat PipelineHandlerMicrochipISC::findRawFormat(const std::vector<Microch
 		}
 	}
 
-	return configs[0].captureFormat;  /* Fallback to default if no raw format found */
+	return configs[0].captureFormat;	/* Fallback to default if no raw format found */
 }
 
 bool PipelineHandlerMicrochipISC::isSupportedConfiguration(const std::vector<MicrochipISCCameraData::Configuration>& configs,
-		                                           const StreamConfiguration& cfg)
+		const StreamConfiguration& cfg)
 {
 	for (const auto& config : configs) {
 		if (config.captureFormat == cfg.pixelFormat && config.captureSize == cfg.size)
@@ -320,27 +314,27 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	int ret;
 	for (MediaEntity *entity : media->entities()) {
 		switch (entity->function()) {
-		case MEDIA_ENT_F_IO_V4L:
-			data->iscVideo_ = std::make_unique<V4L2VideoDevice>(entity);
-			ret = data->iscVideo_->open();
-			if (ret < 0) {
-				LOG(MicrochipISC, Error) << "Failed to open video device: " << strerror(-ret);
-				return false;
-			}
-			LOG(MicrochipISC, Debug) << "Opened video device: " << entity->name();
+			case MEDIA_ENT_F_IO_V4L:
+				data->iscVideo_ = std::make_unique<V4L2VideoDevice>(entity);
+				ret = data->iscVideo_->open();
+				if (ret < 0) {
+					LOG(MicrochipISC, Error) << "Failed to open video device: " << strerror(-ret);
+					return false;
+				}
+				LOG(MicrochipISC, Debug) << "Opened video device: " << entity->name();
 
-			/* Connect the bufferReady signal */
-			data->iscVideo_->bufferReady.connect(this, &PipelineHandlerMicrochipISC::bufferReady);
-			break;
+				/* Connect the bufferReady signal */
+				data->iscVideo_->bufferReady.connect(this, &PipelineHandlerMicrochipISC::bufferReady);
+				break;
 
-		default:
-			/* Handle all other entities, including MEDIA_ENT_F_CAM_SENSOR and MEDIA_INTF_T_V4L_SUBDEV */
-			ret = data->initSubdev(entity);
-			if (ret < 0) {
-				LOG(MicrochipISC, Error) << "Failed to initialize subdevice: " << entity->name();
-				return false;
-			}
-			break;
+			default:
+				/* Handle all other entities, including MEDIA_ENT_F_CAM_SENSOR and MEDIA_INTF_T_V4L_SUBDEV */
+				ret = data->initSubdev(entity);
+				if (ret < 0) {
+					LOG(MicrochipISC, Error) << "Failed to initialize subdevice: " << entity->name();
+					return false;
+				}
+				break;
 		}
 	}
 
@@ -387,7 +381,6 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	}
 
 	const MicrochipISCCameraData::Configuration *pipeConfig = config->pipeConfig();
-
 	if (data->formats_.find(pipeConfig->captureFormat) == data->formats_.end()) {
 		LOG(MicrochipISC, Error) << "Unsupported format " << pipeConfig->captureFormat.toString();
 		return -EINVAL;
@@ -396,9 +389,6 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	V4L2SubdeviceFormat format{};
 	format.code = pipeConfig->code;
 	format.size = pipeConfig->sensorSize;
-
-	LOG(MicrochipISC, Debug) << "Setting up formats: code=" << format.code
-		<< ", size=" << format.size.toString();
 
 	ret = data->setupFormats(&format, V4L2Subdevice::ActiveFormat);
 	if (ret < 0) {
@@ -410,10 +400,6 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	captureFormat.fourcc = data->iscVideo_->toV4L2PixelFormat(pipeConfig->captureFormat);
 	captureFormat.size = pipeConfig->captureSize;
 
-	LOG(MicrochipISC, Debug) << "Setting video format: fourcc="
-		<< captureFormat.fourcc.toString()
-		<< ", size=" << captureFormat.size.toString();
-
 	ret = data->iscVideo_->setFormat(&captureFormat);
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to set video format: " << ret;
@@ -424,17 +410,13 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		StreamConfiguration &cfg = c->at(i);
 		cfg.setStream(&data->streams_[i]);
 		cfg.stride = captureFormat.planes[0].bpl;
-		LOG(MicrochipISC, Debug) << "Stream " << i << " configuration: "
-			<< "format=" << cfg.pixelFormat.toString()
-			<< ", size=" << cfg.size.toString()
-			<< ", stride=" << cfg.stride;
 	}
 
 	return 0;
 }
 
 int PipelineHandlerMicrochipISC::exportFrameBuffers(Camera *camera, Stream *stream,
-		                                    std::vector<std::unique_ptr<FrameBuffer>> *buffers)
+		std::vector<std::unique_ptr<FrameBuffer>> *buffers)
 {
 	unsigned int count = stream->configuration().bufferCount;
 	MicrochipISCCameraData *data = cameraData(camera);
@@ -515,42 +497,43 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	const ControlInfo &controlInfo = controls->infoMap()->at(cid);
 
 	switch (cid) {
-	case V4L2_CID_BRIGHTNESS:
-	case V4L2_CID_CONTRAST: {
-		float fval = value.get<float>();
-		int32_t val = static_cast<int32_t>(std::lroundf(fval));
-		int32_t min = controlInfo.min().get<int32_t>();
-		int32_t max = controlInfo.max().get<int32_t>();
-		controls->set(cid, std::clamp(val, min, max));
-		break;
-	}
+		case V4L2_CID_BRIGHTNESS:
+		case V4L2_CID_CONTRAST: {
+    float fval = value.get<float>();
+    int32_t val = static_cast<int32_t>(std::lroundf(fval));
+    int32_t min = controlInfo.min().get<int32_t>();
+    int32_t max = controlInfo.max().get<int32_t>();
+    controls->set(cid, std::clamp(val, min, max));
+    break;
+    }
 
-	case 0x009819c0: /* Red Gain */
-	case 0x009819c1: /* Blue Gain */
-	case 0x009819c2: /* Green-Red Gain */
-	case 0x009819c3: /* Green-Blue Gain */
-	case 0x009819c4: /* Red Offset */
-	case 0x009819c5: /* Blue Offset */
-	case 0x009819c6: /* Green-Red Offset */
-	case 0x009819c7: { /* Green-Blue Offset */
+		case 0x009819c0: /* Red Gain */
+		case 0x009819c1: /* Blue Gain */
+		case 0x009819c2: /* Green-Red Gain */
+		case 0x009819c3: /* Green-Blue Gain */
+		case 0x009819c4: /* Red Offset */
+		case 0x009819c5: /* Blue Offset */
+		case 0x009819c6: /* Green-Red Offset */
+		case 0x009819c7: { /* Green-Blue Offset */
 		int32_t val = value.get<int32_t>();
 		int32_t min = controlInfo.min().get<int32_t>();
 		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
-	}
+    }
 
-	case V4L2_CID_AUTO_WHITE_BALANCE: {
-		bool bval = value.get<bool>();
-		controls->set(cid, static_cast<int32_t>(bval));
-		break;
-	}
+		case V4L2_CID_AUTO_WHITE_BALANCE: {
+    bool bval = value.get<bool>();
+    controls->set(cid, static_cast<int32_t>(bval));
+    break;
+    }
 
-	default: {
-		LOG(MicrochipISC, Debug) << "Control not yet supported";
-		controls->set(cid, 0);
-		break;
-	}
+		default: {
+    LOG(MicrochipISC, Debug) << "Control not yet supported";
+    controls->set(cid, 0);
+    break;
+    }
+
 	}
 	return 0;
 }
@@ -621,7 +604,7 @@ std::string PipelineHandlerMicrochipISC::generateId(const MediaEntity *entity)
 		std::string::size_type pos = searchPath.rfind('/');
 		if (pos <= 1) {
 			LOG(MicrochipISC, Error) << "Cannot find device tree path";
-			return deviceNode;  /* Fallback to deviceNode if we can't find the path */
+			return deviceNode;	/* Fallback to deviceNode if we can't find the path */
 		}
 		searchPath = searchPath.substr(0, pos);
 
@@ -630,7 +613,7 @@ std::string PipelineHandlerMicrochipISC::generateId(const MediaEntity *entity)
 		if (std::filesystem::exists(dtPath) && std::filesystem::is_directory(dtPath)) {
 			/* Found a matching directory in the device tree */
 			LOG(MicrochipISC, Debug) << "Found device tree path: " << dtPath;
-			return searchPath;  /* Return without the base path */
+			return searchPath;	/* Return without the base path */
 		}
 
 		/* Check if this directory contains a 'compatible' file */
@@ -641,7 +624,7 @@ std::string PipelineHandlerMicrochipISC::generateId(const MediaEntity *entity)
 			std::getline(compatibleFile, compatibleValue);
 			if (compatibleValue.find("microchip,isc") != std::string::npos) {
 				LOG(MicrochipISC, Debug) << "Found ISC device tree node: " << searchPath;
-				return searchPath;  /* Return without the base path */
+				return searchPath;	/* Return without the base path */
 			}
 		}
 	}
@@ -724,7 +707,7 @@ int MicrochipISCCameraData::init()
 }
 
 int MicrochipISCCameraData::setupFormats(V4L2SubdeviceFormat *format,
-		                         V4L2Subdevice::Whence whence)
+		V4L2Subdevice::Whence whence)
 {
 	int ret;
 
@@ -886,7 +869,6 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 				buffer->metadata().timestamp);
 
 	completeBuffer(request, buffer);
-
 	if (request->hasPendingBuffers()) {
 		LOG(MicrochipISC, Debug) << "Request " << request
 			<< " still has pending buffers";
