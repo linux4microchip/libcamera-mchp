@@ -1,13 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (C) 2024 Microchip Technology Inc.  All rights reserved.
- *
- * mchpcam - common application header
- */
-
+	* Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
+	*
+	* mchpcam - common application header
+	*/
 #ifndef MCHPCAM_COMMON_H
 #define MCHPCAM_COMMON_H
-
 #include <string>
 #include <memory>
 #include <vector>
@@ -26,14 +24,12 @@ class MchpCamCommon {
 public:
 	MchpCamCommon();
 	virtual ~MchpCamCommon();
-
 	int init(const std::string &cameraId = "");
 	void stop();
 	void setResolution(unsigned int width, unsigned int height);
 	void setFormat(const std::string &format);
 	unsigned int getWidth() const { return width_; }
 	unsigned int getHeight() const { return height_; }
-
 	virtual void setBrightness(int value);
 	virtual void setContrast(int value);
 	virtual void setWhiteBalanceAutomatic(bool value);
@@ -47,7 +43,6 @@ public:
 	virtual void setBlueOffset(int value);
 	virtual void setGreenBlueOffset(int value);
 
-
 protected:
 	std::unique_ptr<libcamera::CameraManager> cameraManager_;
 	std::shared_ptr<libcamera::Camera> camera_;
@@ -59,26 +54,23 @@ protected:
 	unsigned int height_;
 	libcamera::PixelFormat pixelFormat_;
 	bool running_;
-
 	int brightness_;
 	int contrast_;
 	bool whiteBalanceAutomatic_;
 	int gamma_;
 	int red_component_gain_;
-        int blue_component_gain_;
-        int green_red_component_gain_;
-        int green_blue_component_gain_;
-        int red_component_offset_;
-        int blue_component_offset_;
-        int green_red_component_offset_;
-        int green_blue_component_offset_;
+	int blue_component_gain_;
+	int green_red_component_gain_;
+	int green_blue_component_gain_;
+	int red_component_offset_;
+	int blue_component_offset_;
+	int green_red_component_offset_;
+	int green_blue_component_offset_;
 
 	void requestComplete(libcamera::Request *request);
 	virtual void processFrame(const libcamera::FrameBuffer *buffer);
 	virtual void saveFrame(const libcamera::FrameBuffer *buffer, const std::string &filename);
-
 	void initializeControls();
 	bool isControlSupported(const libcamera::ControlId *id) const;
 };
-
 #endif

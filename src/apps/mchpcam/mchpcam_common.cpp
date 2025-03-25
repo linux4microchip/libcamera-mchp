@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (C) 2024 Microchip Technology Inc.  All rights reserved.
- *
- * mchpcam - common application
- */
-
+	* Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
+	*
+	* mchpcam - common application
+	*/
 #include "mchpcam_common.h"
 #include <iostream>
 #include <iomanip>
@@ -53,17 +52,17 @@ int MchpCamCommon::init(const std::string &cameraId)
 		}
 		camera_ = cameraManager_->get(cameras[0]->id());
 	} else {
-		camera_ = cameraManager_->get(cameraId);
+	camera_ = cameraManager_->get(cameraId);
 	}
 
 	if (!camera_) {
-		std::cerr << "Failed to find camera" << std::endl;
-		return -1;
+	std::cerr << "Failed to find camera" << std::endl;
+	return -ENODEV;
 	}
 
 	if (camera_->acquire() < 0) {
-		std::cerr << "Failed to acquire camera" << std::endl;
-		return -1;
+	std::cerr << "Failed to acquire camera" << std::endl;
+	return -1;
 	}
 
 	config_ = camera_->generateConfiguration({ StreamRole::Viewfinder });
@@ -74,8 +73,8 @@ int MchpCamCommon::init(const std::string &cameraId)
 
 	CameraConfiguration::Status status = config_->validate();
 	if (status == CameraConfiguration::Invalid) {
-		std::cerr << "Invalid camera configuration" << std::endl;
-		return -1;
+	std::cerr << "Invalid camera configuration" << std::endl;
+	return -1;
 	}
 
 	if (status == CameraConfiguration::Adjusted) {
@@ -141,14 +140,13 @@ int MchpCamCommon::init(const std::string &cameraId)
 void MchpCamCommon::stop()
 {
 	if (camera_) {
-		camera_->stop();
-		allocator_->free(stream_);
-		camera_->release();
-		camera_.reset();
+	camera_->stop();
+	allocator_->free(stream_);
+	camera_->release();
+	camera_.reset();
 	}
-
 	if (cameraManager_)
-		cameraManager_->stop();
+	cameraManager_->stop();
 }
 
 void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
@@ -171,9 +169,9 @@ void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
 void MchpCamCommon::setFormat(const std::string &format)
 {
 	if (format == "YUYV")
-		pixelFormat_ = formats::YUYV;
+	pixelFormat_ = formats::YUYV;
 	else if (format == "RGB565")
-		pixelFormat_ = formats::RGB565;
+	pixelFormat_ = formats::RGB565;
 	else {
 		std::cerr << "Unsupported format: " << format << ". Using default (YUYV)." << std::endl;
 		pixelFormat_ = formats::YUYV;
@@ -183,7 +181,7 @@ void MchpCamCommon::setFormat(const std::string &format)
 void MchpCamCommon::requestComplete(Request *request)
 {
 	if (request->status() == Request::RequestCancelled)
-		return;
+	return;
 
 	const std::map<const Stream *, FrameBuffer *> &buffers = request->buffers();
 	for (auto [stream, buffer] : buffers) {
@@ -213,29 +211,28 @@ void MchpCamCommon::saveFrame([[maybe_unused]] const FrameBuffer *buffer, [[mayb
 void MchpCamCommon::initializeControls()
 {
 	if (camera_) {
-		const auto &ctrls = camera_->controls();
+	const auto &ctrls = camera_->controls();
+	auto initControl = [&](const ControlId *id, auto &value) {
+	if (ctrls.count(id)) {
+	const ControlInfo &info = ctrls.at(id);
+	if (!info.values().empty()) {
+	value = info.def().template get<typename std::remove_reference<decltype(value)>::type>();
+	}
+	}
+	};
 
-		auto initControl = [&](const ControlId *id, auto &value) {
-			if (ctrls.count(id)) {
-				const ControlInfo &info = ctrls.at(id);
-				if (!info.values().empty()) {
-					value = info.def().template get<typename std::remove_reference<decltype(value)>::type>();
-				}
-			}
-		};
-
-		initControl(&controls::Brightness, brightness_);
-		initControl(&controls::Contrast, contrast_);
-		initControl(&controls::AwbEnable, whiteBalanceAutomatic_);
-		initControl(&controls::Gamma, gamma_);
-		initControl(&controls::microchip::RedGain, red_component_gain_);
-		initControl(&controls::microchip::BlueGain, blue_component_gain_);
-		initControl(&controls::microchip::GreenRedGain, green_red_component_gain_);
-		initControl(&controls::microchip::GreenBlueGain, green_blue_component_gain_);
-		initControl(&controls::microchip::RedOffset, red_component_offset_);
-		initControl(&controls::microchip::BlueOffset, blue_component_offset_);
-		initControl(&controls::microchip::GreenRedOffset, green_red_component_offset_);
-		initControl(&controls::microchip::GreenBlueOffset, green_blue_component_offset_);
+	initControl(&controls::Brightness, brightness_);
+	initControl(&controls::Contrast, contrast_);
+	initControl(&controls::AwbEnable, whiteBalanceAutomatic_);
+	initControl(&controls::Gamma, gamma_);
+	initControl(&controls::microchip::RedGain, red_component_gain_);
+	initControl(&controls::microchip::BlueGain, blue_component_gain_);
+	initControl(&controls::microchip::GreenRedGain, green_red_component_gain_);
+	initControl(&controls::microchip::GreenBlueGain, green_blue_component_gain_);
+	initControl(&controls::microchip::RedOffset, red_component_offset_);
+	initControl(&controls::microchip::BlueOffset, blue_component_offset_);
+	initControl(&controls::microchip::GreenRedOffset, green_red_component_offset_);
+	initControl(&controls::microchip::GreenBlueOffset, green_blue_component_offset_);
 	}
 }
 
@@ -263,6 +260,7 @@ void MchpCamCommon::setGamma(int value)
 {
 	gamma_ = value;
 }
+
 void MchpCamCommon::setRedGain(int value)
 {
 	red_component_gain_ = value;

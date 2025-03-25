@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (C) 2024 Microchip Technology Inc.  All rights reserved.
- *
- * mchpcam - mchpcam-still application for image capture
- */
-
+	* Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
+	*
+	* mchpcam - mchpcam-still application for image capture
+	*/
 #include "mchpcam_common.h"
 #include <iostream>
 #include <iomanip>
@@ -26,14 +25,12 @@ void printUsage(const char *argv0);
 class MchpCamStill : public MchpCamCommon {
 public:
 	static MchpCamStill* getInstance() {
-		static MchpCamStill instance;
-		return &instance;
+	static MchpCamStill instance;
+	return &instance;
 	}
-
 	void setImageFormat(const std::string &format) {
 		imageFormat_ = format;
 	}
-
 	int captureStill(const std::string &filename);
 
 protected:
@@ -52,9 +49,9 @@ int MchpCamStill::captureStill(const std::string &filename)
 	ControlList controls;
 
 	auto setControl = [&](const ControlId *id, auto value) {
-		if (camera_->controls().count(id)) {
-			controls.set(id->id(), ControlValue(value));
-		}
+	if (camera_->controls().count(id)) {
+	controls.set(id->id(), ControlValue(value));
+	}
 	};
 
 	setControl(&controls::Brightness, brightness_);
@@ -73,15 +70,15 @@ int MchpCamStill::captureStill(const std::string &filename)
 
 	int ret = camera_->start(&controls);
 	if (ret < 0) {
-		std::cerr << "Failed to start camera: " << ret << std::endl;
-		return ret;
+	std::cerr << "Failed to start camera: " << ret << std::endl;
+	return ret;
 	}
 
 	ret = camera_->queueRequest(requests_[0].get());
 	if (ret < 0) {
-		std::cerr << "Failed to queue request: " << ret << std::endl;
-		camera_->stop();
-		return ret;
+	std::cerr << "Failed to queue request: " << ret << std::endl;
+	camera_->stop();
+	return ret;
 	}
 
 	std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -95,6 +92,9 @@ int MchpCamStill::captureStill(const std::string &filename)
 
 	std::cout << "Capturing image with resolution: " << width_ << "x" << height_ << std::endl;
 	saveFrame(buffer, filename);
+	break;
+	}
+	}
 
 	return 0;
 }
@@ -157,13 +157,12 @@ void MchpCamStill::saveJpeg(const unsigned char *data, int width, int height, co
 {
 	FILE *file = fopen(filename.c_str(), "wb");
 	if (!file) {
-		std::cerr << "Can't open output file" << std::endl;
-		return;
+	std::cerr << "Can't open output file for JPEG image" << std::endl;
+	return;
 	}
 
 	struct jpeg_compress_struct cinfo;
 	struct jpeg_error_mgr jerr;
-
 	cinfo.err = jpeg_std_error(&jerr);
 	jpeg_create_compress(&cinfo);
 	jpeg_stdio_dest(&cinfo, file);
@@ -179,43 +178,42 @@ void MchpCamStill::saveJpeg(const unsigned char *data, int width, int height, co
 
 	JSAMPROW row_pointer[1];
 	while (cinfo.next_scanline < cinfo.image_height) {
-		row_pointer[0] = const_cast<unsigned char*>(&data[cinfo.next_scanline * width * 3]);
-		jpeg_write_scanlines(&cinfo, row_pointer, 1);
+	row_pointer[0] = const_cast<unsigned char*>(&data[cinfo.next_scanline * width * 3]);
+	jpeg_write_scanlines(&cinfo, row_pointer, 1);
 	}
 
 	jpeg_finish_compress(&cinfo);
 	fclose(file);
 	jpeg_destroy_compress(&cinfo);
-}
 
 void MchpCamStill::savePng(const unsigned char *data, int width, int height, const std::string &filename)
 {
 	FILE *file = fopen(filename.c_str(), "wb");
 	if (!file) {
-		std::cerr << "Can't open output file" << std::endl;
-		return;
+	std::cerr << "Can't open output file for PNG image" << std::endl;
+	return;
 	}
 
 	png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
 	if (!png) {
-		std::cerr << "Failed to create PNG write struct" << std::endl;
-		fclose(file);
-		return;
+	std::cerr << "Failed to create PNG write struct" << std::endl;
+	fclose(file);
+	return;
 	}
 
 	png_infop info = png_create_info_struct(png);
 	if (!info) {
-		std::cerr << "Failed to create PNG info struct" << std::endl;
-		png_destroy_write_struct(&png, nullptr);
-		fclose(file);
-		return;
+	std::cerr << "Failed to create PNG info struct" << std::endl;
+	png_destroy_write_struct(&png, nullptr);
+	fclose(file);
+	return;
 	}
 
 	if (setjmp(png_jmpbuf(png))) {
-		std::cerr << "Error writing PNG file" << std::endl;
-		png_destroy_write_struct(&png, &info);
-		fclose(file);
-		return;
+	std::cerr << "Error writing PNG file" << std::endl;
+	png_destroy_write_struct(&png, &info);
+	fclose(file);
+	return;
 	}
 
 	png_init_io(png, file);
@@ -237,7 +235,7 @@ static MchpCamStill *app = nullptr;
 static void sigHandler([[maybe_unused]]int signal)
 {
 	if (app)
-		app->stop();
+	app->stop();
 	exit(0);
 }
 
@@ -269,7 +267,6 @@ void printUsage(const char *argv0)
 int main(int argc, char **argv)
 {
 	app = MchpCamStill::getInstance();
-
 	static struct option long_options[] = {
                {"output",               required_argument, 0, 'o'},
                {"width",                required_argument, 0, 'w'},
@@ -362,16 +359,15 @@ int main(int argc, char **argv)
 	}
 
 	if (width != 0 && height != 0) {
-		app->setResolution(width, height);
+	app->setResolution(width, height);
 	}
 
 	std::cout << "Requested resolution: " << app->getWidth() << "x" << app->getHeight() << std::endl;
 
 	if (app->init(cameraId) < 0)
-		return -1;
+	return -1;
 
 	signal(SIGINT, sigHandler);
-
 	app->captureStill(output);
 
 	return 0;
