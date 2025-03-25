@@ -15,22 +15,22 @@ using namespace std::chrono_literals;
 
 MchpCamCommon::MchpCamCommon()
 	: stream_(nullptr),
-	width_(640),
-	height_(480),
-	pixelFormat_(formats::YUYV),
+	width_(1920),
+	height_(1080),
+	pixelFormat_(formats::RGB565),	// Default to RGB565 for better quality
 	running_(false),
 	brightness_(1),
 	contrast_(18),
 	whiteBalanceAutomatic_(false),
-	gamma_(0),
+	gamma_(1),
 	red_component_gain_(1944),
 	blue_component_gain_(3404),
 	green_red_component_gain_(1103),
 	green_blue_component_gain_(1619),
-	red_component_offset_(-264),
-	blue_component_offset_(-256),
-	green_red_component_offset_(-272),
-	green_blue_component_offset_(-272)
+	red_component_offset_(7928),
+	blue_component_offset_(7936),
+	green_red_component_offset_(7920),
+	green_blue_component_offset_(7920)
 {
 }
 
@@ -151,18 +151,22 @@ void MchpCamCommon::stop()
 
 void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
 {
+	// Support common resolutions
 	if ((width == 640 && height == 480) ||
-	    (width == 1640 && height == 1232) ||
-	    (width == 1920 && height == 1080) ||
-	    (width == 3264 && height == 2464)) {
-		width_ = width;
-		height_ = height;
-		std::cout << "Setting resolution to: " << width_ << "x" << height_ << std::endl;
+	(width == 1280 && height == 720) ||
+	(width == 1640 && height == 1232) ||
+	(width == 1920 && height == 1080) ||
+	(width == 2560 && height == 1920) ||
+	(width == 3264 && height == 2464)) {
+	width_ = width;
+	height_ = height;
+	std::cout << "Setting resolution to: " << width_ << "x" << height_ << std::endl;
 	} else {
-		std::cerr << "Unsupported resolution: " << width << "x" << height
-			  << ". Falling back to default (640x480)." << std::endl;
-		width_ = 640;
-		height_ = 480;
+	// Default to 1920x1080 for good balance of quality and speed
+	width_ = 1920;
+	height_ = 1080;
+	std::cerr << "Unsupported resolution: " << width << "x" << height
+	<< ". Setting to 1920x1080." << std::endl;
 	}
 }
 
@@ -173,8 +177,9 @@ void MchpCamCommon::setFormat(const std::string &format)
 	else if (format == "RGB565")
 	pixelFormat_ = formats::RGB565;
 	else {
-		std::cerr << "Unsupported format: " << format << ". Using default (YUYV)." << std::endl;
-		pixelFormat_ = formats::YUYV;
+	std::cerr << "Unsupported format: " << format << ". Options are YUYV, RGB565." << std::endl;
+	std::cerr << "Using RGB565 for best quality." << std::endl;
+	pixelFormat_ = formats::RGB565;
 	}
 }
 
