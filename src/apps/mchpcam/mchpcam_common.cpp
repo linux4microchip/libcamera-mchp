@@ -66,15 +66,20 @@ int MchpCamCommon::applyAWBDefaults(libcamera::ControlList& controls, const AWBP
 int MchpCamCommon::init(const std::string &cameraId)
 {
 	cameraManager_ = std::make_unique<CameraManager>();
-	cameraManager_->start();
+	int ret = cameraManager_->start();
+	if (ret) {
+	std::cerr << "Failed to start camera manager" << std::endl;
+	return ret;
+	}
 
+	// Camera selection logic
 	if (cameraId.empty()) {
-		auto cameras = cameraManager_->cameras();
-		if (cameras.empty()) {
-			std::cerr << "No cameras available" << std::endl;
-			return -1;
-		}
-		camera_ = cameraManager_->get(cameras[0]->id());
+	auto cameras = cameraManager_->cameras();
+	if (cameras.empty()) {
+	std::cerr << "No cameras available" << std::endl;
+	return -ENODEV;
+	}
+	camera_ = cameraManager_->get(cameras[0]->id());
 	} else {
 	camera_ = cameraManager_->get(cameraId);
 	}
@@ -89,11 +94,14 @@ int MchpCamCommon::init(const std::string &cameraId)
 	return -1;
 	}
 
-	config_ = camera_->generateConfiguration({ StreamRole::Viewfinder });
-	config_->at(0).pixelFormat = pixelFormat_;
-	config_->at(0).size = Size(width_, height_);
+	// Generate configuration for still capture
+	config_ = camera_->generateConfiguration({ StreamRole::StillCapture });
 
-	std::cout << "Attempting to configure camera with resolution: " << width_ << "x" << height_ << std::endl;
+	// Configure stream with quality settings
+	StreamConfiguration &captureConfig = config_->at(0);
+	captureConfig.pixelFormat = pixelFormat_;
+	captureConfig.size = Size(width_, height_);
+	captureConfig.bufferCount = 1;	// Single buffer for speed
 
 	CameraConfiguration::Status status = config_->validate();
 	if (status == CameraConfiguration::Invalid) {
@@ -102,17 +110,21 @@ int MchpCamCommon::init(const std::string &cameraId)
 	}
 
 	if (status == CameraConfiguration::Adjusted) {
-		std::cout << "Camera configuration adjusted" << std::endl;
-		width_ = config_->at(0).size.width;
-		height_ = config_->at(0).size.height;
+	std::cout << "Camera configuration adjusted" << std::endl;
+	width_ = captureConfig.size.width;
+	height_ = captureConfig.size.height;
+	pixelFormat_ = captureConfig.pixelFormat;
 	}
 
-	if (camera_->configure(config_.get()) < 0) {
-		std::cerr << "Failed to configure camera" << std::endl;
-		return -1;
+	ret = camera_->configure(config_.get());
+	if (ret < 0) {
+	std::cerr << "Failed to configure camera" << std::endl;
+	return ret;
 	}
 
-	std::cout << "Actual configured resolution: " << width_ << "x" << height_ << std::endl;
+	// Show actual configured format after camera configuration
+	std::cout << "Camera configured with format: " << captureConfig.pixelFormat.toString()
+	<< " (" << width_ << "x" << height_ << ")" << std::endl;
 
 	allocator_ = std::make_unique<FrameBufferAllocator>(camera_);
 	for (StreamConfiguration &cfg : *config_) {

@@ -73,6 +73,7 @@ protected:
 	std::unique_ptr<libcamera::FrameBufferAllocator> allocator_;
 	std::vector<std::unique_ptr<libcamera::Request>> requests_;
 	libcamera::Stream *stream_;
+	bool captureComplete_;
 	unsigned int width_;
 	unsigned int height_;
 	libcamera::PixelFormat pixelFormat_;
