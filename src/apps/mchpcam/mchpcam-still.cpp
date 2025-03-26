@@ -33,8 +33,22 @@ public:
 	void setImageFormat(const std::string &format) {
 	imageFormat_ = format;
 	}
+	void setAWBMode(int mode) {
+	awbMode_ = mode;
+	std::cout << "AWB mode set to " << mode << std::endl;
+	}
 	int captureStill(const std::string &filename);
+	void setEnableSoftwareProcessing(bool enable) { enableSoftwareProcessing_ = enable; }
 	void setRawCapture(bool enable) { rawCapture_ = enable; }
+
+	/* New methods for algorithm control */
+	void setEnableAGC(bool enable) { enableAGC_ = enable; }
+	void setEnableBLC(bool enable) { enableBLC_ = enable; }
+	void setEnableAWB(bool enable) { enableAWB_ = enable; }
+	void setEnableCCM(bool enable) { enableCCM_ = enable; }
+	void setEnableAllProcessing(bool enable) {
+	enableAGC_ = enableBLC_ = enableAWB_ = enableCCM_ = enable;
+	}
 
 protected:
 	void saveFrame(const FrameBuffer *buffer, const std::string &filename) override;
@@ -42,9 +56,26 @@ protected:
 private:
 	MchpCamStill() : MchpCamCommon(),
 	imageFormat_("jpeg"),
-	rawCapture_(false) {}
+	enableSoftwareProcessing_(false),
+	rawCapture_(false),
+	jpeg_quality_(95),
+	png_compression_(6),
+	enableAGC_(true),
+	enableBLC_(false),
+	enableAWB_(true),
+	enableCCM_(true) {}
 	std::string imageFormat_;
+	bool enableSoftwareProcessing_;
 	bool rawCapture_;
+	int awbMode_ = 0; /* Default to auto (WB_AUTO) */
+
+
+	/* Algorithm control flags */
+	bool enableAGC_;
+	bool enableBLC_;
+	bool enableAWB_;
+	bool enableCCM_;
+	mchpcam::ImageProcessingParams processingParams_;
 
 	void saveJpeg(const unsigned char *data, int width, int height, const std::string &filename);
 	void savePng(const unsigned char *data, int width, int height, const std::string &filename);
@@ -53,7 +84,13 @@ private:
 
 int MchpCamStill::captureStill(const std::string &filename)
 {
-	ControlList controls;
+	if (requests_.empty() || !requests_[0]) {
+	std::cerr << "No valid request available" << std::endl;
+	return -EINVAL;
+	}
+
+	/* Set up controls */
+	ControlList controls(camera_->controls());
 
 	/* Add other basic controls using the setControl helper function */
 	auto setControl = [&](const ControlId *id, auto value) {
@@ -81,16 +118,38 @@ int MchpCamStill::captureStill(const std::string &filename)
 	return ret;
 	}
 
-	std::this_thread::sleep_for(std::chrono::seconds(1));
+	/* Wait for capture to complete - optimized for speed but enough time for processing */
+	std::cout << "Capturing image..." << std::endl;
+	/* Use shorter wait times for faster capture */
+	auto wait_time = width_ >= 1920 ? std::chrono::milliseconds(1500) : std::chrono::milliseconds(800);
+	std::this_thread::sleep_for(wait_time);
+
 	camera_->stop();
 
-	const FrameBuffer *buffer = requests_[0]->buffers().begin()->second;
-	if (!buffer) {
-		std::cerr << "No buffer received" << std::endl;
-		return -1;
+	/* Find and save capture buffer */
+	const auto &buffers = requests_[0]->buffers();
+	for (const auto &[stream, buffer] : buffers) {
+	if (stream == stream_) {
+	std::cout << "Captured image with resolution: "
+	<< width_ << "x" << height_ << std::endl;
+
+	/* Check for AGC/BLC parameters in request metadata */
+	const ControlList &metadata = requests_[0]->metadata();
+
+	/* Use hardcoded constants */
+	constexpr uint32_t AUTO_GAIN_ID = 0x009819d1;
+	constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
+
+	/* Check for AUTO_GAIN_ID */
+	if (metadata.contains(AUTO_GAIN_ID)) {
+	processingParams_.gainValue = metadata.get(AUTO_GAIN_ID).get<int32_t>();
 	}
 
-	std::cout << "Capturing image with resolution: " << width_ << "x" << height_ << std::endl;
+	/* Check for BLACK_LEVEL_ID */
+	if (metadata.contains(BLACK_LEVEL_ID)) {
+	processingParams_.blackLevel = metadata.get(BLACK_LEVEL_ID).get<int32_t>();
+	}
+
 	saveFrame(buffer, filename);
 	break;
 	}
@@ -116,6 +175,137 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	return;
 	}
 
+	/* Apply software processing if enabled */
+	if (enableSoftwareProcessing_) {
+	/* Check for metadata from the request */
+	const ControlList &metadata = requests_[0]->metadata();
+
+	/* Setup processing parameters */
+	mchpcam::ImageProcessingParams processingParams;
+	bool hasParams = false;
+
+	/* Configure which algorithms to enable */
+	processingParams.enableAGC = enableAGC_;
+	processingParams.enableBLC = enableBLC_;
+	processingParams.enableAWB = enableAWB_;
+	processingParams.enableCCM = enableCCM_;
+
+	/* Set AWB mode */
+	processingParams.awbMode = awbMode_;
+
+	/* Get AGC gain */
+	constexpr uint32_t AUTO_GAIN_ID = 0x009819d1;
+	if (metadata.contains(AUTO_GAIN_ID)) {
+	processingParams.gainValue = metadata.get(AUTO_GAIN_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	/* Get BLC level */
+	constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
+	if (metadata.contains(BLACK_LEVEL_ID)) {
+	processingParams.blackLevel = metadata.get(BLACK_LEVEL_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	/* Get AWB parameters - use the correct control IDs */
+	constexpr uint32_t RED_GAIN_ID = 0x009819c0;
+	constexpr uint32_t BLUE_GAIN_ID = 0x009819c1;
+	constexpr uint32_t GREEN_RED_GAIN_ID = 0x009819c2;
+	constexpr uint32_t GREEN_BLUE_GAIN_ID = 0x009819c3;
+	constexpr uint32_t RED_OFFSET_ID = 0x009819c4;
+	constexpr uint32_t BLUE_OFFSET_ID = 0x009819c5;
+	constexpr uint32_t GREEN_RED_OFFSET_ID = 0x009819c6;
+	constexpr uint32_t GREEN_BLUE_OFFSET_ID = 0x009819c7;
+
+	/* Extract AWB gains if available */
+	if (metadata.contains(RED_GAIN_ID)) {
+	processingParams.awbParams.redGain = metadata.get(RED_GAIN_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	if (metadata.contains(BLUE_GAIN_ID)) {
+	processingParams.awbParams.blueGain = metadata.get(BLUE_GAIN_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	if (metadata.contains(GREEN_RED_GAIN_ID)) {
+	processingParams.awbParams.greenRedGain = metadata.get(GREEN_RED_GAIN_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	if (metadata.contains(GREEN_BLUE_GAIN_ID)) {
+	processingParams.awbParams.greenBlueGain = metadata.get(GREEN_BLUE_GAIN_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	/* Extract AWB offsets if available */
+	if (metadata.contains(RED_OFFSET_ID)) {
+	processingParams.awbParams.redOffset = metadata.get(RED_OFFSET_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	if (metadata.contains(BLUE_OFFSET_ID)) {
+	processingParams.awbParams.blueOffset = metadata.get(BLUE_OFFSET_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	if (metadata.contains(GREEN_RED_OFFSET_ID)) {
+	processingParams.awbParams.greenRedOffset = metadata.get(GREEN_RED_OFFSET_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	if (metadata.contains(GREEN_BLUE_OFFSET_ID)) {
+	processingParams.awbParams.greenBlueOffset = metadata.get(GREEN_BLUE_OFFSET_ID).get<int32_t>();
+	hasParams = true;
+	}
+
+	/* Get CCM parameters */
+	constexpr std::array<uint32_t, 9> CCM_COEFF_IDS = {
+	0x009819e0, 0x009819e1, 0x009819e2,  /* CCM_COEFF_00_ID, CCM_COEFF_01_ID, CCM_COEFF_02_ID */
+	0x009819e3, 0x009819e4, 0x009819e5,  /* CCM_COEFF_10_ID, CCM_COEFF_11_ID, CCM_COEFF_12_ID */
+	0x009819e6, 0x009819e7, 0x009819e8	 /* CCM_COEFF_20_ID, CCM_COEFF_21_ID, CCM_COEFF_22_ID */
+	};
+
+	constexpr std::array<uint32_t, 3> CCM_OFFSET_IDS = {
+	0x009819e9, 0x009819ea, 0x009819eb	/* CCM_OFFSET_R_ID, CCM_OFFSET_G_ID, CCM_OFFSET_B_ID */
+	};
+
+	/* Check if at least one CCM coefficient exists */
+	if (metadata.contains(CCM_COEFF_IDS[0])) {
+	/* Get all CCM coefficients */
+	for (size_t i = 0; i < CCM_COEFF_IDS.size(); i++) {
+	if (metadata.contains(CCM_COEFF_IDS[i])) {
+	processingParams.ccmMatrix[i] = metadata.get(CCM_COEFF_IDS[i]).get<int32_t>();
+	}
+	}
+
+	/* Get CCM offsets */
+	for (size_t i = 0; i < CCM_OFFSET_IDS.size(); i++) {
+	if (metadata.contains(CCM_OFFSET_IDS[i])) {
+	processingParams.ccmOffset[i] = metadata.get(CCM_OFFSET_IDS[i]).get<int32_t>();
+	}
+	}
+
+	/* Get color temperature if available */
+	constexpr uint32_t SCENE_COLOR_CORRECTION_ID = 0x009819d2;
+	if (metadata.contains(SCENE_COLOR_CORRECTION_ID)) {
+	processingParams.colorTemperature =
+	metadata.get(SCENE_COLOR_CORRECTION_ID).get<int32_t>();
+	}
+
+	hasParams = true;
+	}
+
+	/* Apply all processing to the image data if we have parameters */
+	if (hasParams) {
+	mchpcam::ImageProcessor::applySoftwareProcessing(
+	processedData.data(), width_, height_, processingParams);
+	} else {
+	std::cout << "No processing parameters found in metadata" << std::endl;
+	}
+	}
+
+	/* Buffer for RGB888 data (used for PNG/JPEG output) */
 	std::vector<uint8_t> rgbBuffer(width_ * height_ * 3);
 
 	if (pixelFormat_ == formats::YUYV) {
