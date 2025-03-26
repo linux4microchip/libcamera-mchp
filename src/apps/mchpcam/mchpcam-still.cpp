@@ -56,17 +56,8 @@ int MchpCamStill::captureStill(const std::string &filename)
 
 	setControl(&controls::Brightness, brightness_);
 	setControl(&controls::Contrast, contrast_);
-	setControl(&controls::AwbEnable, whiteBalanceAutomatic_);
 	setControl(&controls::Gamma, gamma_);
-	setControl(&controls::microchip::RedGain, red_component_gain_);
-	setControl(&controls::microchip::GreenRedGain, green_red_component_gain_);
-	setControl(&controls::microchip::BlueGain, blue_component_gain_);
-	setControl(&controls::microchip::GreenBlueGain, green_blue_component_gain_);
-	setControl(&controls::microchip::RedOffset, red_component_offset_);
-	setControl(&controls::microchip::GreenRedOffset, green_red_component_offset_);
-	setControl(&controls::microchip::BlueOffset, blue_component_offset_);
-	setControl(&controls::microchip::GreenBlueOffset, green_blue_component_offset_);
-
+  MchpCamCommon::applyAWBDefaults(controls, awbParams_);
 
 	int ret = camera_->start(&controls);
 	if (ret < 0) {

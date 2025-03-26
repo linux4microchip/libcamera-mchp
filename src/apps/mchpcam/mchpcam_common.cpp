@@ -22,21 +22,45 @@ MchpCamCommon::MchpCamCommon()
 	brightness_(1),
 	contrast_(18),
 	whiteBalanceAutomatic_(false),
-	gamma_(1),
-	red_component_gain_(1944),
-	blue_component_gain_(3404),
-	green_red_component_gain_(1103),
-	green_blue_component_gain_(1619),
-	red_component_offset_(7928),
-	blue_component_offset_(7936),
-	green_red_component_offset_(7920),
-	green_blue_component_offset_(7920)
+	gamma_(1)
 {
 }
 
 MchpCamCommon::~MchpCamCommon()
 {
 	stop();
+}
+
+int MchpCamCommon::applyAWBDefaults(libcamera::ControlList& controls, const AWBParameters& params)
+{
+    std::cout << "Applying Default AWB parameters :" << std::endl;
+    std::cout << "    Red Gain: " << params.redGain << std::endl;
+    std::cout << "    Blue Gain: " << params.blueGain << std::endl;
+    std::cout << "    Green-Red Gain: " << params.greenRedGain << std::endl;
+    std::cout << "    Green-Blue Gain: " << params.greenBlueGain << std::endl;
+    std::cout << "    Red Offset: " << params.redOffset << std::endl;
+    std::cout << "    Blue Offset: " << params.blueOffset << std::endl;
+    std::cout << "    Green-Red Offset: " << params.greenRedOffset << std::endl;
+    std::cout << "    Green-Blue Offset: " << params.greenBlueOffset << std::endl;
+
+    // Use a helper function
+    auto setControl = [&](const libcamera::ControlId *id, auto value) {
+        controls.set(id->id(), libcamera::ControlValue(value));
+    };
+
+    // Set white balance parameters
+    setControl(&libcamera::controls::microchip::RedGain, params.redGain);
+    setControl(&libcamera::controls::microchip::BlueGain, params.blueGain);
+    setControl(&libcamera::controls::microchip::GreenRedGain, params.greenRedGain);
+    setControl(&libcamera::controls::microchip::GreenBlueGain, params.greenBlueGain);
+    setControl(&libcamera::controls::microchip::RedOffset, params.redOffset);
+    setControl(&libcamera::controls::microchip::BlueOffset, params.blueOffset);
+    setControl(&libcamera::controls::microchip::GreenRedOffset, params.greenRedOffset);
+    setControl(&libcamera::controls::microchip::GreenBlueOffset, params.greenBlueOffset);
+
+    // Disable automatic white balance to use manual parameters
+    setControl(&libcamera::controls::AwbEnable, false);
+    return 0;
 }
 
 int MchpCamCommon::init(const std::string &cameraId)
@@ -230,14 +254,14 @@ void MchpCamCommon::initializeControls()
 	initControl(&controls::Contrast, contrast_);
 	initControl(&controls::AwbEnable, whiteBalanceAutomatic_);
 	initControl(&controls::Gamma, gamma_);
-	initControl(&controls::microchip::RedGain, red_component_gain_);
-	initControl(&controls::microchip::BlueGain, blue_component_gain_);
-	initControl(&controls::microchip::GreenRedGain, green_red_component_gain_);
-	initControl(&controls::microchip::GreenBlueGain, green_blue_component_gain_);
-	initControl(&controls::microchip::RedOffset, red_component_offset_);
-	initControl(&controls::microchip::BlueOffset, blue_component_offset_);
-	initControl(&controls::microchip::GreenRedOffset, green_red_component_offset_);
-	initControl(&controls::microchip::GreenBlueOffset, green_blue_component_offset_);
+	initControl(&controls::microchip::RedGain, awbParams_.redGain);
+	initControl(&controls::microchip::BlueGain, awbParams_.blueGain);
+	initControl(&controls::microchip::GreenRedGain, awbParams_.greenRedGain);
+	initControl(&controls::microchip::GreenBlueGain, awbParams_.greenBlueGain);
+	initControl(&controls::microchip::RedOffset, awbParams_.redOffset);
+	initControl(&controls::microchip::BlueOffset, awbParams_.blueOffset);
+	initControl(&controls::microchip::GreenRedOffset, awbParams_.greenRedOffset);
+	initControl(&controls::microchip::GreenBlueOffset, awbParams_.greenBlueOffset);
 	}
 }
 
@@ -268,40 +292,40 @@ void MchpCamCommon::setGamma(int value)
 
 void MchpCamCommon::setRedGain(int value)
 {
-	red_component_gain_ = value;
+	awbParams_.redGain = value;
 }
 
 void MchpCamCommon::setGreenRedGain(int value)
 {
-	green_red_component_gain_ = value;
+	awbParams_.greenRedGain = value;
 }
 
 void MchpCamCommon::setBlueGain(int value)
 {
-	blue_component_gain_ = value;
+	awbParams_.blueGain = value;
 }
 
 void MchpCamCommon::setGreenBlueGain(int value)
 {
-	green_blue_component_gain_ = value;
+	awbParams_.greenBlueGain = value;
 }
 
 void MchpCamCommon::setRedOffset(int value)
 {
-	red_component_offset_ = value;
+	awbParams_.redOffset = value;
 }
 
 void MchpCamCommon::setGreenRedOffset(int value)
 {
-	green_red_component_offset_ = value;
+	awbParams_.greenRedOffset = value;
 }
 
 void MchpCamCommon::setBlueOffset(int value)
 {
-	blue_component_offset_ = value;
+	awbParams_.blueOffset = value;
 }
 
 void MchpCamCommon::setGreenBlueOffset(int value)
 {
-	green_blue_component_offset_ = value;
+	awbParams_.greenBlueOffset = value;
 }

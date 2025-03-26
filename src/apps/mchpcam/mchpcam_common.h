@@ -20,6 +20,25 @@
 
 using namespace libcamera;
 
+struct AWBParameters {
+		int redGain;
+		int blueGain;
+		int greenRedGain;
+		int greenBlueGain;
+		int redOffset;
+		int blueOffset;
+		int greenRedOffset;
+		int greenBlueOffset;
+
+		// Constructor with defaults
+		AWBParameters()
+			: redGain(1944), blueGain(3404),
+				greenRedGain(1103), greenBlueGain(1619),
+				redOffset(7928), blueOffset(7936),
+				greenRedOffset(7920), greenBlueOffset(7920)
+		{}
+};
+
 class MchpCamCommon {
 public:
 	MchpCamCommon();
@@ -30,10 +49,14 @@ public:
 	void setFormat(const std::string &format);
 	unsigned int getWidth() const { return width_; }
 	unsigned int getHeight() const { return height_; }
+	virtual void setAWBParameters(const AWBParameters& params) {
+		awbParams_ = params;
+	}
 	virtual void setBrightness(int value);
 	virtual void setContrast(int value);
 	virtual void setWhiteBalanceAutomatic(bool value);
 	virtual void setGamma(int value);
+	static int applyAWBDefaults(libcamera::ControlList& controls, const AWBParameters& params);
 	virtual void setRedGain(int value);
 	virtual void setGreenRedGain(int value);
 	virtual void setBlueGain(int value);
@@ -58,14 +81,7 @@ protected:
 	int contrast_;
 	bool whiteBalanceAutomatic_;
 	int gamma_;
-	int red_component_gain_;
-	int blue_component_gain_;
-	int green_red_component_gain_;
-	int green_blue_component_gain_;
-	int red_component_offset_;
-	int blue_component_offset_;
-	int green_red_component_offset_;
-	int green_blue_component_offset_;
+	AWBParameters awbParams_;
 
 	void requestComplete(libcamera::Request *request);
 	virtual void processFrame(const libcamera::FrameBuffer *buffer);
