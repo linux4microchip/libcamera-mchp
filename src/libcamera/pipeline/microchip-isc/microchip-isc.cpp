@@ -16,6 +16,7 @@
 #include <string>
 #include <sstream>
 #include <filesystem>
+#include <sys/mman.h>
 
 #include <linux/media.h>
 #include <linux/media-bus-format.h>
@@ -43,6 +44,8 @@
 #include "libcamera/internal/request.h"
 #include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/ipa_manager.h"
+#include <libcamera/ipa/microchip_isc_ipa_interface.h>
+#include <libcamera/ipa/microchip_isc_ipa_proxy.h>
 
 
 namespace libcamera {
@@ -55,10 +58,16 @@ class MicrochipISCCameraData : public Camera::Private
 {
 public:
 	MicrochipISCCameraData(PipelineHandler *pipe, MediaDevice *media)
-		: Camera::Private(pipe), media_(media)
+		: Camera::Private(pipe), media_(media), bufferCount(0)
 	{
 		streams_.resize(2);
+		/* Create IPA proxy instead of direct AWB implementation */
+		awbIPA_ = IPAManager::createIPA<ipa::microchip_isc::IPAProxyMicrochipISC>(pipe, 1, 1);
+		if (awbIPA_)
+			awbIPA_->awbComplete.connect(this, &MicrochipISCCameraData::awbComplete);
 	}
+
+	void setPipeHandler(PipelineHandlerMicrochipISC *pipe){ pipe_=pipe; }
 
 	int init();
 	int setupLinks();
@@ -82,7 +91,12 @@ public:
 	std::vector<Configuration> configs_;
 	std::map<PixelFormat, std::vector<const Configuration *>> formats_;
 	MediaDevice *media_;
+	std::unique_ptr<ipa::microchip_isc::IPAProxyMicrochipISC> awbIPA_;
+	unsigned int bufferCount;
 private:
+	PipelineHandlerMicrochipISC *pipe_;
+	void awbComplete([[maybe_unused]] unsigned int bufferId,
+			const ControlList &metadata);
 	void tryPipeline(unsigned int code, const Size &size);
 
 	MicrochipISCCameraData *cameraData(Camera *camera)
@@ -125,6 +139,16 @@ public:
 	{
 	}
 
+	int processControlRequest(ControlList *controls, unsigned int id, const ControlValue &value)
+	{
+		return processControl(controls, id, value);
+	}
+
+	const std::vector<Request *> &activeRequests() const
+	{
+		return activeRequests_;
+	}
+
 	std::unique_ptr<CameraConfiguration> generateConfiguration(Camera *camera,
 			Span<const StreamRole> roles) override;
 	int configure(Camera *camera, CameraConfiguration *config) override;
@@ -135,7 +159,11 @@ public:
 	int queueRequestDevice(Camera *camera, Request *request) override;
 	bool match(DeviceEnumerator *enumerator) override;
 	std::string generateId(const MediaEntity *entity);
+	bool processingComplete_ = false;
+	Request *processingRequest_ = nullptr;
 private:
+	MicrochipISCCameraData *activeData_ = nullptr;
+	std::vector<Request *> activeRequests_;
 	MicrochipISCCameraData *cameraData(Camera *camera)
 	{
 		return static_cast<MicrochipISCCameraData *>(camera->_d());
@@ -310,6 +338,13 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	}
 
 	std::unique_ptr<MicrochipISCCameraData> data = std::make_unique<MicrochipISCCameraData>(this, media);
+	data->setPipeHandler(this);
+
+	if (data->awbIPA_) {
+		LOG(MicrochipISC, Debug) << "AWB IPA module loaded successfully";
+	} else {
+		LOG(MicrochipISC, Error) << "Failed to load AWB IPA module";
+	}
 
 	int ret;
 	for (MediaEntity *entity : media->entities()) {
@@ -368,6 +403,7 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *c)
 {
 	MicrochipISCCameraData *data = cameraData(camera);
+	activeData_=data;
 	MicrochipISCCameraConfiguration *config =
 		static_cast<MicrochipISCCameraConfiguration *>(c);
 	int ret;
@@ -406,6 +442,23 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		return ret;
 	}
 
+	/* Update only the AWB IPA configuration part */
+	if (data->awbIPA_) {
+		ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo;
+		sensorInfo.model = data->sensor_->model();
+		sensorInfo.width = format.size.width;		/* Use the format size we just set */
+		sensorInfo.height = format.size.height;
+		sensorInfo.pixelFormat = format.code;
+
+		std::map<unsigned int, IPAStream> streamConfig;
+		std::map<unsigned int, ControlInfoMap> entityControls;
+		ret = data->awbIPA_->configure(sensorInfo, streamConfig, entityControls);
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "Failed to configure IPA";
+			return ret;
+		}
+	}
+
 	for (unsigned int i = 0; i < c->size(); ++i) {
 		StreamConfiguration &cfg = c->at(i);
 		cfg.setStream(&data->streams_[i]);
@@ -424,7 +477,14 @@ int PipelineHandlerMicrochipISC::exportFrameBuffers(Camera *camera, Stream *stre
 	LOG(MicrochipISC, Debug) << "Exporting " << count << " frame buffers for stream "
 		<< stream->configuration().toString();
 
-	return data->iscVideo_->exportBuffers(count, buffers);
+	/* Export buffers for the specified stream */
+	int ret = data->iscVideo_->exportBuffers(count, buffers);
+	if (ret < 0) {
+		LOG(MicrochipISC, Error) << "Failed to export buffers for stream " << stream->configuration().toString();
+		return ret;
+	}
+
+	return 0;
 }
 
 int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const ControlList *controls)
@@ -432,20 +492,47 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 	MicrochipISCCameraData *data = cameraData(camera);
 	unsigned int count = 0;
 
+	LOG(MicrochipISC, Debug) << "Starting camera " << camera->id();
+
+	/* Disable V4L2 AWB and configure IPA */
+	ControlList awbCtrls(data->iscVideo_->controls());
+	awbCtrls.set(V4L2_CID_AUTO_WHITE_BALANCE, 0);
+	int awbRet = data->iscVideo_->setControls(&awbCtrls);
+	if (awbRet < 0) {
+		LOG(MicrochipISC, Warning) << "Failed to disable V4L2 AWB, will use as fallback";
+		awbCtrls.set(V4L2_CID_AUTO_WHITE_BALANCE, 1);
+		data->iscVideo_->setControls(&awbCtrls);
+	}
+
+	if (data->awbIPA_) {
+		int ipaRet = data->awbIPA_->start();
+		if (ipaRet < 0) {
+			LOG(MicrochipISC, Error) << "Failed to start IPA";
+			return ipaRet;
+		}
+	}
+
+	/* Count total buffers needed */
 	for (const auto& stream : data->streams_) {
 		count += stream.configuration().bufferCount;
 	}
 
 	LOG(MicrochipISC, Debug) << "Starting camera " << camera->id() << " with " << count << " buffers";
 
-	int ret = data->iscVideo_->importBuffers(count);
-	if (ret < 0) {
-		LOG(MicrochipISC, Error) << "Failed to import buffers: " << strerror(-ret);
-		return ret;
+	/* Check if buffers are already imported */
+	if (data->bufferCount == 0) {
+		int ret = data->iscVideo_->importBuffers(count);
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "Failed to import buffers: " << strerror(-ret);
+			return ret;
+		}
+		data->bufferCount = count;
+	} else {
+		LOG(MicrochipISC, Debug) << "Buffers already imported, count: " << data->bufferCount;
 	}
 
 	V4L2DeviceFormat format;
-	ret = data->iscVideo_->getFormat(&format);
+	int ret = data->iscVideo_->getFormat(&format);
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to get current format: " << strerror(-ret);
 		return ret;
@@ -456,6 +543,7 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to start streaming: " << strerror(-ret);
 		data->iscVideo_->releaseBuffers();
+		data->bufferCount = 0;
 		return ret;
 	}
 
@@ -560,34 +648,6 @@ int PipelineHandlerMicrochipISC::processControls(MicrochipISCCameraData *data, R
 	if (ret) {
 		LOG(MicrochipISC, Error) << "Failed to set controls: " << ret;
 		return ret < 0 ? ret : -EINVAL;
-	}
-
-	return 0;
-}
-
-int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *request)
-{
-	MicrochipISCCameraData *data = cameraData(camera);
-
-	LOG(MicrochipISC, Debug) << "Queueing request for camera " << camera->id();
-
-	int ret = processControls(data, request);
-	if (ret < 0) {
-		LOG(MicrochipISC, Error) << "Failed to process controls: " << ret;
-		return ret;
-	}
-
-	for (Stream &stream : data->streams_) {
-		FrameBuffer *buffer = request->findBuffer(&stream);
-		if (buffer) {
-			LOG(MicrochipISC, Debug) << "Queueing buffer for stream "
-				<< stream.configuration().toString();
-			ret = data->iscVideo_->queueBuffer(buffer);
-			if (ret < 0) {
-				LOG(MicrochipISC, Error) << "Failed to queue buffer: " << ret;
-				return ret;
-			}
-		}
 	}
 
 	return 0;
@@ -702,6 +762,34 @@ int MicrochipISCCameraData::init()
 
 	LOG(MicrochipISC, Debug) << "ControlInfoMap initialized";
 
+	/* Initialize AWB IPA if available */
+	if (awbIPA_) {
+		ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo;
+		sensorInfo.model = sensor_->model();
+		sensorInfo.width = sensor_->resolution().width;
+		sensorInfo.height = sensor_->resolution().height;
+
+		auto format = sensor_->getFormat(sensor_->mbusCodes(), sensor_->resolution());
+		sensorInfo.pixelFormat = format.code;
+
+		/* Create empty stream config and control info maps */
+		std::map<unsigned int, IPAStream> streamConfig;
+		std::map<unsigned int, ControlInfoMap> entityControls;
+
+		/* Add controls from video device and sensor */
+		if (iscVideo_)
+			entityControls[0] = iscVideo_->controls();
+		if (sensor_)
+			entityControls[1] = sensor_->controls();
+
+		/* Configure IPA with all required parameters */
+		int ret = awbIPA_->configure(sensorInfo, streamConfig, entityControls);
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "Failed to configure AWB IPA";
+			return ret;
+		}
+	}
+
 	LOG(MicrochipISC, Debug) << "Camera data initialized successfully";
 	return 0;
 }
@@ -797,6 +885,116 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
 	}
 }
 
+void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
+		const ControlList &metadata)
+{
+	if (!iscVideo_)
+		return;
+
+	/* Skip hardware parameter application - we'll handle everything in software */
+	/* Add all parameters to the request metadata */
+	if (pipe_->processingRequest_) {
+		bool metadataAdded = false;
+
+		/* Add AGC and BLC parameters */
+		constexpr uint32_t AUTO_GAIN_ID = 0x009819d1;
+		constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
+
+		/* Forward AGC gain to request metadata */
+		if (metadata.contains(AUTO_GAIN_ID)) {
+			int32_t gainValue = metadata.get(AUTO_GAIN_ID).get<int32_t>();
+			pipe_->processingRequest_->metadata().set(AUTO_GAIN_ID, gainValue);
+			LOG(MicrochipISC, Debug) << "Added AGC gain to metadata: " << gainValue;
+			metadataAdded = true;
+		}
+
+		/* Forward BLC level to request metadata */
+		if (metadata.contains(BLACK_LEVEL_ID)) {
+			int32_t blackLevel = metadata.get(BLACK_LEVEL_ID).get<int32_t>();
+			pipe_->processingRequest_->metadata().set(BLACK_LEVEL_ID, blackLevel);
+			LOG(MicrochipISC, Debug) << "Added BLC level to metadata: " << blackLevel;
+			metadataAdded = true;
+		}
+
+		/* Forward AWB and offsets if available */
+		constexpr std::array<uint32_t, 4> AWB_GAIN_IDS = {
+			0x009819c0, 0x009819c1, 0x009819c2, 0x009819c3
+		};
+
+		constexpr std::array<uint32_t, 4> AWB_OFFSET_IDS = {
+			0x009819c4, 0x009819c5, 0x009819c6, 0x009819c7
+		};
+
+		/* Add AWB gains to metadata with detailed logging */
+		for (const auto &id : AWB_GAIN_IDS) {
+			if (metadata.contains(id)) {
+				int32_t value = metadata.get(id).get<int32_t>();
+				pipe_->processingRequest_->metadata().set(id, value);
+				LOG(MicrochipISC, Debug) << "Added AWB	(0x" << std::hex << id << std::dec << ")	to metadata: " << value;
+				metadataAdded = true;
+			}
+		}
+
+
+		/* Add AWB offsets to metadata with detailed logging */
+		for (const auto &id : AWB_OFFSET_IDS) {
+			if (metadata.contains(id)) {
+				int32_t value = metadata.get(id).get<int32_t>();
+				pipe_->processingRequest_->metadata().set(id, value);
+				LOG(MicrochipISC, Debug) << "Added AWB	(0x" << std::hex << id << std::dec << ")	to metadata: " << value;
+				metadataAdded = true;
+			}
+		}
+
+		/* Forward CCM coefficients and offsets if available */
+		constexpr std::array<uint32_t, 9> CCM_COEFF_IDS = {
+			0x009819e0, 0x009819e1, 0x009819e2,  /* CCM_COEFF_00_ID, CCM_COEFF_01_ID, CCM_COEFF_02_ID */
+			0x009819e3, 0x009819e4, 0x009819e5,  /* CCM_COEFF_10_ID, CCM_COEFF_11_ID, CCM_COEFF_12_ID */
+			0x009819e6, 0x009819e7, 0x009819e8	 /* CCM_COEFF_20_ID, CCM_COEFF_21_ID, CCM_COEFF_22_ID */
+		};
+
+		constexpr std::array<uint32_t, 3> CCM_OFFSET_IDS = {
+			0x009819e9, 0x009819ea, 0x009819eb	/* CCM_OFFSET_R_ID, CCM_OFFSET_G_ID, CCM_OFFSET_B_ID */
+		};
+
+		/* Add CCM matrix coefficients to metadata */
+		for (const auto &id : CCM_COEFF_IDS) {
+			if (metadata.contains(id)) {
+				int32_t value = metadata.get(id).get<int32_t>();
+				pipe_->processingRequest_->metadata().set(id, value);
+				LOG(MicrochipISC, Debug) << "Added CCM coefficient (0x" << std::hex << id << std::dec << ") to metadata: " << value;
+				metadataAdded = true;
+			}
+		}
+
+		/* Add CCM offsets to metadata */
+		for (const auto &id : CCM_OFFSET_IDS) {
+			if (metadata.contains(id)) {
+				int32_t value = metadata.get(id).get<int32_t>();
+				pipe_->processingRequest_->metadata().set(id, value);
+				LOG(MicrochipISC, Debug) << "Added CCM offset (0x" << std::hex << id << std::dec << ") to metadata: " << value;
+				metadataAdded = true;
+			}
+		}
+
+		/* Add temperature info if available */
+		constexpr uint32_t SCENE_COLOR_CORRECTION_ID = 0x009819d2;
+		if (metadata.contains(SCENE_COLOR_CORRECTION_ID)) {
+			int32_t value = metadata.get(SCENE_COLOR_CORRECTION_ID).get<int32_t>();
+			pipe_->processingRequest_->metadata().set(SCENE_COLOR_CORRECTION_ID, value);
+			LOG(MicrochipISC, Debug) << "Added color temperature to metadata: " << value << "K";
+			metadataAdded = true;
+		}
+
+		if (metadataAdded) {
+			LOG(MicrochipISC, Debug) << "Added all ISC processing parameters to request metadata for software processing";
+		}
+	}
+
+	/* Signal that processing is complete */
+	pipe_->processingComplete_ = true;
+}
+
 CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 {
 	Status status = Valid;
@@ -852,6 +1050,29 @@ CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 	return status;
 }
 
+int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *request)
+{
+	MicrochipISCCameraData *data = cameraData(camera);
+
+	/* Process controls first */
+	int ret = processControls(data, request);
+	if (ret < 0)
+		return ret;
+
+	/* Queue all buffers - don't try to process AWB here */
+	for (Stream &stream : data->streams_) {
+		FrameBuffer *buffer = request->findBuffer(&stream);
+		if (buffer) {
+			ret = data->iscVideo_->queueBuffer(buffer);
+			if (ret < 0) {
+				return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
 void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 {
 	Request *request = buffer->request();
@@ -863,6 +1084,54 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 
 	LOG(MicrochipISC, Debug) << "Buffer ready: " << buffer
 		<< ", request: " << request;
+
+	/* Map the buffer memory to access the image data */
+	void *mappedMemory = mmap(NULL, buffer->planes()[0].length, PROT_READ, MAP_SHARED,
+			buffer->planes()[0].fd.get(), buffer->planes()[0].offset);
+
+	if (mappedMemory != MAP_FAILED) {
+		/* Debug the buffer data */
+		const uint8_t* bytes = static_cast<const uint8_t*>(mappedMemory);
+
+		/* Check if buffer contains data */
+		bool bufferHasData = false;
+		for (size_t i = 0; i < std::min(buffer->planes()[0].length, static_cast<size_t>(100)); i++) {
+			if (bytes[i] != 0) {
+				bufferHasData = true;
+				break;
+			}
+		}
+
+		LOG(MicrochipISC, Debug) << "Buffer data all zeros: "
+			<< (bufferHasData ? "no" : "yes");
+
+		/* Debug first few bytes */
+		std::stringstream hexBytes;
+		hexBytes << "Buffer data (first 16 bytes): ";
+		for (size_t i = 0; i < std::min(buffer->planes()[0].length, static_cast<size_t>(16)); i++) {
+			hexBytes << std::hex << std::setw(2) << std::setfill('0')
+				<< static_cast<int>(bytes[i]) << " ";
+		}
+		LOG(MicrochipISC, Debug) << hexBytes.str();
+
+		/* Process the data with the IPA asynchronously */
+		processingRequest_ = request;
+
+		/* Create control list with pixel data for the IPA */
+		ControlList controls(controls::controls);
+		controls.set(ipa::microchip_isc::ISC_PIXEL_VALUES_ID,
+				Span<const uint8_t>(bytes, buffer->planes()[0].length));
+
+		/* Process stats asynchronously - the awbComplete callback will be called later */
+		if (activeData_ && activeData_->awbIPA_) {
+			LOG(MicrochipISC, Debug) << "Sending buffer to IPA for async processing";
+			activeData_->awbIPA_->processStats(controls);
+		}
+
+		munmap(mappedMemory, buffer->planes()[0].length);
+	} else {
+		LOG(MicrochipISC, Error) << "Failed to map buffer memory: " << strerror(errno);
+	}
 
 	if (!request->metadata().contains(controls::SensorTimestamp.id()))
 		request->metadata().set(controls::SensorTimestamp,
@@ -889,6 +1158,8 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 		data->iscVideo_->streamOff();
 		data->iscVideo_->releaseBuffers();
 	}
+	if (data->awbIPA_)
+		data->awbIPA_->stop();
 
 	for (const auto &[name, subdev] : data->iscSubdev_) {
 		subdev->close();
