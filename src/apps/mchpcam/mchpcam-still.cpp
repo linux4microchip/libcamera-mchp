@@ -5,6 +5,7 @@
 	* mchpcam - mchpcam-still application for image capture
 	*/
 #include "mchpcam_common.h"
+#include "mchpcam_image_processor.h"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <jpeglib.h>
 #include <png.h>
 #include <sys/mman.h>
+#include <cstring>
 
 using namespace libcamera;
 using namespace std::chrono_literals;

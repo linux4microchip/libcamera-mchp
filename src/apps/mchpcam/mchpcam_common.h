@@ -17,6 +17,8 @@
 #include <libcamera/framebuffer.h>
 #include <libcamera/framebuffer_allocator.h>
 #include <libcamera/stream.h>
+#include <libcamera/property_ids.h>
+#include <libcamera/logging.h>
 
 using namespace libcamera;
 
