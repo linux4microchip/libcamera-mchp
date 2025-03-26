@@ -126,49 +126,58 @@ int MchpCamCommon::init(const std::string &cameraId)
 	std::cout << "Camera configured with format: " << captureConfig.pixelFormat.toString()
 	<< " (" << width_ << "x" << height_ << ")" << std::endl;
 
+	// Allocate buffers
 	allocator_ = std::make_unique<FrameBufferAllocator>(camera_);
 	for (StreamConfiguration &cfg : *config_) {
-		if (allocator_->allocate(cfg.stream()) < 0) {
-			std::cerr << "Failed to allocate buffers" << std::endl;
-			return -1;
-		}
+	Stream *stream = cfg.stream();
+	if (allocator_->allocate(stream) < 0) {
+	std::cerr << "Failed to allocate buffers for stream" << std::endl;
+	return -1;
+	}
+	stream_ = stream;
 	}
 
-	stream_ = config_->at(0).stream();
-	const std::vector<std::unique_ptr<FrameBuffer>> &buffers = allocator_->buffers(stream_);
+	// Create request with buffer for capture
+	requests_.clear();
+	const std::vector<std::unique_ptr<FrameBuffer>> &captureBuffers = allocator_->buffers(stream_);
 
-	for (unsigned int i = 0; i < buffers.size(); ++i) {
-		std::unique_ptr<Request> request = camera_->createRequest();
-		if (!request) {
-			std::cerr << "Can't create request" << std::endl;
-			return -ENOMEM;
-		}
-
-		if (request->addBuffer(stream_, buffers[i].get()) < 0) {
-			std::cerr << "Can't set buffer for request" << std::endl;
-			return -ENOMEM;
-		}
-
-		ControlList &controls = request->controls();
-		controls.set(controls::Brightness, brightness_);
-		controls.set(controls::Contrast, contrast_);
-		controls.set(controls::AwbEnable, whiteBalanceAutomatic_);
-		controls.set(controls::Gamma, gamma_);
-		controls.set(controls::microchip::RedGain.id(), ControlValue(red_component_gain_));
-		controls.set(controls::microchip::BlueGain.id(), ControlValue(blue_component_gain_));
-		controls.set(controls::microchip::GreenRedGain.id(), ControlValue(green_red_component_gain_));
-		controls.set(controls::microchip::GreenBlueGain.id(),ControlValue(green_blue_component_gain_));
-		controls.set(controls::microchip::RedOffset.id(), ControlValue(red_component_offset_));
-		controls.set(controls::microchip::BlueOffset.id(), ControlValue(blue_component_offset_));
-		controls.set(controls::microchip::GreenRedOffset.id(), ControlValue(green_red_component_offset_));
-		controls.set(controls::microchip::GreenBlueOffset.id(), ControlValue(green_blue_component_offset_));
-
-		requests_.push_back(std::move(request));
+	if (captureBuffers.empty()) {
+	std::cerr << "Failed to get buffers" << std::endl;
+	return -ENOMEM;
 	}
+
+	std::unique_ptr<Request> request = camera_->createRequest();
+	if (!request) {
+	std::cerr << "Failed to create request" << std::endl;
+	return -ENOMEM;
+	}
+
+	// Set all controls
+	ControlList controls(camera_->controls());
+	controls.set(controls::Brightness, brightness_);
+	controls.set(controls::Contrast, contrast_);
+	controls.set(controls::AwbEnable, whiteBalanceAutomatic_);
+	controls.set(controls::Gamma, gamma_);
+
+	// Add AWB component controls
+  MchpCamCommon::applyAWBDefaults(controls, awbParams_);
+
+	// Add controls to request
+	request->controls() = controls;
+
+	// Add buffer to request
+	if (request->addBuffer(stream_, captureBuffers[0].get()) < 0) {
+	std::cerr << "Failed to add buffer to request" << std::endl;
+	return -ENOMEM;
+	}
+
+	requests_.push_back(std::move(request));
 
 	camera_->requestCompleted.connect(this, &MchpCamCommon::requestComplete);
-
 	initializeControls();
+
+	std::cout << "Configured for capture: " << width_ << "x" << height_
+	<< " format: " << pixelFormat_.toString() << std::endl;
 
 	return 0;
 }
@@ -224,19 +233,18 @@ void MchpCamCommon::requestComplete(Request *request)
 	if (request->status() == Request::RequestCancelled)
 	return;
 
-	const std::map<const Stream *, FrameBuffer *> &buffers = request->buffers();
-	for (auto [stream, buffer] : buffers) {
-		const FrameMetadata &metadata = buffer->metadata();
-		std::cout << "Sequence: " << std::setw(6) << std::setfill('0') << metadata.sequence
-			<< " Timestamp: " << metadata.timestamp << std::endl;
+	if (!request->buffers().empty()) {
+	const FrameMetadata &metadata = request->buffers().begin()->second->metadata();
+	std::cout << "Sequence: " << std::setw(6) << std::setfill('0')
+	<< metadata.sequence << " timestamp: " << metadata.timestamp
+	<< std::endl;
 
-		if (running_) {
-			processFrame(buffer);
-		}
+	if (running_) {
+	processFrame(request->buffers().begin()->second);
+	}
 	}
 
-	request->reuse(Request::ReuseBuffers);
-	camera_->queueRequest(request);
+	captureComplete_ = true;
 }
 
 void MchpCamCommon::processFrame([[maybe_unused]] const FrameBuffer *buffer)
