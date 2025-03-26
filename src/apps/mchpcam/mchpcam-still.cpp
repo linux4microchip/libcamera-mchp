@@ -40,6 +40,8 @@ public:
 	int captureStill(const std::string &filename);
 	void setEnableSoftwareProcessing(bool enable) { enableSoftwareProcessing_ = enable; }
 	void setRawCapture(bool enable) { rawCapture_ = enable; }
+	void setJpegQuality(int quality) { jpeg_quality_ = std::clamp(quality, 1, 100); }
+	void setPngCompression(int level) { png_compression_ = std::clamp(level, 0, 9); }
 
 	/* New methods for algorithm control */
 	void setEnableAGC(bool enable) { enableAGC_ = enable; }
@@ -67,6 +69,8 @@ private:
 	std::string imageFormat_;
 	bool enableSoftwareProcessing_;
 	bool rawCapture_;
+	int jpeg_quality_;
+	int png_compression_;
 	int awbMode_ = 0; /* Default to auto (WB_AUTO) */
 
 
@@ -166,7 +170,10 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	std::cerr << "Failed to map memory" << std::endl;
 	return;
 	}
-	const unsigned char *planeData = static_cast<const unsigned char*>(mappedMemory);
+
+	/* Create a copy of the buffer data for processing */
+	std::vector<uint8_t> processedData(static_cast<const uint8_t*>(mappedMemory),
+	static_cast<const uint8_t*>(mappedMemory) + plane.length);
 
 	/* If raw capture is enabled, save the raw data directly without processing */
 	if (rawCapture_) {
@@ -308,43 +315,79 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	/* Buffer for RGB888 data (used for PNG/JPEG output) */
 	std::vector<uint8_t> rgbBuffer(width_ * height_ * 3);
 
-	if (pixelFormat_ == formats::YUYV) {
-		/* Convert YUYV to RGB */
-		for (unsigned int y = 0; y < height_; ++y) {
-			for (unsigned int x = 0; x < width_; x += 2) {
-				int y0 = planeData[y * width_ * 2 + x * 2];
-				int u = planeData[y * width_ * 2 + x * 2 + 1];
-				int y1 = planeData[y * width_ * 2 + x * 2 + 2];
-				int v = planeData[y * width_ * 2 + x * 2 + 3];
+	/* Convert based on pixel format */
+	if (pixelFormat_ == formats::RGB565) {
+	/* Convert RGB565 to RGB888 */
+	for (unsigned int y = 0; y < height_; ++y) {
+	for (unsigned int x = 0; x < width_; ++x) {
+	/* RGB565 stores 2 bytes per pixel */
+	uint16_t pixel = processedData[y * width_ * 2 + x * 2] |
+	(processedData[y * width_ * 2 + x * 2 + 1] << 8);
+	/* Extract RGB components (5 bits R, 6 bits G, 5 bits B) */
+	uint8_t r = ((pixel >> 11) & 0x1F) << 3;	/* 5 bits to 8 bits */
+	uint8_t g = ((pixel >> 5) & 0x3F) << 2;		/* 6 bits to 8 bits */
+	uint8_t b = (pixel & 0x1F) << 3;					/* 5 bits to 8 bits */
+	/* Store in RGB buffer with bit expansion for highest quality */
+	rgbBuffer[(y * width_ + x) * 3] = r | (r >> 5);			/* Expand 5-bit to full 8-bit */
+	rgbBuffer[(y * width_ + x) * 3 + 1] = g | (g >> 6); /* Expand 6-bit to full 8-bit */
+	rgbBuffer[(y * width_ + x) * 3 + 2] = b | (b >> 5); /* Expand 5-bit to full 8-bit */
+	}
+	}
+	} else if (pixelFormat_ == formats::YUYV) {
+	/* Convert YUYV to RGB888 with improved coefficients */
+	for (unsigned int y = 0; y < height_; ++y) {
+	for (unsigned int x = 0; x < width_; x += 2) {
+	int y0 = processedData[y * width_ * 2 + x * 2];
+	int u = processedData[y * width_ * 2 + x * 2 + 1];
+	int y1 = processedData[y * width_ * 2 + x * 2 + 2];
+	int v = processedData[y * width_ * 2 + x * 2 + 3];
 
-				rgbBuffer[(y * width_ + x) * 3] = std::clamp(y0 + 1.402 * (v - 128), 0.0, 255.0);
-				rgbBuffer[(y * width_ + x) * 3 + 1] = std::clamp(y0 - 0.344 * (u - 128) - 0.714 * (v - 128), 0.0, 255.0);
-				rgbBuffer[(y * width_ + x) * 3 + 2] = std::clamp(y0 + 1.772 * (u - 128), 0.0, 255.0);
+	/* BT.601 conversion (standard coefficients) */
+	int r0 = std::clamp(y0 + 1.402f * (v - 128), 0.0f, 255.0f);
+	int g0 = std::clamp(y0 - 0.344f * (u - 128) - 0.714f * (v - 128), 0.0f, 255.0f);
+	int b0 = std::clamp(y0 + 1.772f * (u - 128), 0.0f, 255.0f);
 
-				rgbBuffer[(y * width_ + x + 1) * 3] = std::clamp(y1 + 1.402 * (v - 128), 0.0, 255.0);
-				rgbBuffer[(y * width_ + x + 1) * 3 + 1] = std::clamp(y1 - 0.344 * (u - 128) - 0.714 * (v - 128), 0.0, 255.0);
-				rgbBuffer[(y * width_ + x + 1) * 3 + 2] = std::clamp(y1 + 1.772 * (u - 128), 0.0, 255.0);
-			}
-		}
-	} else if (pixelFormat_ == formats::RGB565) {
-		/* Convert RGB565 to RGB888 */
-		for (unsigned int y = 0; y < height_; ++y) {
-			for (unsigned int x = 0; x < width_; ++x) {
-				uint16_t pixel = (planeData[(y * width_ + x) * 2 + 1] << 8) |
-					planeData[(y * width_ + x) * 2];
-				rgbBuffer[(y * width_ + x) * 3] = ((pixel >> 11) & 0x1F) << 3;     /* Red */
-				rgbBuffer[(y * width_ + x) * 3 + 1] = ((pixel >> 5) & 0x3F) << 2;  /* Green */
-				rgbBuffer[(y * width_ + x) * 3 + 2] = (pixel & 0x1F) << 3;         /* Blue */
-			}
-		}
+	int r1 = std::clamp(y1 + 1.402f * (v - 128), 0.0f, 255.0f);
+	int g1 = std::clamp(y1 - 0.344f * (u - 128) - 0.714f * (v - 128), 0.0f, 255.0f);
+	int b1 = std::clamp(y1 + 1.772f * (u - 128), 0.0f, 255.0f);
+
+	rgbBuffer[(y * width_ + x) * 3] = r0;
+	rgbBuffer[(y * width_ + x) * 3 + 1] = g0;
+	rgbBuffer[(y * width_ + x) * 3 + 2] = b0;
+	rgbBuffer[(y * width_ + x + 1) * 3] = r1;
+	rgbBuffer[(y * width_ + x + 1) * 3 + 1] = g1;
+	rgbBuffer[(y * width_ + x + 1) * 3 + 2] = b1;
+	}
+	}
+	} else {
+	std::cerr << "Unsupported pixel format: " << pixelFormat_.toString() << std::endl;
+	munmap(mappedMemory, plane.length);
+	return;
 	}
 
-	if (imageFormat_ == "jpeg") {
-		saveJpeg(rgbBuffer.data(), width_, height_, filename);
+	/* Create appropriate filename with extension if needed */
+	std::string outfilename = filename;
+
+	/* Save in requested format */
+	if (imageFormat_ == "jpeg" || imageFormat_ == "jpg") {
+	if (outfilename.find(".jpg") == std::string::npos &&
+	outfilename.find(".jpeg") == std::string::npos) {
+	outfilename += ".jpg";
+	}
+	saveJpeg(rgbBuffer.data(), width_, height_, outfilename);
 	} else if (imageFormat_ == "png") {
-		savePng(rgbBuffer.data(), width_, height_, filename);
+	if (outfilename.find(".png") == std::string::npos) {
+	outfilename += ".png";
+	}
+	savePng(rgbBuffer.data(), width_, height_, outfilename);
 	} else {
-		std::cerr << "Unsupported image format: " << imageFormat_ << std::endl;
+	/* Default to PNG if format not recognized */
+	if (outfilename.find(".png") == std::string::npos &&
+	outfilename.find(".jpg") == std::string::npos &&
+	outfilename.find(".jpeg") == std::string::npos) {
+	outfilename += ".png";
+	}
+	savePng(rgbBuffer.data(), width_, height_, outfilename);
 	}
 
 	munmap(mappedMemory, plane.length);
@@ -392,7 +435,13 @@ void MchpCamStill::saveJpeg(const unsigned char *data, int width, int height, co
 	cinfo.in_color_space = JCS_RGB;
 
 	jpeg_set_defaults(&cinfo);
-	jpeg_set_quality(&cinfo, 90, TRUE);
+
+	/* Set quality based on user preference */
+	jpeg_set_quality(&cinfo, jpeg_quality_, TRUE);
+
+	/* Set to progressive JPEG for better quality perception */
+	jpeg_simple_progression(&cinfo);
+
 	jpeg_start_compress(&cinfo, TRUE);
 
 	JSAMPROW row_pointer[1];
@@ -405,6 +454,9 @@ void MchpCamStill::saveJpeg(const unsigned char *data, int width, int height, co
 	fclose(file);
 	jpeg_destroy_compress(&cinfo);
 
+	std::cout << "Saved JPEG image to " << filename
+	<< " with quality " << jpeg_quality_ << std::endl;
+}
 void MchpCamStill::savePng(const unsigned char *data, int width, int height, const std::string &filename)
 {
 	FILE *file = fopen(filename.c_str(), "wb");
@@ -436,17 +488,37 @@ void MchpCamStill::savePng(const unsigned char *data, int width, int height, con
 	}
 
 	png_init_io(png, file);
-	png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
-			PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+
+	/* Set PNG compression level to user-defined value */
+	png_set_compression_level(png, png_compression_);
+
+	/* Use RGB color type for high quality */
+	png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGB,
+	PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+	PNG_FILTER_TYPE_DEFAULT);
+
+	/* Add minimal metadata */
+	png_text text_ptr[1];
+	char key0[] = "Software";
+	char text0[] = "Microchip Camera";
+	text_ptr[0].key = key0;
+	text_ptr[0].text = text0;
+	text_ptr[0].compression = PNG_TEXT_COMPRESSION_NONE;
+
+	png_set_text(png, info, text_ptr, 1);
 	png_write_info(png, info);
 
+	/* Write image data row by row for memory efficiency */
 	for (int y = 0; y < height; ++y) {
-		png_write_row(png, const_cast<unsigned char*>(&data[y * width * 3]));
+	png_write_row(png, const_cast<png_bytep>(&data[y * width * 3]));
 	}
 
 	png_write_end(png, nullptr);
 	png_destroy_write_struct(&png, &info);
 	fclose(file);
+
+	std::cout << "Saved PNG image to " << filename
+	<< " with compression level " << png_compression_ << std::endl;
 }
 
 static MchpCamStill *app = nullptr;
@@ -581,7 +653,22 @@ int main(int argc, char **argv)
 	app->setResolution(width, height);
 	}
 
-	std::cout << "Requested resolution: " << app->getWidth() << "x" << app->getHeight() << std::endl;
+	/* Set image format based on file extension if not explicitly specified */
+	if (output.length() > 4) {
+	std::string extension = output.substr(output.length() - 4);
+	std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+	if (extension == ".png") {
+	app->setImageFormat("png");
+	} else if (extension == ".jpg" || extension == "jpeg") {
+	app->setImageFormat("jpeg");
+	} else if (extension == ".raw") {
+	app->setImageFormat("raw");
+	app->setRawCapture(true);
+	}
+	}
+
+	std::cout << "Requested resolution: " << (width != 0 ? width : app->getWidth())
+	<< "x" << (height != 0 ? height : app->getHeight()) << std::endl;
 
 	if (app->init(cameraId) < 0)
 	return -1;
