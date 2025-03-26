@@ -32,7 +32,7 @@ struct AWBParameters {
 		int greenRedOffset;
 		int greenBlueOffset;
 
-		// Constructor with defaults
+		/* Constructor with defaults */
 		AWBParameters()
 			: redGain(1944), blueGain(3404),
 				greenRedGain(1103), greenBlueGain(1619),

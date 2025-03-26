@@ -17,7 +17,7 @@ MchpCamCommon::MchpCamCommon()
 	: stream_(nullptr),
 	width_(1920),
 	height_(1080),
-	pixelFormat_(formats::RGB565),	// Default to RGB565 for better quality
+	pixelFormat_(formats::RGB565),	/* Default to RGB565 for better quality */
 	running_(false),
 	brightness_(1),
 	contrast_(18),
@@ -43,12 +43,12 @@ int MchpCamCommon::applyAWBDefaults(libcamera::ControlList& controls, const AWBP
     std::cout << "    Green-Red Offset: " << params.greenRedOffset << std::endl;
     std::cout << "    Green-Blue Offset: " << params.greenBlueOffset << std::endl;
 
-    // Use a helper function
+    /* Use a helper function */
     auto setControl = [&](const libcamera::ControlId *id, auto value) {
         controls.set(id->id(), libcamera::ControlValue(value));
     };
 
-    // Set white balance parameters
+    /* Set white balance parameters */
     setControl(&libcamera::controls::microchip::RedGain, params.redGain);
     setControl(&libcamera::controls::microchip::BlueGain, params.blueGain);
     setControl(&libcamera::controls::microchip::GreenRedGain, params.greenRedGain);
@@ -58,7 +58,7 @@ int MchpCamCommon::applyAWBDefaults(libcamera::ControlList& controls, const AWBP
     setControl(&libcamera::controls::microchip::GreenRedOffset, params.greenRedOffset);
     setControl(&libcamera::controls::microchip::GreenBlueOffset, params.greenBlueOffset);
 
-    // Disable automatic white balance to use manual parameters
+    /* Disable automatic white balance to use manual parameters */
     setControl(&libcamera::controls::AwbEnable, false);
     return 0;
 }
@@ -72,7 +72,7 @@ int MchpCamCommon::init(const std::string &cameraId)
 	return ret;
 	}
 
-	// Camera selection logic
+	/* Camera selection logic */
 	if (cameraId.empty()) {
 	auto cameras = cameraManager_->cameras();
 	if (cameras.empty()) {
@@ -94,14 +94,14 @@ int MchpCamCommon::init(const std::string &cameraId)
 	return -1;
 	}
 
-	// Generate configuration for still capture
+	/* Generate configuration for still capture */
 	config_ = camera_->generateConfiguration({ StreamRole::StillCapture });
 
-	// Configure stream with quality settings
+	/* Configure stream with quality settings */
 	StreamConfiguration &captureConfig = config_->at(0);
 	captureConfig.pixelFormat = pixelFormat_;
 	captureConfig.size = Size(width_, height_);
-	captureConfig.bufferCount = 1;	// Single buffer for speed
+	captureConfig.bufferCount = 1;	/* Single buffer for speed */
 
 	CameraConfiguration::Status status = config_->validate();
 	if (status == CameraConfiguration::Invalid) {
@@ -122,11 +122,11 @@ int MchpCamCommon::init(const std::string &cameraId)
 	return ret;
 	}
 
-	// Show actual configured format after camera configuration
+	/* Show actual configured format after camera configuration */
 	std::cout << "Camera configured with format: " << captureConfig.pixelFormat.toString()
 	<< " (" << width_ << "x" << height_ << ")" << std::endl;
 
-	// Allocate buffers
+	/* Allocate buffers */
 	allocator_ = std::make_unique<FrameBufferAllocator>(camera_);
 	for (StreamConfiguration &cfg : *config_) {
 	Stream *stream = cfg.stream();
@@ -137,7 +137,7 @@ int MchpCamCommon::init(const std::string &cameraId)
 	stream_ = stream;
 	}
 
-	// Create request with buffer for capture
+	/* Create request with buffer for capture */
 	requests_.clear();
 	const std::vector<std::unique_ptr<FrameBuffer>> &captureBuffers = allocator_->buffers(stream_);
 
@@ -152,20 +152,20 @@ int MchpCamCommon::init(const std::string &cameraId)
 	return -ENOMEM;
 	}
 
-	// Set all controls
+	/* Set all controls */
 	ControlList controls(camera_->controls());
 	controls.set(controls::Brightness, brightness_);
 	controls.set(controls::Contrast, contrast_);
 	controls.set(controls::AwbEnable, whiteBalanceAutomatic_);
 	controls.set(controls::Gamma, gamma_);
 
-	// Add AWB component controls
+	/* Add AWB component controls */
   MchpCamCommon::applyAWBDefaults(controls, awbParams_);
 
-	// Add controls to request
+	/* Add controls to request */
 	request->controls() = controls;
 
-	// Add buffer to request
+	/* Add buffer to request */
 	if (request->addBuffer(stream_, captureBuffers[0].get()) < 0) {
 	std::cerr << "Failed to add buffer to request" << std::endl;
 	return -ENOMEM;
@@ -196,7 +196,7 @@ void MchpCamCommon::stop()
 
 void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
 {
-	// Support common resolutions
+	/* Support common resolutions */
 	if ((width == 640 && height == 480) ||
 	(width == 1280 && height == 720) ||
 	(width == 1640 && height == 1232) ||
@@ -207,7 +207,7 @@ void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
 	height_ = height;
 	std::cout << "Setting resolution to: " << width_ << "x" << height_ << std::endl;
 	} else {
-	// Default to 1920x1080 for good balance of quality and speed
+	/* Default to 1920x1080 for good balance of quality and speed */
 	width_ = 1920;
 	height_ = 1080;
 	std::cerr << "Unsupported resolution: " << width << "x" << height

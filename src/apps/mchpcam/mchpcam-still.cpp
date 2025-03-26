@@ -31,31 +31,38 @@ public:
 	return &instance;
 	}
 	void setImageFormat(const std::string &format) {
-		imageFormat_ = format;
+	imageFormat_ = format;
 	}
 	int captureStill(const std::string &filename);
+	void setRawCapture(bool enable) { rawCapture_ = enable; }
 
 protected:
 	void saveFrame(const FrameBuffer *buffer, const std::string &filename) override;
 
 private:
-	MchpCamStill() : MchpCamCommon(), imageFormat_("jpeg") {}
+	MchpCamStill() : MchpCamCommon(),
+	imageFormat_("jpeg"),
+	rawCapture_(false) {}
 	std::string imageFormat_;
+	bool rawCapture_;
 
 	void saveJpeg(const unsigned char *data, int width, int height, const std::string &filename);
 	void savePng(const unsigned char *data, int width, int height, const std::string &filename);
+	void saveRaw(const unsigned char *data, size_t size, const std::string &filename);
 };
 
 int MchpCamStill::captureStill(const std::string &filename)
 {
 	ControlList controls;
 
+	/* Add other basic controls using the setControl helper function */
 	auto setControl = [&](const ControlId *id, auto value) {
 	if (camera_->controls().count(id)) {
 	controls.set(id->id(), ControlValue(value));
 	}
 	};
 
+	/* Basic controls */
 	setControl(&controls::Brightness, brightness_);
 	setControl(&controls::Contrast, contrast_);
 	setControl(&controls::Gamma, gamma_);
@@ -97,10 +104,17 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	const FrameBuffer::Plane &plane = buffer->planes()[0];
 	void *mappedMemory = mmap(NULL, plane.length, PROT_READ, MAP_SHARED, plane.fd.get(), plane.offset);
 	if (mappedMemory == MAP_FAILED) {
-		std::cerr << "Failed to map memory" << std::endl;
-		return;
+	std::cerr << "Failed to map memory" << std::endl;
+	return;
 	}
 	const unsigned char *planeData = static_cast<const unsigned char*>(mappedMemory);
+
+	/* If raw capture is enabled, save the raw data directly without processing */
+	if (rawCapture_) {
+	saveRaw(static_cast<const unsigned char*>(mappedMemory), plane.length, filename);
+	munmap(mappedMemory, plane.length);
+	return;
+	}
 
 	std::vector<uint8_t> rgbBuffer(width_ * height_ * 3);
 
@@ -144,6 +158,28 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	}
 
 	munmap(mappedMemory, plane.length);
+}
+
+void MchpCamStill::saveRaw(const unsigned char *data, size_t size, const std::string &filename)
+{
+	std::string outfilename = filename;
+
+	/* Ensure .raw extension for raw files */
+	if (outfilename.find(".raw") == std::string::npos) {
+	outfilename += ".raw";
+	}
+
+	std::ofstream file(outfilename, std::ios::binary);
+	if (!file) {
+	std::cerr << "Can't open output file for raw data" << std::endl;
+	return;
+	}
+
+	file.write(reinterpret_cast<const char*>(data), size);
+	file.close();
+
+	std::cout << "Saved raw data to " << outfilename
+	<< " (" << size << " bytes)" << std::endl;
 }
 
 void MchpCamStill::saveJpeg(const unsigned char *data, int width, int height, const std::string &filename)
