@@ -532,123 +532,200 @@ static void sigHandler([[maybe_unused]]int signal)
 
 void printUsage(const char *argv0)
 {
-       std::cout << "Usage: " << argv0 << " [options]" << std::endl;
-       std::cout << "Options:" << std::endl;
-       std::cout << "  -o, --output=FILE              Output file name (default: output.jpg)" << std::endl;
-       std::cout << "  -w, --width=WIDTH              Set capture width" << std::endl;
-       std::cout << "  -h, --height=HEIGHT            Set capture height" << std::endl;
-       std::cout << "  -f, --format=FORMAT            Set pixel format (YUYV, RGB565)" << std::endl;
-       std::cout << "  -i, --image-format=FORMAT      Set image format (jpeg, png)" << std::endl;
-       std::cout << "  -c, --camera=ID                Set camera ID" << std::endl;
-       std::cout << "  -b, --brightness=VALUE         Set brightness (-100 to 100)" << std::endl;
-       std::cout << "  -n, --contrast=VALUE           Set contrast (0 to 100)" << std::endl;
-       std::cout << "  -a, --white-balance-auto=VALUE Set white balance automatic (0 or 1)" << std::endl;
-       std::cout << "  -g, --gamma=VALUE              Set gamma (0 to 500)" << std::endl;
-       std::cout << "  -r, --red-gain=VALUE           Set red component gain (0 to 8191)" << std::endl;
-       std::cout << "  -m, --blue-gain=VALUE          Set blue component gain (0 to 8191)" << std::endl;
-       std::cout << "  -v, --green-red-gain=VALUE     Set green-red component gain (0 to 8191)" << std::endl;
-       std::cout << "  -q, --green-blue-gain=VALUE    Set green-blue component gain (0 to 8191)" << std::endl;
-       std::cout << "  -R, --red-offset=VALUE         Set red component offset (-4095 to 4095)" << std::endl;
-       std::cout << "  -M, --blue-offset=VALUE        Set blue component offset (-4095 to 4095)" << std::endl;
-       std::cout << "  -V, --green-red-offset=VALUE   Set green-red component offset (-4095 to 4095)" << std::endl;
-       std::cout << "  -Q, --green-blue-offset=VALUE  Set green-blue component offset (-4095 to 4095)" << std::endl;
-       std::cout << "  -H, --help                     Print this help message" << std::endl;
+	std::cout << "Usage: " << argv0 << " [options]" << std::endl;
+	std::cout << "Camera options:" << std::endl;
+	std::cout << "	-c, --camera=CAMERA          Camera index or name" << std::endl;
+	std::cout << "	-o, --output=FILE            Output file name (default: output.jpg)" << std::endl;
+	std::cout << "	-f, --format=FORMAT          Set pixel format (YUYV, RGB565)" << std::endl;
+	std::cout << "	--width=WIDTH                Set capture width" << std::endl;
+	std::cout << "	--height=HEIGHT              Set capture height" << std::endl;
+
+	std::cout << "\nImage options:" << std::endl;
+	std::cout << "	--jpeg-quality=VALUE         Set JPEG quality (1-100, default: 95)" << std::endl;
+	std::cout << "	--png-compression=VALUE      Set PNG compression level (0-9, default: 6)" << std::endl;
+	std::cout << "	--raw                        Save raw sensor data instead of processed image" << std::endl;
+	std::cout << "	--image-format=FORMAT        Set output image format (jpeg, png, raw)" << std::endl;
+
+	std::cout << "\nImage processing options:" << std::endl;
+	std::cout << "	--brightness=VALUE           Set brightness (-100 to 100)" << std::endl;
+	std::cout << "	--contrast=VALUE             Set contrast (0 to 100)" << std::endl;
+	std::cout << "	--gamma=VALUE                Set gamma (0 to 2)" << std::endl;
+	std::cout << "	--enable-processing          Enable software image processing" << std::endl;
+
+	std::cout << "\nWhite balance options:" << std::endl;
+	std::cout << "	--awb=MODE                   Set white balance mode (auto, daylight, cloudy, tungsten, fluorescent, shade, manual)" << std::endl;
+	std::cout << "	--awb-enable                 Enable auto white balance" << std::endl;
+	std::cout << "	--red-gain=VALUE             Set red component gain (0 to 8191)" << std::endl;
+	std::cout << "	--blue-gain=VALUE            Set blue component gain (0 to 8191)" << std::endl;
+	std::cout << "	--green-red-gain=VALUE       Set green-red component gain (0 to 8191)" << std::endl;
+	std::cout << "	--green-blue-gain=VALUE      Set green-blue component gain (0 to 8191)" << std::endl;
+	std::cout << "	--red-offset=VALUE           Set red component offset (-4095 to 4095)" << std::endl;
+	std::cout << "	--blue-offset=VALUE          Set blue component offset (-4095 to 4095)" << std::endl;
+	std::cout << "	--green-red-offset=VALUE     Set green-red component offset (-4095 to 4095)" << std::endl;
+	std::cout << "	--green-blue-offset=VALUE    Set green-blue component offset (-4095 to 4095)" << std::endl;
+
+	std::cout << "\nAlgorithm options:" << std::endl;
+	std::cout << "	--enable-agc                 Enable Automatic Gain Control" << std::endl;
+	std::cout << "	--enable-blc                 Enable Black Level Correction" << std::endl;
+	std::cout << "	--enable-ccm                 Enable Color Correction Matrix" << std::endl;
+	std::cout << "	--enable-awb                 Enable Software Auto white balance processing" << std::endl;
+	std::cout << "	--enable-all                 Enable all image processing algorithms" << std::endl;
+
+	std::cout << "\nGeneral options:" << std::endl;
+	std::cout << "	-h, --help                   Print this help message" << std::endl;
 }
 
 int main(int argc, char **argv)
 {
 	app = MchpCamStill::getInstance();
 	static struct option long_options[] = {
-               {"output",               required_argument, 0, 'o'},
-               {"width",                required_argument, 0, 'w'},
-               {"height",               required_argument, 0, 'h'},
-               {"format",               required_argument, 0, 'f'},
-               {"camera",               required_argument, 0, 'c'},
-               {"brightness",           required_argument, 0, 'b'},
-               {"contrast",             required_argument, 0, 'n'},
-               {"white-balance-auto",   required_argument, 0, 'a'},
-               {"gamma",                required_argument, 0, 'g'},
-               {"red-gain",             required_argument, 0, 'r'},
-               {"blue-gain",            required_argument, 0, 'm'},
-               {"green-red-gain",       required_argument, 0, 'v'},
-               {"green-blue-gain",      required_argument, 0, 'q'},
-               {"red-offset",           required_argument, 0, 'R'},
-               {"blue-offset",          required_argument, 0, 'M'},
-               {"green-red-offset",     required_argument, 0, 'V'},
-               {"green-blue-offset",    required_argument, 0, 'Q'},
-               {"help",                 no_argument,       0, 'H'},
-               {0, 0, 0, 0}
-        };
-
+	{"camera",							required_argument, 0, 'c'},
+	{"output",							required_argument, 0, 'o'},
+	{"format",							required_argument, 0, 'f'},
+	{"width",								required_argument, 0, 0},
+	{"height",							required_argument, 0, 0},
+	{"jpeg-quality",				required_argument, 0, 0},
+	{"png-compression",			required_argument, 0, 0},
+	{"raw",									no_argument,			 0, 0},
+	{"image-format",				required_argument, 0, 0},
+	{"brightness",					required_argument, 0, 0},
+	{"contrast",						required_argument, 0, 0},
+	{"gamma",								required_argument, 0, 0},
+	{"enable-processing",		no_argument,			 0, 0},
+	{"awb",									required_argument, 0, 0},
+	{"awb-enable",					no_argument,			 0, 0},
+	{"red-gain",						required_argument, 0, 0},
+	{"blue-gain",						required_argument, 0, 0},
+	{"green-red-gain",			required_argument, 0, 0},
+	{"green-blue-gain",			required_argument, 0, 0},
+	{"red-offset",					required_argument, 0, 0},
+	{"blue-offset",					required_argument, 0, 0},
+	{"green-red-offset",		required_argument, 0, 0},
+	{"green-blue-offset",		required_argument, 0, 0},
+	{"enable-agc",					no_argument,			 0, 0},
+	{"enable-blc",					no_argument,			 0, 0},
+	{"enable-ccm",					no_argument,			 0, 0},
+	{"enable-awb",					no_argument,			 0, 0},
+	{"enable-all",					no_argument,			 0, 0},
+	{"help",								no_argument,			 0, 'h'},
+	{0, 0, 0, 0}
+};
 	int option_index = 0;
 	int c;
-	std::string output = "output.jpg";
+	const char* option_name;
+	std::string output = "output.jpg";	/* Default to jpeg */
 	std::string cameraId;
 	unsigned int width = 0, height = 0;
+while ((c = getopt_long(argc, argv, "c:o:f:h", long_options, &option_index)) != -1) {
+	switch (c) {
+	case 'c':
+	cameraId = optarg;
+	break;
+	case 'o':
+	output = optarg;
+	break;
+	case 'f':
+	app->setFormat(optarg);
+	break;
+	case 'h':
+	printUsage(argv[0]);
+	if (app)
+	app->stop();
+	exit(0);
+	break;
+	case 0:
+	/* Handle long options without short equivalents */
+	option_name = long_options[option_index].name;
 
-	while ((c = getopt_long(argc, argv, "o:w:h:f:c:b:n:a:g:r:m:v:R:M:V:Q:H", long_options, &option_index)) != -1) {
-		switch (c) {
-		case 'o':
-			output = optarg;
-			break;
-		case 'w':
-			width = std::stoi(optarg);
-			break;
-		case 'h':
-			height = std::stoi(optarg);
-			break;
-		case 'f':
-			app->setFormat(optarg);
-			break;
-		case 'c':
-			cameraId = optarg;
-			break;
-		case 'b':
-			app->setBrightness(std::stoi(optarg));
-			break;
-		case 'n':
-			app->setContrast(std::stoi(optarg));
-			break;
-		case 'a':
-			app->setWhiteBalanceAutomatic(std::stoi(optarg) != 0);
-			break;
-		case 'g':
-			app->setGamma(std::stoi(optarg));
-			break;
-		case 'r':
-                        app->setRedGain(std::stoi(optarg));  // Min: 0, Max: 8191
-                        break;
-                case 'm':
-                        app->setBlueGain(std::stoi(optarg));  // Min: 0, Max: 8191
-                        break;
-                case 'v':
-                        app->setGreenRedGain(std::stoi(optarg));  // Min: 0, Max: 8191
-                        break;
-                case 'q':
-                        app->setGreenBlueGain(std::stoi(optarg));  // Min: 0, Max: 8191
-                        break;
-                case 'R':
-                        app->setRedOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
-                        break;
-                case 'M':
-                        app->setBlueOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
-                        break;
-                case 'V':
-                        app->setGreenRedOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
-                        break;
-                case 'Q':
-                        app->setGreenBlueOffset(std::stoi(optarg));  // Min: -4095, Max: 4095
-                        break;
-		case 'H':
-		default:
-			printUsage(argv[0]);
-			if (app)
-				app->stop();
-
-			exit(0);
-		}
+	if (strcmp(option_name, "width") == 0)
+	width = std::stoi(optarg);
+	else if (strcmp(option_name, "height") == 0)
+	height = std::stoi(optarg);
+	else if (strcmp(option_name, "jpeg-quality") == 0)
+	app->setJpegQuality(std::stoi(optarg));
+	else if (strcmp(option_name, "png-compression") == 0)
+	app->setPngCompression(std::stoi(optarg));
+	else if (strcmp(option_name, "raw") == 0)
+	app->setRawCapture(true);
+	else if (strcmp(option_name, "image-format") == 0)
+	app->setImageFormat(optarg);
+	else if (strcmp(option_name, "brightness") == 0)
+	app->setBrightness(std::stoi(optarg));
+	else if (strcmp(option_name, "contrast") == 0)
+	app->setContrast(std::stoi(optarg));
+	else if (strcmp(option_name, "gamma") == 0)
+	app->setGamma(std::stoi(optarg));
+	else if (strcmp(option_name, "enable-processing") == 0)
+	app->setEnableSoftwareProcessing(true);
+	else if (strcmp(option_name, "awb") == 0) {
+	/* Handle AWB mode setting */
+	std::string mode = optarg;
+	if (mode == "auto")
+	app->setAWBMode(0);
+	else if (mode == "daylight" || mode == "sunny")
+	app->setAWBMode(1);
+	else if (mode == "cloudy")
+	app->setAWBMode(2);
+	else if (mode == "tungsten" || mode == "incandescent")
+	app->setAWBMode(3);
+	else if (mode == "fluorescent")
+	app->setAWBMode(4);
+	else if (mode == "shade")
+	app->setAWBMode(5);
+	else if (mode == "manual")
+	app->setAWBMode(6);
+	else
+	std::cerr << "Unknown AWB mode: " << mode << ". Using auto." << std::endl;
 	}
+	else if (strcmp(option_name, "awb-enable") == 0)
+	app->setWhiteBalanceAutomatic(true);
+	else if (strcmp(option_name, "red-gain") == 0)
+	app->setRedGain(std::stoi(optarg));
+	else if (strcmp(option_name, "blue-gain") == 0)
+	app->setBlueGain(std::stoi(optarg));
+	else if (strcmp(option_name, "green-red-gain") == 0)
+	app->setGreenRedGain(std::stoi(optarg));
+	else if (strcmp(option_name, "green-blue-gain") == 0)
+	app->setGreenBlueGain(std::stoi(optarg));
+	else if (strcmp(option_name, "red-offset") == 0)
+	app->setRedOffset(std::stoi(optarg));
+	else if (strcmp(option_name, "blue-offset") == 0)
+	app->setBlueOffset(std::stoi(optarg));
+	else if (strcmp(option_name, "green-red-offset") == 0)
+	app->setGreenRedOffset(std::stoi(optarg));
+	else if (strcmp(option_name, "green-blue-offset") == 0)
+	app->setGreenBlueOffset(std::stoi(optarg));
+	else if (strcmp(option_name, "enable-agc") == 0) {
+	app->setEnableAGC(true);
+	app->setEnableSoftwareProcessing(true);
+	}
+	else if (strcmp(option_name, "enable-blc") == 0) {
+	app->setEnableBLC(true);
+	app->setEnableSoftwareProcessing(true);
+	}
+	else if (strcmp(option_name, "enable-ccm") == 0) {
+	app->setEnableCCM(true);
+	app->setEnableSoftwareProcessing(true);
+	}
+	else if (strcmp(option_name, "enable-awb") == 0) {
+	app->setEnableAWB(true);
+	app->setEnableSoftwareProcessing(true);
+	}
+	else if (strcmp(option_name, "enable-all") == 0) {
+	app->setEnableAllProcessing(true);
+	app->setEnableSoftwareProcessing(true);
+	}
+	break;
+	default:
+	printUsage(argv[0]);
+	if (app)
+	app->stop();
+	exit(0);
+	}
+}
 
+
+	/* Set resolution if provided */
 	if (width != 0 && height != 0) {
 	app->setResolution(width, height);
 	}
