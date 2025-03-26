@@ -1,0 +1,94 @@
+module ipa.microchip_isc;
+import "include/libcamera/ipa/core.mojom";
+
+/* Existing AWB Control IDs */
+const uint32 ISC_PIXEL_VALUES_ID = 0x009819ff;
+const uint32 RED_GAIN_ID = 0x009819c0;
+const uint32 BLUE_GAIN_ID = 0x009819c1;
+const uint32 GREEN_RED_GAIN_ID = 0x009819c2;
+const uint32 GREEN_BLUE_GAIN_ID = 0x009819c3;
+const uint32 RED_OFFSET_ID = 0x009819c4;
+const uint32 BLUE_OFFSET_ID = 0x009819c5;
+const uint32 GREEEN_RED_OFFSET_ID = 0x009819c6;
+const uint32 GREEN_BLUE_OFFSET_ID = 0x009819c7;
+
+/* Control IDs for additional algorithms */
+const uint32 BLACK_LEVEL_ID = 0x009819d0;
+const uint32 AUTO_GAIN_ID = 0x009819d1;
+const uint32 SCENE_COLOR_CORRECTION_ID = 0x009819d2;
+
+/* CCM Control IDs */
+const uint32 CCM_COEFF_00_ID = 0x009819e0;
+const uint32 CCM_COEFF_01_ID = 0x009819e1;
+const uint32 CCM_COEFF_02_ID = 0x009819e2;
+const uint32 CCM_COEFF_10_ID = 0x009819e3;
+const uint32 CCM_COEFF_11_ID = 0x009819e4;
+const uint32 CCM_COEFF_12_ID = 0x009819e5;
+const uint32 CCM_COEFF_20_ID = 0x009819e6;
+const uint32 CCM_COEFF_21_ID = 0x009819e7;
+const uint32 CCM_COEFF_22_ID = 0x009819e8;
+const uint32 CCM_OFFSET_R_ID = 0x009819e9;
+const uint32 CCM_OFFSET_G_ID = 0x009819ea;
+const uint32 CCM_OFFSET_B_ID = 0x009819eb;
+
+
+/* Structures for sensor and algorithm statuses */
+struct MicrochipISCSensorInfo {
+	string model;
+	uint32 bitsPerPixel;
+	uint32 width;
+	uint32 height;
+	uint32 pixelFormat;
+};
+
+struct AWBStatus {
+	double redGain;
+	double greenRedGain;
+	double blueGain;
+	double greenBlueGain;
+	int32 redOffset;
+	int32 greenRedOffset;
+	int32 blueOffset;
+	int32 greenBlueOffset;
+	uint32 temperatureK;
+};
+
+struct BlackLevelStatus {
+	int32 blackLevel;
+};
+
+struct AutoGainStatus {
+	int32 gainValue;
+};
+
+struct SceneColorCorrectionStatus {
+	uint32 sceneType;
+	double correctionStrength;
+};
+
+/* New structures for CCM and Gamma */
+struct CCMStatus {
+	array<int32, 9> matrix;
+	array<int32, 3> offset;
+	uint32 colorTemperature;
+};
+
+/* Main IPA interface */
+interface IPAMicrochipISCInterface {
+	init(libcamera.IPASettings settings) => (int32 ret, bool metadataSupport);
+	start() => (int32 ret);
+	stop();
+
+	configure(
+	MicrochipISCSensorInfo sensorInfo,
+	map<uint32, libcamera.IPAStream> streamConfig,
+	map<uint32, libcamera.ControlInfoMap> entityControls
+	) => (int32 ret);
+
+	[async] processStats(libcamera.ControlList stats);
+};
+
+/* Event interface for pipeline handler notifications */
+interface IPAMicrochipISCEventInterface {
+	awbComplete(uint32 bufferId, libcamera.ControlList results);
+};
