@@ -442,12 +442,17 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		return ret;
 	}
 
+	/* Get the actual format that was set */
+		V4L2DeviceFormat actualFormat;
+		if (data->iscVideo_->getFormat(&actualFormat) >= 0) {
+				LOG(MicrochipISC, Debug) << "Actual format set: " << actualFormat.toString();
+
 	/* Update only the AWB IPA configuration part */
 	if (data->awbIPA_) {
 		ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo;
 		sensorInfo.model = data->sensor_->model();
-		sensorInfo.width = format.size.width;		/* Use the format size we just set */
-		sensorInfo.height = format.size.height;
+		sensorInfo.width = actualFormat.size.width;		/* Use the format size we just set */
+		sensorInfo.height = actualFormat.size.height;
 		sensorInfo.pixelFormat = format.code;
 
 		std::map<unsigned int, IPAStream> streamConfig;
@@ -458,11 +463,13 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 			return ret;
 		}
 	}
+		}
 
 	for (unsigned int i = 0; i < c->size(); ++i) {
 		StreamConfiguration &cfg = c->at(i);
 		cfg.setStream(&data->streams_[i]);
 		cfg.stride = captureFormat.planes[0].bpl;
+		cfg.size = captureFormat.size;
 	}
 
 	return 0;
@@ -587,13 +594,13 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	switch (cid) {
 		case V4L2_CID_BRIGHTNESS:
 		case V4L2_CID_CONTRAST: {
-    float fval = value.get<float>();
-    int32_t val = static_cast<int32_t>(std::lroundf(fval));
-    int32_t min = controlInfo.min().get<int32_t>();
-    int32_t max = controlInfo.max().get<int32_t>();
-    controls->set(cid, std::clamp(val, min, max));
-    break;
-    }
+		float fval = value.get<float>();
+		int32_t val = static_cast<int32_t>(std::lroundf(fval));
+		int32_t min = controlInfo.min().get<int32_t>();
+		int32_t max = controlInfo.max().get<int32_t>();
+		controls->set(cid, std::clamp(val, min, max));
+		break;
+		}
 
 		case 0x009819c0: /* Red Gain */
 		case 0x009819c1: /* Blue Gain */
@@ -608,19 +615,19 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
-    }
+		}
 
 		case V4L2_CID_AUTO_WHITE_BALANCE: {
-    bool bval = value.get<bool>();
-    controls->set(cid, static_cast<int32_t>(bval));
-    break;
-    }
+		bool bval = value.get<bool>();
+		controls->set(cid, static_cast<int32_t>(bval));
+		break;
+		}
 
 		default: {
-    LOG(MicrochipISC, Debug) << "Control not yet supported";
-    controls->set(cid, 0);
-    break;
-    }
+		LOG(MicrochipISC, Debug) << "Control not yet supported";
+		controls->set(cid, 0);
+		break;
+		}
 
 	}
 	return 0;
@@ -718,12 +725,47 @@ int MicrochipISCCameraData::init()
 
 	properties_ = sensor_->properties();
 
-	/* Try all formats from formatsMap_ */
-	for (const auto &[pixelFormat, mbusFormat] : MicrochipISCCameraConfiguration::formatsMap_) {
-		for (const Size &size : sensor_->sizes(mbusFormat)) {
-			tryPipeline(mbusFormat, size);
-		}
-	}
+		 /* Find maximum supported resolution for the video device */
+	 Size maxVideoSize(0, 0);
+
+	 /* Get formats from the video device */
+	 V4L2VideoDevice::Formats formats = iscVideo_->formats();
+	 for (const auto &format : formats) {
+			 for (const auto &sizeRange : format.second) {
+					 /* Check if this format's maximum size is larger than our current maximum */
+					 if (sizeRange.max.width > maxVideoSize.width)
+							 maxVideoSize.width = sizeRange.max.width;
+					 if (sizeRange.max.height > maxVideoSize.height)
+							 maxVideoSize.height = sizeRange.max.height;
+			 }
+	 }
+
+	 LOG(MicrochipISC, Debug) << "Maximum video device resolution: " << maxVideoSize.toString();
+
+	 /* Try all formats from formatsMap_ */
+	 for (const auto &[pixelFormat, mbusFormat] : MicrochipISCCameraConfiguration::formatsMap_) {
+			 for (const Size &sensorSize : sensor_->sizes(mbusFormat)) {
+					 /* Create adjusted size that respects video device limits */
+					 Size adjustedSize = sensorSize;
+
+					 /* If the sensor size exceeds video device capability, adjust it */
+					 if (maxVideoSize.width > 0 && maxVideoSize.height > 0) {
+							 if (sensorSize.width > maxVideoSize.width) {
+									 LOG(MicrochipISC, Debug) << "Adjusting width from " << sensorSize.width
+																					 << " to " << maxVideoSize.width;
+									 adjustedSize.width = maxVideoSize.width;
+							 }
+
+							 if (sensorSize.height > maxVideoSize.height) {
+									 LOG(MicrochipISC, Debug) << "Adjusting height from " << sensorSize.height
+																					 << " to " << maxVideoSize.height;
+									 adjustedSize.height = maxVideoSize.height;
+							 }
+					 }
+
+					 tryPipeline(mbusFormat, adjustedSize);
+			 }
+	 }
 
 	if (configs_.empty()) {
 		LOG(MicrochipISC, Error) << "No valid configuration found";
