@@ -52,7 +52,7 @@ namespace libcamera {
 
 LOG_DEFINE_CATEGORY(MicrochipISC)
 
-	class PipelineHandlerMicrochipISC;
+class PipelineHandlerMicrochipISC;
 
 class MicrochipISCCameraData : public Camera::Private
 {
@@ -110,7 +110,7 @@ class MicrochipISCCameraConfiguration : public CameraConfiguration
 public:
 	MicrochipISCCameraConfiguration(MicrochipISCCameraData *data)
 		: CameraConfiguration(), data_(data)
-	{
+		{
 	}
 
 	Status validate() override;
@@ -173,7 +173,7 @@ private:
 	int processControls(MicrochipISCCameraData *data, Request *request);
 	void bufferReady(FrameBuffer *buffer);
 	Size findOptimalSize(const std::vector<MicrochipISCCameraData::Configuration>& configs,
-			const Size& target);
+			     const Size& target);
 	PixelFormat findRawFormat(const std::vector<MicrochipISCCameraData::Configuration>& configs);
 	bool isSupportedConfiguration(const std::vector<MicrochipISCCameraData::Configuration>& configs,
 			const StreamConfiguration& cfg);
@@ -210,79 +210,81 @@ const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::forma
 };
 
 std::unique_ptr<CameraConfiguration>
-	PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
-			Span<const StreamRole> roles)
-	{
-		MicrochipISCCameraData *data = cameraData(camera);
-		std::unique_ptr<MicrochipISCCameraConfiguration> config =
-			std::make_unique<MicrochipISCCameraConfiguration>(data);
+PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
+						   Span<const StreamRole> roles)
+{
+	MicrochipISCCameraData *data = cameraData(camera);
+	std::unique_ptr<MicrochipISCCameraConfiguration> config =
+		std::make_unique<MicrochipISCCameraConfiguration>(data);
 
-		if (roles.empty())
-			return config;
+	if (roles.empty())
+		return config;
 
-		for (StreamRole role : roles) {
-			StreamConfiguration cfg{};
+	for (StreamRole role : roles) {
+		StreamConfiguration cfg{};
 
-			switch (role) {
-				case StreamRole::StillCapture:
-					cfg.pixelFormat = formats::RGB565;
-					cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
-					cfg.bufferCount = 1;
-					break;
+		switch (role) {
+		case StreamRole::StillCapture:
+			cfg.pixelFormat = formats::RGB565;
+			cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
+			cfg.bufferCount = 1;
+			break;
 
-				case StreamRole::VideoRecording:
-					cfg.pixelFormat = formats::YUYV;
-					cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
-					cfg.bufferCount = 4;
-					break;
+		case StreamRole::VideoRecording:
+			cfg.pixelFormat = formats::YUYV;
+			cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
+			cfg.bufferCount = 4;
+			break;
 
-				case StreamRole::Viewfinder:
-					cfg.pixelFormat = formats::YUYV;
-					cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
-					cfg.bufferCount = 2;
-					break;
+		case StreamRole::Viewfinder:
+			cfg.pixelFormat = formats::YUYV;
+			cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
+			cfg.bufferCount = 2;
+			break;
 
-				default:
-					cfg.pixelFormat = data->configs_[0].captureFormat;
-					cfg.size = data->configs_[0].captureSize;
-					cfg.bufferCount = 4;
-					break;
-			}
-
-			if (data->formats_.find(cfg.pixelFormat) == data->formats_.end()) {
-				LOG(MicrochipISC, Warning) << "Unsupported format " << cfg.pixelFormat.toString()
-					<< " for role " << static_cast<int>(role)
-					<< ". Falling back to default.";
-				cfg.pixelFormat = data->configs_[0].captureFormat;
-				cfg.size = data->configs_[0].captureSize;
-			}
-
-			if (!isSupportedConfiguration(data->configs_, cfg)) {
-				LOG(MicrochipISC, Warning) << "Unsupported configuration for role "
-					<< static_cast<int>(role) << ". Falling back to default.";
-				cfg.pixelFormat = data->configs_[0].captureFormat;
-				cfg.size = data->configs_[0].captureSize;
-			}
-
-			config->addConfiguration(cfg);
+		default:
+			cfg.pixelFormat = data->configs_[0].captureFormat;
+			cfg.size = data->configs_[0].captureSize;
+			cfg.bufferCount = 4;
+			break;
 		}
 
-		config->validate();
-		return config;
+		if (data->formats_.find(cfg.pixelFormat) == data->formats_.end()) {
+			LOG(MicrochipISC, Warning) << "Unsupported format " << cfg.pixelFormat.toString()
+						   << " for role " << static_cast<int>(role)
+						   << ". Falling back to default.";
+			cfg.pixelFormat = data->configs_[0].captureFormat;
+			cfg.size = data->configs_[0].captureSize;
+		}
+
+		if (!isSupportedConfiguration(data->configs_, cfg)) {
+			LOG(MicrochipISC, Warning) << "Unsupported configuration for role "
+						   << static_cast<int>(role) << ". Falling back to default.";
+			cfg.pixelFormat = data->configs_[0].captureFormat;
+			cfg.size = data->configs_[0].captureSize;
+		}
+
+		config->addConfiguration(cfg);
 	}
 
+	config->validate();
+	return config;
+}
+
 Size PipelineHandlerMicrochipISC::findOptimalSize(const std::vector<MicrochipISCCameraData::Configuration>& configs,
-		const Size& target)
+						  const Size& target)
 {
 	Size optimal = configs[0].captureSize;
+
 	for (const auto& config : configs) {
 		if (config.captureSize.width <= target.width &&
-				config.captureSize.height <= target.height &&
-				config.captureSize.width * config.captureSize.height >
-				optimal.width * optimal.height) {
+		    config.captureSize.height <= target.height &&
+		    config.captureSize.width * config.captureSize.height >
+		    optimal.width * optimal.height) {
 			optimal = config.captureSize;
 		}
 	}
+
 	return optimal;
 }
 
@@ -321,6 +323,7 @@ bool PipelineHandlerMicrochipISC::isSupportedConfiguration(const std::vector<Mic
 		if (config.captureFormat == cfg.pixelFormat && config.captureSize == cfg.size)
 			return true;
 	}
+
 	return false;
 }
 
@@ -349,27 +352,27 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	int ret;
 	for (MediaEntity *entity : media->entities()) {
 		switch (entity->function()) {
-			case MEDIA_ENT_F_IO_V4L:
-				data->iscVideo_ = std::make_unique<V4L2VideoDevice>(entity);
-				ret = data->iscVideo_->open();
-				if (ret < 0) {
-					LOG(MicrochipISC, Error) << "Failed to open video device: " << strerror(-ret);
-					return false;
-				}
-				LOG(MicrochipISC, Debug) << "Opened video device: " << entity->name();
+		case MEDIA_ENT_F_IO_V4L:
+			data->iscVideo_ = std::make_unique<V4L2VideoDevice>(entity);
+			ret = data->iscVideo_->open();
+			if (ret < 0) {
+				LOG(MicrochipISC, Error) << "Failed to open video device: " << strerror(-ret);
+				return false;
+			}
+			LOG(MicrochipISC, Debug) << "Opened video device: " << entity->name();
 
-				/* Connect the bufferReady signal */
-				data->iscVideo_->bufferReady.connect(this, &PipelineHandlerMicrochipISC::bufferReady);
-				break;
+			/* Connect the bufferReady signal */
+			data->iscVideo_->bufferReady.connect(this, &PipelineHandlerMicrochipISC::bufferReady);
+			break;
 
-			default:
-				/* Handle all other entities, including MEDIA_ENT_F_CAM_SENSOR and MEDIA_INTF_T_V4L_SUBDEV */
-				ret = data->initSubdev(entity);
-				if (ret < 0) {
-					LOG(MicrochipISC, Error) << "Failed to initialize subdevice: " << entity->name();
-					return false;
-				}
-				break;
+		default:
+			/* Handle all other entities, including MEDIA_ENT_F_CAM_SENSOR and MEDIA_INTF_T_V4L_SUBDEV */
+			ret = data->initSubdev(entity);
+			if (ret < 0) {
+				LOG(MicrochipISC, Error) << "Failed to initialize subdevice: " << entity->name();
+				return false;
+			}
+			break;
 		}
 	}
 
@@ -403,7 +406,7 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *c)
 {
 	MicrochipISCCameraData *data = cameraData(camera);
-	activeData_=data;
+	activeData_= data;
 	MicrochipISCCameraConfiguration *config =
 		static_cast<MicrochipISCCameraConfiguration *>(c);
 	int ret;
@@ -443,27 +446,27 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	}
 
 	/* Get the actual format that was set */
-		V4L2DeviceFormat actualFormat;
-		if (data->iscVideo_->getFormat(&actualFormat) >= 0) {
-				LOG(MicrochipISC, Debug) << "Actual format set: " << actualFormat.toString();
+	V4L2DeviceFormat actualFormat;
+	if (data->iscVideo_->getFormat(&actualFormat) >= 0) {
+		LOG(MicrochipISC, Debug) << "Actual format set: " << actualFormat.toString();
 
-	/* Update only the AWB IPA configuration part */
-	if (data->awbIPA_) {
-		ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo;
-		sensorInfo.model = data->sensor_->model();
-		sensorInfo.width = actualFormat.size.width;		/* Use the format size we just set */
-		sensorInfo.height = actualFormat.size.height;
-		sensorInfo.pixelFormat = format.code;
+		/* Update only the AWB IPA configuration part */
+		if (data->awbIPA_) {
+			ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo;
+			sensorInfo.model = data->sensor_->model();
+			sensorInfo.width = actualFormat.size.width;		/* Use the format size we just set */
+			sensorInfo.height = actualFormat.size.height;
+			sensorInfo.pixelFormat = format.code;
 
-		std::map<unsigned int, IPAStream> streamConfig;
-		std::map<unsigned int, ControlInfoMap> entityControls;
-		ret = data->awbIPA_->configure(sensorInfo, streamConfig, entityControls);
-		if (ret < 0) {
-			LOG(MicrochipISC, Error) << "Failed to configure IPA";
-			return ret;
+			std::map<unsigned int, IPAStream> streamConfig;
+			std::map<unsigned int, ControlInfoMap> entityControls;
+			ret = data->awbIPA_->configure(sensorInfo, streamConfig, entityControls);
+			if (ret < 0) {
+				LOG(MicrochipISC, Error) << "Failed to configure IPA";
+				return ret;
+			}
 		}
 	}
-		}
 
 	for (unsigned int i = 0; i < c->size(); ++i) {
 		StreamConfiguration &cfg = c->at(i);
@@ -476,13 +479,13 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 }
 
 int PipelineHandlerMicrochipISC::exportFrameBuffers(Camera *camera, Stream *stream,
-		std::vector<std::unique_ptr<FrameBuffer>> *buffers)
+						    std::vector<std::unique_ptr<FrameBuffer>> *buffers)
 {
 	unsigned int count = stream->configuration().bufferCount;
 	MicrochipISCCameraData *data = cameraData(camera);
 
 	LOG(MicrochipISC, Debug) << "Exporting " << count << " frame buffers for stream "
-		<< stream->configuration().toString();
+				 << stream->configuration().toString();
 
 	/* Export buffers for the specified stream */
 	int ret = data->iscVideo_->exportBuffers(count, buffers);
@@ -559,9 +562,10 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 }
 
 int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned int id,
-		const ControlValue &value)
+						const ControlValue &value)
 {
 	uint32_t cid;
+
 	/* Map libcamera controls to V4L2 controls */
 	if (id == controls::Brightness)
 		cid = V4L2_CID_BRIGHTNESS;
@@ -592,44 +596,40 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	const ControlInfo &controlInfo = controls->infoMap()->at(cid);
 
 	switch (cid) {
-		case V4L2_CID_BRIGHTNESS:
-		case V4L2_CID_CONTRAST: {
+	case V4L2_CID_BRIGHTNESS:
+	case V4L2_CID_CONTRAST:
 		float fval = value.get<float>();
 		int32_t val = static_cast<int32_t>(std::lroundf(fval));
 		int32_t min = controlInfo.min().get<int32_t>();
 		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
-		}
 
-		case 0x009819c0: /* Red Gain */
-		case 0x009819c1: /* Blue Gain */
-		case 0x009819c2: /* Green-Red Gain */
-		case 0x009819c3: /* Green-Blue Gain */
-		case 0x009819c4: /* Red Offset */
-		case 0x009819c5: /* Blue Offset */
-		case 0x009819c6: /* Green-Red Offset */
-		case 0x009819c7: { /* Green-Blue Offset */
+	case 0x009819c0: /* Red Gain */
+	case 0x009819c1: /* Blue Gain */
+	case 0x009819c2: /* Green-Red Gain */
+	case 0x009819c3: /* Green-Blue Gain */
+	case 0x009819c4: /* Red Offset */
+	case 0x009819c5: /* Blue Offset */
+	case 0x009819c6: /* Green-Red Offset */
+	case 0x009819c7: /* Green-Blue Offset */
 		int32_t val = value.get<int32_t>();
 		int32_t min = controlInfo.min().get<int32_t>();
 		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
-		}
 
-		case V4L2_CID_AUTO_WHITE_BALANCE: {
+	case V4L2_CID_AUTO_WHITE_BALANCE:
 		bool bval = value.get<bool>();
 		controls->set(cid, static_cast<int32_t>(bval));
 		break;
-		}
 
-		default: {
+	default:
 		LOG(MicrochipISC, Debug) << "Control not yet supported";
 		controls->set(cid, 0);
 		break;
-		}
-
 	}
+
 	return 0;
 }
 
@@ -725,47 +725,47 @@ int MicrochipISCCameraData::init()
 
 	properties_ = sensor_->properties();
 
-		 /* Find maximum supported resolution for the video device */
-	 Size maxVideoSize(0, 0);
+	/* Find maximum supported resolution for the video device */
+	Size maxVideoSize(0, 0);
 
-	 /* Get formats from the video device */
-	 V4L2VideoDevice::Formats formats = iscVideo_->formats();
-	 for (const auto &format : formats) {
-			 for (const auto &sizeRange : format.second) {
-					 /* Check if this format's maximum size is larger than our current maximum */
-					 if (sizeRange.max.width > maxVideoSize.width)
-							 maxVideoSize.width = sizeRange.max.width;
-					 if (sizeRange.max.height > maxVideoSize.height)
-							 maxVideoSize.height = sizeRange.max.height;
-			 }
-	 }
+	/* Get formats from the video device */
+	V4L2VideoDevice::Formats formats = iscVideo_->formats();
+	for (const auto &format : formats) {
+		for (const auto &sizeRange : format.second) {
+			/* Check if this format's maximum size is larger than our current maximum */
+			if (sizeRange.max.width > maxVideoSize.width)
+				maxVideoSize.width = sizeRange.max.width;
+			if (sizeRange.max.height > maxVideoSize.height)
+				maxVideoSize.height = sizeRange.max.height;
+		}
+	}
 
-	 LOG(MicrochipISC, Debug) << "Maximum video device resolution: " << maxVideoSize.toString();
+	LOG(MicrochipISC, Debug) << "Maximum video device resolution: " << maxVideoSize.toString();
 
-	 /* Try all formats from formatsMap_ */
-	 for (const auto &[pixelFormat, mbusFormat] : MicrochipISCCameraConfiguration::formatsMap_) {
-			 for (const Size &sensorSize : sensor_->sizes(mbusFormat)) {
-					 /* Create adjusted size that respects video device limits */
-					 Size adjustedSize = sensorSize;
+	/* Try all formats from formatsMap_ */
+	for (const auto &[pixelFormat, mbusFormat] : MicrochipISCCameraConfiguration::formatsMap_) {
+		for (const Size &sensorSize : sensor_->sizes(mbusFormat)) {
+			/* Create adjusted size that respects video device limits */
+			Size adjustedSize = sensorSize;
 
-					 /* If the sensor size exceeds video device capability, adjust it */
-					 if (maxVideoSize.width > 0 && maxVideoSize.height > 0) {
-							 if (sensorSize.width > maxVideoSize.width) {
-									 LOG(MicrochipISC, Debug) << "Adjusting width from " << sensorSize.width
-																					 << " to " << maxVideoSize.width;
-									 adjustedSize.width = maxVideoSize.width;
-							 }
+			/* If the sensor size exceeds video device capability, adjust it */
+			if (maxVideoSize.width > 0 && maxVideoSize.height > 0) {
+				if (sensorSize.width > maxVideoSize.width) {
+					LOG(MicrochipISC, Debug) << "Adjusting width from " << sensorSize.width
+								 << " to " << maxVideoSize.width;
+					adjustedSize.width = maxVideoSize.width;
+				}
 
-							 if (sensorSize.height > maxVideoSize.height) {
-									 LOG(MicrochipISC, Debug) << "Adjusting height from " << sensorSize.height
-																					 << " to " << maxVideoSize.height;
-									 adjustedSize.height = maxVideoSize.height;
-							 }
-					 }
+				if (sensorSize.height > maxVideoSize.height) {
+					LOG(MicrochipISC, Debug) << "Adjusting height from " << sensorSize.height
+								 << " to " << maxVideoSize.height;
+					adjustedSize.height = maxVideoSize.height;
+				}
+			}
 
-					 tryPipeline(mbusFormat, adjustedSize);
-			 }
-	 }
+			tryPipeline(mbusFormat, adjustedSize);
+		}
+	}
 
 	if (configs_.empty()) {
 		LOG(MicrochipISC, Error) << "No valid configuration found";
@@ -800,7 +800,7 @@ int MicrochipISCCameraData::init()
 			{ &controls::microchip::BlueOffset, ControlInfo(-4095, 4095, 0) },
 			{ &controls::microchip::GreenRedOffset, ControlInfo(-4095, 4095, 0) },
 			{ &controls::microchip::GreenBlueOffset, ControlInfo(-4095, 4095, 0) },
-			}, controls::controls);
+		}, controls::controls);
 
 	LOG(MicrochipISC, Debug) << "ControlInfoMap initialized";
 
@@ -837,7 +837,7 @@ int MicrochipISCCameraData::init()
 }
 
 int MicrochipISCCameraData::setupFormats(V4L2SubdeviceFormat *format,
-		V4L2Subdevice::Whence whence)
+					 V4L2Subdevice::Whence whence)
 {
 	int ret;
 
@@ -876,9 +876,9 @@ int MicrochipISCCameraData::setupLinks()
 				ret = link->setEnabled(true);
 				if (ret < 0) {
 					LOG(MicrochipISC, Error) << "Failed to enable link: "
-						<< link->source()->entity()->name()
-						<< " -> "
-						<< link->sink()->entity()->name();
+								 << link->source()->entity()->name()
+								 << " -> "
+								 << link->sink()->entity()->name();
 					return ret;
 				}
 			}
@@ -892,7 +892,7 @@ int MicrochipISCCameraData::setupLinks()
 void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
 {
 	LOG(MicrochipISC, Debug) << "Trying pipeline with format " << code
-		<< " and size " << size.toString();
+				 << " and size " << size.toString();
 
 	V4L2SubdeviceFormat format{};
 	format.code = code;
@@ -923,12 +923,12 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
 
 		configs_.push_back(config);
 		LOG(MicrochipISC, Debug) << "Added configuration: " << pixelFormat.toString()
-			<< " " << format.size.toString();
+					 << " " << format.size.toString();
 	}
 }
 
 void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
-		const ControlList &metadata)
+					 const ControlList &metadata)
 {
 	if (!iscVideo_)
 		return;
@@ -976,7 +976,6 @@ void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
 				metadataAdded = true;
 			}
 		}
-
 
 		/* Add AWB offsets to metadata with detailed logging */
 		for (const auto &id : AWB_OFFSET_IDS) {
@@ -1076,7 +1075,7 @@ CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 			pipeConfig_ = configs.front();
 			for (const MicrochipISCCameraData::Configuration *config : configs) {
 				if (config->captureSize.width >= cfg.size.width &&
-						config->captureSize.height >= cfg.size.height) {
+				    config->captureSize.height >= cfg.size.height) {
 					pipeConfig_ = config;
 					break;
 				}
@@ -1120,16 +1119,16 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	Request *request = buffer->request();
 	if (!request) {
 		LOG(MicrochipISC, Warning) << "Buffer " << buffer
-			<< " is not associated with a request";
+					   << " is not associated with a request";
 		return;
 	}
 
 	LOG(MicrochipISC, Debug) << "Buffer ready: " << buffer
-		<< ", request: " << request;
+				 << ", request: " << request;
 
 	/* Map the buffer memory to access the image data */
 	void *mappedMemory = mmap(NULL, buffer->planes()[0].length, PROT_READ, MAP_SHARED,
-			buffer->planes()[0].fd.get(), buffer->planes()[0].offset);
+				  buffer->planes()[0].fd.get(), buffer->planes()[0].offset);
 
 	if (mappedMemory != MAP_FAILED) {
 		/* Debug the buffer data */
@@ -1145,14 +1144,14 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 		}
 
 		LOG(MicrochipISC, Debug) << "Buffer data all zeros: "
-			<< (bufferHasData ? "no" : "yes");
+					 << (bufferHasData ? "no" : "yes");
 
 		/* Debug first few bytes */
 		std::stringstream hexBytes;
 		hexBytes << "Buffer data (first 16 bytes): ";
 		for (size_t i = 0; i < std::min(buffer->planes()[0].length, static_cast<size_t>(16)); i++) {
 			hexBytes << std::hex << std::setw(2) << std::setfill('0')
-				<< static_cast<int>(bytes[i]) << " ";
+				 << static_cast<int>(bytes[i]) << " ";
 		}
 		LOG(MicrochipISC, Debug) << hexBytes.str();
 
@@ -1162,7 +1161,7 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 		/* Create control list with pixel data for the IPA */
 		ControlList controls(controls::controls);
 		controls.set(ipa::microchip_isc::ISC_PIXEL_VALUES_ID,
-				Span<const uint8_t>(bytes, buffer->planes()[0].length));
+			     Span<const uint8_t>(bytes, buffer->planes()[0].length));
 
 		/* Process stats asynchronously - the awbComplete callback will be called later */
 		if (activeData_ && activeData_->awbIPA_) {
@@ -1177,12 +1176,12 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 
 	if (!request->metadata().contains(controls::SensorTimestamp.id()))
 		request->metadata().set(controls::SensorTimestamp,
-				buffer->metadata().timestamp);
+					buffer->metadata().timestamp);
 
 	completeBuffer(request, buffer);
 	if (request->hasPendingBuffers()) {
 		LOG(MicrochipISC, Debug) << "Request " << request
-			<< " still has pending buffers";
+					 << " still has pending buffers";
 		return;
 	}
 
@@ -1200,6 +1199,7 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 		data->iscVideo_->streamOff();
 		data->iscVideo_->releaseBuffers();
 	}
+
 	if (data->awbIPA_)
 		data->awbIPA_->stop();
 
