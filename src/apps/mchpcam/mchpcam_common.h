@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
-	* Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
-	*
-	* mchpcam - common application header
-	*/
+ * Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
+ *
+ * mchpcam - common application header
+ */
 #ifndef MCHPCAM_COMMON_H
 #define MCHPCAM_COMMON_H
 #include <string>
@@ -23,21 +23,21 @@
 using namespace libcamera;
 
 struct AWBParameters {
-		int redGain;
-		int blueGain;
-		int greenRedGain;
-		int greenBlueGain;
-		int redOffset;
-		int blueOffset;
-		int greenRedOffset;
-		int greenBlueOffset;
+	int redGain;
+	int blueGain;
+	int greenRedGain;
+	int greenBlueGain;
+	int redOffset;
+	int blueOffset;
+	int greenRedOffset;
+	int greenBlueOffset;
 
-		/* Constructor with defaults */
-		AWBParameters()
-			: redGain(1944), blueGain(3404),
-				greenRedGain(1103), greenBlueGain(1619),
-				redOffset(7928), blueOffset(7936),
-				greenRedOffset(7920), greenBlueOffset(7920)
+	/* Constructor with defaults */
+	AWBParameters()
+		: redGain(1944), blueGain(3404),
+		  greenRedGain(1103), greenBlueGain(1619),
+		  redOffset(7928), blueOffset(7936),
+		  greenRedOffset(7920), greenBlueOffset(7920)
 		{}
 };
 

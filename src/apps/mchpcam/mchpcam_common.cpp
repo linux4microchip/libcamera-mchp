@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
-	* Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
-	*
-	* mchpcam - common application
-	*/
+ * Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
+ *
+ * mchpcam - common application
+ */
 #include "mchpcam_common.h"
 #include <iostream>
 #include <iomanip>
@@ -15,14 +15,14 @@ using namespace std::chrono_literals;
 
 MchpCamCommon::MchpCamCommon()
 	: stream_(nullptr),
-	width_(1920),
-	height_(1080),
-	pixelFormat_(formats::RGB565),	/* Default to RGB565 for better quality */
-	running_(false),
-	brightness_(1),
-	contrast_(18),
-	whiteBalanceAutomatic_(false),
-	gamma_(1)
+	  width_(1920),
+	  height_(1080),
+	  pixelFormat_(formats::RGB565),	/* Default to RGB565 for better quality */
+	  running_(false),
+	  brightness_(1),
+	  contrast_(18),
+	  whiteBalanceAutomatic_(false),
+	  gamma_(1)
 {
 }
 
@@ -33,34 +33,34 @@ MchpCamCommon::~MchpCamCommon()
 
 int MchpCamCommon::applyAWBDefaults(libcamera::ControlList& controls, const AWBParameters& params)
 {
-    std::cout << "Applying Default AWB parameters :" << std::endl;
-    std::cout << "    Red Gain: " << params.redGain << std::endl;
-    std::cout << "    Blue Gain: " << params.blueGain << std::endl;
-    std::cout << "    Green-Red Gain: " << params.greenRedGain << std::endl;
-    std::cout << "    Green-Blue Gain: " << params.greenBlueGain << std::endl;
-    std::cout << "    Red Offset: " << params.redOffset << std::endl;
-    std::cout << "    Blue Offset: " << params.blueOffset << std::endl;
-    std::cout << "    Green-Red Offset: " << params.greenRedOffset << std::endl;
-    std::cout << "    Green-Blue Offset: " << params.greenBlueOffset << std::endl;
+	std::cout << "Applying Default AWB parameters :" << std::endl;
+	std::cout << "    Red Gain: " << params.redGain << std::endl;
+	std::cout << "    Blue Gain: " << params.blueGain << std::endl;
+	std::cout << "    Green-Red Gain: " << params.greenRedGain << std::endl;
+	std::cout << "    Green-Blue Gain: " << params.greenBlueGain << std::endl;
+	std::cout << "    Red Offset: " << params.redOffset << std::endl;
+	std::cout << "    Blue Offset: " << params.blueOffset << std::endl;
+	std::cout << "    Green-Red Offset: " << params.greenRedOffset << std::endl;
+	std::cout << "    Green-Blue Offset: " << params.greenBlueOffset << std::endl;
 
-    /* Use a helper function */
-    auto setControl = [&](const libcamera::ControlId *id, auto value) {
-        controls.set(id->id(), libcamera::ControlValue(value));
-    };
+	/* Use a helper function */
+	auto setControl = [&](const libcamera::ControlId *id, auto value) {
+		controls.set(id->id(), libcamera::ControlValue(value));
+	};
 
-    /* Set white balance parameters */
-    setControl(&libcamera::controls::microchip::RedGain, params.redGain);
-    setControl(&libcamera::controls::microchip::BlueGain, params.blueGain);
-    setControl(&libcamera::controls::microchip::GreenRedGain, params.greenRedGain);
-    setControl(&libcamera::controls::microchip::GreenBlueGain, params.greenBlueGain);
-    setControl(&libcamera::controls::microchip::RedOffset, params.redOffset);
-    setControl(&libcamera::controls::microchip::BlueOffset, params.blueOffset);
-    setControl(&libcamera::controls::microchip::GreenRedOffset, params.greenRedOffset);
-    setControl(&libcamera::controls::microchip::GreenBlueOffset, params.greenBlueOffset);
+	/* Set white balance parameters */
+	setControl(&libcamera::controls::microchip::RedGain, params.redGain);
+	setControl(&libcamera::controls::microchip::BlueGain, params.blueGain);
+	setControl(&libcamera::controls::microchip::GreenRedGain, params.greenRedGain);
+	setControl(&libcamera::controls::microchip::GreenBlueGain, params.greenBlueGain);
+	setControl(&libcamera::controls::microchip::RedOffset, params.redOffset);
+	setControl(&libcamera::controls::microchip::BlueOffset, params.blueOffset);
+	setControl(&libcamera::controls::microchip::GreenRedOffset, params.greenRedOffset);
+	setControl(&libcamera::controls::microchip::GreenBlueOffset, params.greenBlueOffset);
 
-    /* Disable automatic white balance to use manual parameters */
-    setControl(&libcamera::controls::AwbEnable, false);
-    return 0;
+	/* Disable automatic white balance to use manual parameters */
+	setControl(&libcamera::controls::AwbEnable, false);
+	return 0;
 }
 
 int MchpCamCommon::init(const std::string &cameraId)
@@ -68,30 +68,30 @@ int MchpCamCommon::init(const std::string &cameraId)
 	cameraManager_ = std::make_unique<CameraManager>();
 	int ret = cameraManager_->start();
 	if (ret) {
-	std::cerr << "Failed to start camera manager" << std::endl;
-	return ret;
+		std::cerr << "Failed to start camera manager" << std::endl;
+		return ret;
 	}
 
 	/* Camera selection logic */
 	if (cameraId.empty()) {
-	auto cameras = cameraManager_->cameras();
-	if (cameras.empty()) {
-	std::cerr << "No cameras available" << std::endl;
-	return -ENODEV;
-	}
-	camera_ = cameraManager_->get(cameras[0]->id());
+		auto cameras = cameraManager_->cameras();
+		if (cameras.empty()) {
+			std::cerr << "No cameras available" << std::endl;
+			return -ENODEV;
+		}
+		camera_ = cameraManager_->get(cameras[0]->id());
 	} else {
-	camera_ = cameraManager_->get(cameraId);
+		camera_ = cameraManager_->get(cameraId);
 	}
 
 	if (!camera_) {
-	std::cerr << "Failed to find camera" << std::endl;
-	return -ENODEV;
+		std::cerr << "Failed to find camera" << std::endl;
+		return -ENODEV;
 	}
 
 	if (camera_->acquire() < 0) {
-	std::cerr << "Failed to acquire camera" << std::endl;
-	return -1;
+		std::cerr << "Failed to acquire camera" << std::endl;
+		return -1;
 	}
 
 	/* Generate configuration for still capture */
@@ -105,36 +105,36 @@ int MchpCamCommon::init(const std::string &cameraId)
 
 	CameraConfiguration::Status status = config_->validate();
 	if (status == CameraConfiguration::Invalid) {
-	std::cerr << "Invalid camera configuration" << std::endl;
-	return -1;
+		std::cerr << "Invalid camera configuration" << std::endl;
+		return -1;
 	}
 
 	if (status == CameraConfiguration::Adjusted) {
-	std::cout << "Camera configuration adjusted" << std::endl;
-	width_ = captureConfig.size.width;
-	height_ = captureConfig.size.height;
-	pixelFormat_ = captureConfig.pixelFormat;
+		std::cout << "Camera configuration adjusted" << std::endl;
+		width_ = captureConfig.size.width;
+		height_ = captureConfig.size.height;
+		pixelFormat_ = captureConfig.pixelFormat;
 	}
 
 	ret = camera_->configure(config_.get());
 	if (ret < 0) {
-	std::cerr << "Failed to configure camera" << std::endl;
-	return ret;
+		std::cerr << "Failed to configure camera" << std::endl;
+		return ret;
 	}
 
 	/* Show actual configured format after camera configuration */
 	std::cout << "Camera configured with format: " << captureConfig.pixelFormat.toString()
-	<< " (" << width_ << "x" << height_ << ")" << std::endl;
+		  << " (" << width_ << "x" << height_ << ")" << std::endl;
 
 	/* Allocate buffers */
 	allocator_ = std::make_unique<FrameBufferAllocator>(camera_);
 	for (StreamConfiguration &cfg : *config_) {
-	Stream *stream = cfg.stream();
-	if (allocator_->allocate(stream) < 0) {
-	std::cerr << "Failed to allocate buffers for stream" << std::endl;
-	return -1;
-	}
-	stream_ = stream;
+		Stream *stream = cfg.stream();
+		if (allocator_->allocate(stream) < 0) {
+			std::cerr << "Failed to allocate buffers for stream" << std::endl;
+			return -1;
+		}
+		stream_ = stream;
 	}
 
 	/* Create request with buffer for capture */
@@ -142,14 +142,14 @@ int MchpCamCommon::init(const std::string &cameraId)
 	const std::vector<std::unique_ptr<FrameBuffer>> &captureBuffers = allocator_->buffers(stream_);
 
 	if (captureBuffers.empty()) {
-	std::cerr << "Failed to get buffers" << std::endl;
-	return -ENOMEM;
+		std::cerr << "Failed to get buffers" << std::endl;
+		return -ENOMEM;
 	}
 
 	std::unique_ptr<Request> request = camera_->createRequest();
 	if (!request) {
-	std::cerr << "Failed to create request" << std::endl;
-	return -ENOMEM;
+		std::cerr << "Failed to create request" << std::endl;
+		return -ENOMEM;
 	}
 
 	/* Set all controls */
@@ -160,15 +160,15 @@ int MchpCamCommon::init(const std::string &cameraId)
 	controls.set(controls::Gamma, gamma_);
 
 	/* Add AWB component controls */
-  MchpCamCommon::applyAWBDefaults(controls, awbParams_);
+	MchpCamCommon::applyAWBDefaults(controls, awbParams_);
 
 	/* Add controls to request */
 	request->controls() = controls;
 
 	/* Add buffer to request */
 	if (request->addBuffer(stream_, captureBuffers[0].get()) < 0) {
-	std::cerr << "Failed to add buffer to request" << std::endl;
-	return -ENOMEM;
+		std::cerr << "Failed to add buffer to request" << std::endl;
+		return -ENOMEM;
 	}
 
 	requests_.push_back(std::move(request));
@@ -185,63 +185,64 @@ int MchpCamCommon::init(const std::string &cameraId)
 void MchpCamCommon::stop()
 {
 	if (camera_) {
-	camera_->stop();
-	allocator_->free(stream_);
-	camera_->release();
-	camera_.reset();
+		camera_->stop();
+		allocator_->free(stream_);
+		camera_->release();
+		camera_.reset();
 	}
+
 	if (cameraManager_)
-	cameraManager_->stop();
+		cameraManager_->stop();
 }
 
 void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
 {
 	/* Support common resolutions */
 	if ((width == 640 && height == 480) ||
-	(width == 1280 && height == 720) ||
-	(width == 1640 && height == 1232) ||
-	(width == 1920 && height == 1080) ||
-	(width == 2560 && height == 1920) ||
-	(width == 3264 && height == 2464)) {
-	width_ = width;
-	height_ = height;
-	std::cout << "Setting resolution to: " << width_ << "x" << height_ << std::endl;
+	    (width == 1280 && height == 720) ||
+	    (width == 1640 && height == 1232) ||
+	    (width == 1920 && height == 1080) ||
+	    (width == 2560 && height == 1920) ||
+	    (width == 3264 && height == 2464)) {
+		width_ = width;
+		height_ = height;
+		std::cout << "Setting resolution to: " << width_ << "x" << height_ << std::endl;
 	} else {
-	/* Default to 1920x1080 for good balance of quality and speed */
-	width_ = 1920;
-	height_ = 1080;
-	std::cerr << "Unsupported resolution: " << width << "x" << height
-	<< ". Setting to 1920x1080." << std::endl;
+		/* Default to 1920x1080 for good balance of quality and speed */
+		width_ = 1920;
+		height_ = 1080;
+		std::cerr << "Unsupported resolution: " << width << "x" << height
+			  << ". Setting to 1920x1080." << std::endl;
 	}
 }
 
 void MchpCamCommon::setFormat(const std::string &format)
 {
 	if (format == "YUYV")
-	pixelFormat_ = formats::YUYV;
+		pixelFormat_ = formats::YUYV;
 	else if (format == "RGB565")
-	pixelFormat_ = formats::RGB565;
+		pixelFormat_ = formats::RGB565;
 	else {
-	std::cerr << "Unsupported format: " << format << ". Options are YUYV, RGB565." << std::endl;
-	std::cerr << "Using RGB565 for best quality." << std::endl;
-	pixelFormat_ = formats::RGB565;
+		std::cerr << "Unsupported format: " << format << ". Options are YUYV, RGB565." << std::endl;
+		std::cerr << "Using RGB565 for best quality." << std::endl;
+		pixelFormat_ = formats::RGB565;
 	}
 }
 
 void MchpCamCommon::requestComplete(Request *request)
 {
 	if (request->status() == Request::RequestCancelled)
-	return;
+		return;
 
 	if (!request->buffers().empty()) {
-	const FrameMetadata &metadata = request->buffers().begin()->second->metadata();
-	std::cout << "Sequence: " << std::setw(6) << std::setfill('0')
-	<< metadata.sequence << " timestamp: " << metadata.timestamp
-	<< std::endl;
+		const FrameMetadata &metadata = request->buffers().begin()->second->metadata();
+		std::cout << "Sequence: " << std::setw(6) << std::setfill('0')
+			  << metadata.sequence << " timestamp: " << metadata.timestamp
+			  << std::endl;
 
-	if (running_) {
-	processFrame(request->buffers().begin()->second);
-	}
+		if (running_) {
+			processFrame(request->buffers().begin()->second);
+		}
 	}
 
 	captureComplete_ = true;
@@ -260,28 +261,28 @@ void MchpCamCommon::saveFrame([[maybe_unused]] const FrameBuffer *buffer, [[mayb
 void MchpCamCommon::initializeControls()
 {
 	if (camera_) {
-	const auto &ctrls = camera_->controls();
-	auto initControl = [&](const ControlId *id, auto &value) {
-	if (ctrls.count(id)) {
-	const ControlInfo &info = ctrls.at(id);
-	if (!info.values().empty()) {
-	value = info.def().template get<typename std::remove_reference<decltype(value)>::type>();
-	}
-	}
-	};
+		const auto &ctrls = camera_->controls();
+		auto initControl = [&](const ControlId *id, auto &value) {
+			if (ctrls.count(id)) {
+				const ControlInfo &info = ctrls.at(id);
+				if (!info.values().empty()) {
+					value = info.def().template get<typename std::remove_reference<decltype(value)>::type>();
+				}
+			}
+		};
 
-	initControl(&controls::Brightness, brightness_);
-	initControl(&controls::Contrast, contrast_);
-	initControl(&controls::AwbEnable, whiteBalanceAutomatic_);
-	initControl(&controls::Gamma, gamma_);
-	initControl(&controls::microchip::RedGain, awbParams_.redGain);
-	initControl(&controls::microchip::BlueGain, awbParams_.blueGain);
-	initControl(&controls::microchip::GreenRedGain, awbParams_.greenRedGain);
-	initControl(&controls::microchip::GreenBlueGain, awbParams_.greenBlueGain);
-	initControl(&controls::microchip::RedOffset, awbParams_.redOffset);
-	initControl(&controls::microchip::BlueOffset, awbParams_.blueOffset);
-	initControl(&controls::microchip::GreenRedOffset, awbParams_.greenRedOffset);
-	initControl(&controls::microchip::GreenBlueOffset, awbParams_.greenBlueOffset);
+		initControl(&controls::Brightness, brightness_);
+		initControl(&controls::Contrast, contrast_);
+		initControl(&controls::AwbEnable, whiteBalanceAutomatic_);
+		initControl(&controls::Gamma, gamma_);
+		initControl(&controls::microchip::RedGain, awbParams_.redGain);
+		initControl(&controls::microchip::BlueGain, awbParams_.blueGain);
+		initControl(&controls::microchip::GreenRedGain, awbParams_.greenRedGain);
+		initControl(&controls::microchip::GreenBlueGain, awbParams_.greenBlueGain);
+		initControl(&controls::microchip::RedOffset, awbParams_.redOffset);
+		initControl(&controls::microchip::BlueOffset, awbParams_.blueOffset);
+		initControl(&controls::microchip::GreenRedOffset, awbParams_.greenRedOffset);
+		initControl(&controls::microchip::GreenBlueOffset, awbParams_.greenBlueOffset);
 	}
 }
 
