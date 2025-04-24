@@ -597,14 +597,14 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 
 	switch (cid) {
 	case V4L2_CID_BRIGHTNESS:
-	case V4L2_CID_CONTRAST:
+	case V4L2_CID_CONTRAST: {
 		float fval = value.get<float>();
 		int32_t val = static_cast<int32_t>(std::lroundf(fval));
 		int32_t min = controlInfo.min().get<int32_t>();
 		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
-
+	}
 	case 0x009819c0: /* Red Gain */
 	case 0x009819c1: /* Blue Gain */
 	case 0x009819c2: /* Green-Red Gain */
@@ -612,18 +612,18 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	case 0x009819c4: /* Red Offset */
 	case 0x009819c5: /* Blue Offset */
 	case 0x009819c6: /* Green-Red Offset */
-	case 0x009819c7: /* Green-Blue Offset */
+	case 0x009819c7: { /* Green-Blue Offset */
 		int32_t val = value.get<int32_t>();
 		int32_t min = controlInfo.min().get<int32_t>();
 		int32_t max = controlInfo.max().get<int32_t>();
 		controls->set(cid, std::clamp(val, min, max));
 		break;
-
-	case V4L2_CID_AUTO_WHITE_BALANCE:
+	}
+	case V4L2_CID_AUTO_WHITE_BALANCE: {
 		bool bval = value.get<bool>();
 		controls->set(cid, static_cast<int32_t>(bval));
 		break;
-
+	}
 	default:
 		LOG(MicrochipISC, Debug) << "Control not yet supported";
 		controls->set(cid, 0);
