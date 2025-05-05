@@ -72,11 +72,8 @@ int BLC::calculateBlackLevel(const std::array<uint32_t, 256>& yHistogram, float 
 	/* More conservative approach to black level calculation */
 	int blackLevel = static_cast<int>(darkAverage * scaleFactor);
 
-	/* Limit maximum black level to avoid crushing shadows */
-	int maxBlackLevel = 48;  /* Reduced from 58 to preserve more shadow detail */
-
 	/* Clamp to desired range */
-	return std::clamp(blackLevel, kMinBlackLevel, maxBlackLevel);
+	return std::clamp(blackLevel, kMinBlackLevel, kMaxBlackLevel);
 }
 } /* namespace ipa::microchip_isc */
 } /* namespace libcamera */

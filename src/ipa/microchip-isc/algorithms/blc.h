@@ -26,8 +26,8 @@ private:
 	static constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
 
 	static constexpr int kDefaultBlackLevel = 16;
-	static constexpr int kMinBlackLevel = 50;  /* Minimum target black level */
-	static constexpr int kMaxBlackLevel = 58;  /* Maximum target black level */
+	static constexpr int kMinBlackLevel = 40;  /* Minimum target black level */
+	static constexpr int kMaxBlackLevel = 48;  /* Maximum target black level */
 
 	/* Sensor info */
 	ImageInfo sensorInfo_;
