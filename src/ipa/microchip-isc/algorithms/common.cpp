@@ -1,502 +1,301 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
-	* Copyright (C) 2024 Microchip Technology Inc.	All rights reserved.
-	*
-	* Common utilities for image processing algorithms
-	*/
+ * Copyright (C) 2024 Microchip Technology Inc. All rights reserved.
+ *
+ * Professional Image Processing Algorithm Common Utilities
+ */
 #include "common.h"
+#include <libcamera/base/log.h>
+#include <libcamera/base/span.h>
+#include <libcamera/controls.h>
+#include <algorithm>
+#include <cmath>
+#include <numeric>
 
 namespace libcamera {
 namespace ipa::microchip_isc {
-LOG_DEFINE_CATEGORY(IPACommon)
-void generateStatsFromYUYV(const uint8_t* data, const ImageInfo& info, ImageStats& stats)
+
+LOG_DEFINE_CATEGORY(ISC_COMMON)
+
+bool validateImageStats(const ImageStats &stats)
 {
-	const unsigned int width = info.width;
-	const unsigned int height = info.height;
-	/* Clear histograms */
-	stats.yHistogram.fill(0);
-	stats.rHistogram.fill(0);
-	stats.gHistogram.fill(0);
-	stats.bHistogram.fill(0);
-	/* Reset statistics */
-	stats.meanY = stats.meanR = stats.meanG = stats.meanB = 0.0f;
-	stats.minY = stats.minR = stats.minG = stats.minB = 255;
-	stats.maxY = stats.maxR = stats.maxG = stats.maxB = 0;
-	/* Region size for statistics */
-	constexpr int regionSize = 16;
-	const int regionsX = (width + regionSize - 1) / regionSize;
-	const int regionsY = (height + regionSize - 1) / regionSize;
-	/* Prepare regions */
-	stats.regions.resize(regionsX * regionsY);
-	/* Accumulators for mean calculation */
-	uint64_t sumY = 0, sumR = 0, sumG = 0, sumB = 0;
-	uint32_t totalPixels = 0;
-	/* Process each region */
-	for (int ry = 0; ry < regionsY; ry++) {
-	for (int rx = 0; rx < regionsX; rx++) {
-	/* Region boundaries */
-	int startX = rx * regionSize;
-	int startY = ry * regionSize;
-	int endX = std::min(startX + regionSize, static_cast<int>(width));
-	int endY = std::min(startY + regionSize, static_cast<int>(height));
-	/* Accumulators for region stats */
-	float regionSumR = 0.0f, regionSumG = 0.0f, regionSumB = 0.0f, regionSumY = 0.0f;
-	int regionPixelCount = 0;
-	/* Process pixels in this region */
-	for (int y = startY; y < endY; y++) {
-	for (int x = startX; x < endX; x += 2) {
-	/* Calculate index in YUYV data (2 bytes per pixel) */
-	size_t idx = (y * width + x) * 2;
-	/* Extract YUYV components */
-	uint8_t y0 = data[idx];
-	uint8_t u = data[idx + 1];
-	uint8_t y1 = data[idx + 2];
-	uint8_t v = data[idx + 3];
-	/* Update Y histogram */
-	stats.yHistogram[y0]++;
-	stats.yHistogram[y1]++;
-	/* Convert to RGB for both pixels */
-	uint8_t r0, g0, b0, r1, g1, b1;
-	convertYUVtoRGB(y0, u, v, r0, g0, b0);
-	convertYUVtoRGB(y1, u, v, r1, g1, b1);
-	/* Update RGB histograms */
-	stats.rHistogram[r0]++; stats.rHistogram[r1]++;
-	stats.gHistogram[g0]++; stats.gHistogram[g1]++;
-	stats.bHistogram[b0]++; stats.bHistogram[b1]++;
-	/* Track min/max values */
-	stats.minY = std::min<uint8_t>(stats.minY, std::min<uint8_t>(y0, y1));
-	stats.maxY = std::max<uint8_t>(stats.maxY, std::max<uint8_t>(y0, y1));
-	stats.minR = std::min<uint8_t>(stats.minR, std::min<uint8_t>(r0, r1));
-	stats.maxR = std::max<uint8_t>(stats.maxR, std::max<uint8_t>(r0, r1));
-	stats.minG = std::min<uint8_t>(stats.minG, std::min<uint8_t>(g0, g1));
-	stats.maxG = std::max<uint8_t>(stats.maxG, std::max<uint8_t>(g0, g1));
-	stats.minB = std::min<uint8_t>(stats.minB, std::min<uint8_t>(b0, b1));
-	stats.maxB = std::max<uint8_t>(stats.maxB, std::max<uint8_t>(b0, b1));
-	/* Accumulate for global means */
-	sumY += y0 + y1;
-	sumR += r0 + r1;
-	sumG += g0 + g1;
-	sumB += b0 + b1;
-	totalPixels += 2;
-	/* Accumulate for region stats */
-	regionSumY += y0 + y1;
-	regionSumR += r0 + r1;
-	regionSumG += g0 + g1;
-	regionSumB += b0 + b1;
-	regionPixelCount += 2;
+	/* Check for reasonable pixel counts */
+	uint32_t totalPixels = stats.totalPixelsGR + stats.totalPixelsR +
+		stats.totalPixelsGB + stats.totalPixelsB;
+	if (totalPixels < 100) {  /* More lenient for early frames */
+		LOG(ISC_COMMON, Warning) << "Low pixel count: " << totalPixels
+			<< " (GR:" << stats.totalPixelsGR
+			<< " R:" << stats.totalPixelsR
+			<< " GB:" << stats.totalPixelsGB
+			<< " B:" << stats.totalPixelsB << ")";
+		return false;
 	}
+	/* Check channel means are reasonable */
+	float channelMeans[4] = {stats.meanGR, stats.meanR, stats.meanGB, stats.meanB};
+	const char* channelNames[4] = {"GR", "R", "GB", "B"};
+	for (int c = 0; c < 4; c++) {
+		if (channelMeans[c] < 0.0f || channelMeans[c] > 512.0f) {
+			LOG(ISC_COMMON, Warning) << "Invalid channel mean " << channelNames[c]
+				<< "[" << c << "]: " << channelMeans[c];
+			return false;
+		}
 	}
-	/* Calculate region means */
-	if (regionPixelCount > 0) {
-	auto& region = stats.regions[ry * regionsX + rx];
-	region.meanY = regionSumY / regionPixelCount;
-	region.meanR = regionSumR / regionPixelCount;
-	region.meanG = regionSumG / regionPixelCount;
-	region.meanB = regionSumB / regionPixelCount;
-	/* Determine if the region is neutral for AWB */
-	region.isNeutral = isNeutralRegion(
-	region.meanR, region.meanG, region.meanB);
+	return stats.isValid;
+}
+
+void convertHardwareStatsToImageStats(const ControlList &hwStats, ImageStats &imageStats)
+{
+	/* Initialize defaults */
+	imageStats = {};
+	imageStats.isValid = false;
+	if (!hwStats.contains(ISC_HISTOGRAM_DATA_ID)) {
+		LOG(ISC_COMMON, Warning) << "No histogram data in ControlList";
+		return;
 	}
+	/* Extract and validate the buffer */
+	Span<const uint8_t> histData = hwStats.get(ISC_HISTOGRAM_DATA_ID).get<Span<const uint8_t>>();
+	if (histData.size() < sizeof(isc_stat_buffer)) {
+		LOG(ISC_COMMON, Error) << "Buffer too small: " << histData.size();
+		return;
 	}
+	const isc_stat_buffer* hwBuffer = reinterpret_cast<const isc_stat_buffer*>(histData.data());
+	/* Convert histogram data */
+	for (int c = 0; c < 4; c++) {
+		std::array<uint32_t, 512> *targetHist;
+		switch (c) {
+			case 0: targetHist = &imageStats.histogramGR; break;
+			case 1: targetHist = &imageStats.histogramR; break;
+			case 2: targetHist = &imageStats.histogramGB; break;
+			case 3: targetHist = &imageStats.histogramB; break;
+			default: continue;
+		}
+		/* Copy histogram */
+		for (int bin = 0; bin < 512; bin++) {
+			(*targetHist)[bin] = hwBuffer->hist[c].hist_bins[bin];
+		}
 	}
-	/* Calculate global means */
+	/* Copy pixel totals */
+	imageStats.totalPixelsGR = hwBuffer->hist[0].total_pixels;
+	imageStats.totalPixelsR = hwBuffer->hist[1].total_pixels;
+	imageStats.totalPixelsGB = hwBuffer->hist[2].total_pixels;
+	imageStats.totalPixelsB = hwBuffer->hist[3].total_pixels;
+	/* Calculate means from histograms */
+	calculateMeansFromHistograms(imageStats);
+	/* Calculate quality metrics */
+	uint32_t totalPixels = imageStats.totalPixelsGR + imageStats.totalPixelsR +
+		imageStats.totalPixelsGB + imageStats.totalPixelsB;
 	if (totalPixels > 0) {
-	stats.meanY = static_cast<float>(sumY) / totalPixels;
-	stats.meanR = static_cast<float>(sumR) / totalPixels;
-	stats.meanG = static_cast<float>(sumG) / totalPixels;
-	stats.meanB = static_cast<float>(sumB) / totalPixels;
+		uint32_t overexposed = 0, underexposed = 0;
+		/* Count overexposed pixels (top 2% of histogram) */
+		for (int bin = 501; bin < 512; bin++) {
+			overexposed += imageStats.histogramGR[bin] + imageStats.histogramR[bin] +
+				imageStats.histogramGB[bin] + imageStats.histogramB[bin];
+		}
+		/* Count underexposed pixels (bottom 15% of histogram) */
+		for (int bin = 0; bin < 77; bin++) {
+			underexposed += imageStats.histogramGR[bin] + imageStats.histogramR[bin] +
+				imageStats.histogramGB[bin] + imageStats.histogramB[bin];
+		}
+		imageStats.overexposureRatio = static_cast<float>(overexposed) / totalPixels;
+		imageStats.underexposureRatio = static_cast<float>(underexposed) / totalPixels;
+		/* Calculate contrast */
+		uint32_t shadows = 0, highlights = 0;
+		for (int bin = 0; bin < 128; bin++) {
+			shadows += imageStats.histogramGR[bin] + imageStats.histogramR[bin] +
+				imageStats.histogramGB[bin] + imageStats.histogramB[bin];
+		}
+		for (int bin = 384; bin < 512; bin++) {
+			highlights += imageStats.histogramGR[bin] + imageStats.histogramR[bin] +
+				imageStats.histogramGB[bin] + imageStats.histogramB[bin];
+		}
+		imageStats.contrast = static_cast<float>(shadows + highlights) / totalPixels;
 	}
+	imageStats.isValid = true;
+	LOG(ISC_COMMON, Debug) << "Converted: pixels="
+		<< imageStats.totalPixelsGR << "," << imageStats.totalPixelsR
+		<< "," << imageStats.totalPixelsGB << "," << imageStats.totalPixelsB
+		<< " means=[" << imageStats.meanGR << "," << imageStats.meanR
+		<< "," << imageStats.meanGB << "," << imageStats.meanB << "]";
 }
 
-void generateStatsFromRGBP(const uint8_t* data, const ImageInfo& info, ImageStats& stats)
+void calculateMeansFromHistograms(ImageStats &imageStats)
 {
-	const unsigned int width = info.width;
-	const unsigned int height = info.height;
-	/* Clear histograms */
-	stats.yHistogram.fill(0);
-	stats.rHistogram.fill(0);
-	stats.gHistogram.fill(0);
-	stats.bHistogram.fill(0);
-	/* Reset statistics */
-	stats.meanY = stats.meanR = stats.meanG = stats.meanB = 0.0f;
-	stats.minY = stats.minR = stats.minG = stats.minB = 255;
-	stats.maxY = stats.maxR = stats.maxG = stats.maxB = 0;
-	/* Region size for statistics */
-	constexpr int regionSize = 16;
-	const int regionsX = (width + regionSize - 1) / regionSize;
-	const int regionsY = (height + regionSize - 1) / regionSize;
-	/* Prepare regions */
-	stats.regions.resize(regionsX * regionsY);
-	/* Accumulators for mean calculation */
-	uint64_t sumY = 0, sumR = 0, sumG = 0, sumB = 0;
+	const std::array<uint32_t, 512>* histograms[4] = {
+		&imageStats.histogramGR, &imageStats.histogramR,
+		&imageStats.histogramGB, &imageStats.histogramB
+	};
+	float* means[4] = {
+		&imageStats.meanGR, &imageStats.meanR,
+		&imageStats.meanGB, &imageStats.meanB
+	};
+	const uint32_t* totals[4] = {
+		&imageStats.totalPixelsGR, &imageStats.totalPixelsR,
+		&imageStats.totalPixelsGB, &imageStats.totalPixelsB
+	};
+	for (int c = 0; c < 4; c++) {
+		if (*totals[c] == 0) {
+			*means[c] = 0.0f;
+			continue;
+		}
+		uint64_t weightedSum = 0;
+		for (int bin = 0; bin < 512; bin++) {
+			/* Map bin index to luminance value (0-255) */
+			uint32_t binValue = (bin * 255) / 511;
+			weightedSum += (*histograms[c])[bin] * binValue;
+		}
+		*means[c] = static_cast<float>(weightedSum) / *totals[c];
+	}
+	LOG(ISC_COMMON, Debug) << "Calculated means: GR=" << imageStats.meanGR
+		<< " R=" << imageStats.meanR
+		<< " GB=" << imageStats.meanGB
+		<< " B=" << imageStats.meanB;
+}
+
+void generateStatsFromFormat(const uint8_t *data, const ImageInfo &info, ImageStats &stats)
+{
+	(void)data;
+	(void)info;
+	(void)stats;
+	/* TODO: Implement software histogram generation from image data */
+	LOG(ISC_COMMON, Warning) << "Software stats generation not yet implemented";
+}
+
+void dumpImageStats(const ImageStats &stats, const std::string &prefix)
+{
+	LOG(ISC_COMMON, Info) << prefix << " ImageStats: "
+		<< "GR[mean=" << stats.meanGR << " count=" << stats.totalPixelsGR << "] "
+		<< "R[mean=" << stats.meanR << " count=" << stats.totalPixelsR << "] "
+		<< "GB[mean=" << stats.meanGB << " count=" << stats.totalPixelsGB << "] "
+		<< "B[mean=" << stats.meanB << " count=" << stats.totalPixelsB << "] "
+		<< "valid=" << (stats.isValid ? "YES" : "NO");
+}
+
+float calculateLuminanceFromBayer(const ImageStats &stats)
+{
+	/* ITU-R BT.709 weights adapted for Bayer pattern */
+	float luminance = 0.299f * stats.meanR +
+		0.587f * (stats.meanGR + stats.meanGB) / 2.0f +
+		0.114f * stats.meanB;
+	return luminance;
+}
+
+float calculateContrastFromBayer(const ImageStats &stats)
+{
+	/* Use green channel for contrast calculation (most populated in Bayer) */
+	uint32_t totalPixels = stats.totalPixelsGR;
+	if (totalPixels == 0) return 0.0f;
+	/* Calculate percentiles */
+	uint32_t cumulativePixels = 0;
+	uint32_t p10Value = 0, p90Value = 0;
+	uint32_t target10 = totalPixels * 0.1f;
+	uint32_t target90 = totalPixels * 0.9f;
+	for (int bin = 0; bin < 512; bin++) {
+		cumulativePixels += stats.histogramGR[bin];
+		if (cumulativePixels >= target10 && p10Value == 0) {
+			p10Value = (bin * 255) / 511;
+		}
+		if (cumulativePixels >= target90 && p90Value == 0) {
+			p90Value = (bin * 255) / 511;
+			break;
+		}
+	}
+	return (p90Value - p10Value) / 255.0f;
+}
+
+bool detectOverexposure(const ImageStats &stats, float threshold)
+{
+	uint32_t overexposedPixels = 0;
+	uint32_t totalPixels = stats.totalPixelsGR + stats.totalPixelsR +
+		stats.totalPixelsGB + stats.totalPixelsB;
+	/* Count pixels in top 2% of histogram (bins 501-511 for 512-bin) */
+	for (int bin = 501; bin < 512; bin++) {
+		overexposedPixels += stats.histogramGR[bin] + stats.histogramR[bin] +
+			stats.histogramGB[bin] + stats.histogramB[bin];
+	}
+	float overexposureRatio = static_cast<float>(overexposedPixels) / std::max(totalPixels, 1u);
+	return overexposureRatio > threshold;
+}
+
+bool detectUnderexposure(const ImageStats &stats, float threshold)
+{
+	uint32_t underexposedPixels = 0;
+	uint32_t totalPixels = stats.totalPixelsGR + stats.totalPixelsR +
+		stats.totalPixelsGB + stats.totalPixelsB;
+	/* Count pixels in bottom 15% of histogram (bins 0-76 for 512-bin) */
+	for (int bin = 0; bin < 77; bin++) {
+		underexposedPixels += stats.histogramGR[bin] + stats.histogramR[bin] +
+			stats.histogramGB[bin] + stats.histogramB[bin];
+	}
+	float underexposureRatio = static_cast<float>(underexposedPixels) / std::max(totalPixels, 1u);
+	return underexposureRatio > threshold;
+}
+
+float calculatePercentile(const std::array<uint32_t, 512> &histogram, float percentile)
+{
 	uint32_t totalPixels = 0;
-
-	/* Process each region */
-	for (int ry = 0; ry < regionsY; ry++) {
-	for (int rx = 0; rx < regionsX; rx++) {
-	/* Region boundaries */
-	int startX = rx * regionSize;
-	int startY = ry * regionSize;
-	int endX = std::min(startX + regionSize, static_cast<int>(width));
-	int endY = std::min(startY + regionSize, static_cast<int>(height));
-	/* Accumulators for region stats */
-	float regionSumR = 0.0f, regionSumG = 0.0f, regionSumB = 0.0f, regionSumY = 0.0f;
-	int regionPixelCount = 0;
-
-	/* Process pixels in this region */
-	for (int y = startY; y < endY; y++) {
-	for (int x = startX; x < endX; x++) {
-	/* Calculate index in RGBP data (3 bytes per pixel) */
-	size_t idx = (y * width + x) * 3;
-
-	/* Extract RGB components (8 bits per channel) */
-	uint8_t r = data[idx];
-	uint8_t g = data[idx + 1];
-	uint8_t b = data[idx + 2];
-
-	/* Calculate luminance (Y) */
-	uint8_t yValue = static_cast<uint8_t>(0.299f*r + 0.587f*g + 0.114f*b);
-
-	/* Update histograms */
-	stats.yHistogram[yValue]++;
-	stats.rHistogram[r]++;
-	stats.gHistogram[g]++;
-	stats.bHistogram[b]++;
-
-	/* Track min/max values */
-	stats.minY = std::min<uint8_t>(stats.minY, yValue);
-	stats.maxY = std::max<uint8_t>(stats.maxY, yValue);
-	stats.minR = std::min<uint8_t>(stats.minR, r);
-	stats.maxR = std::max<uint8_t>(stats.maxR, r);
-	stats.minG = std::min<uint8_t>(stats.minG, g);
-	stats.maxG = std::max<uint8_t>(stats.maxG, g);
-	stats.minB = std::min<uint8_t>(stats.minB, b);
-	stats.maxB = std::max<uint8_t>(stats.maxB, b);
-
-	/* Accumulate for global means */
-	sumY += yValue;
-	sumR += r;
-	sumG += g;
-	sumB += b;
-	totalPixels++;
-
-	/* Accumulate for region stats */
-	regionSumY += yValue;
-	regionSumR += r;
-	regionSumG += g;
-	regionSumB += b;
-	regionPixelCount++;
+	for (uint32_t count : histogram) {
+		totalPixels += count;
 	}
+	if (totalPixels == 0) return 0.0f;
+	uint32_t targetPixels = static_cast<uint32_t>(totalPixels * percentile / 100.0f);
+	uint32_t cumulativePixels = 0;
+	for (int bin = 0; bin < 512; bin++) {
+		cumulativePixels += histogram[bin];
+		if (cumulativePixels >= targetPixels) {
+			return static_cast<float>(bin * 255) / 511.0f;
+		}
 	}
-
-	/* Calculate region means */
-	if (regionPixelCount > 0) {
-	auto& region = stats.regions[ry * regionsX + rx];
-	region.meanY = regionSumY / regionPixelCount;
-	region.meanR = regionSumR / regionPixelCount;
-	region.meanG = regionSumG / regionPixelCount;
-	region.meanB = regionSumB / regionPixelCount;
-	/* Determine if the region is neutral for AWB */
-	region.isNeutral = isNeutralRegion(
-	region.meanR, region.meanG, region.meanB);
-	}
-	}
-	}
-
-	/* Calculate global means */
-	if (totalPixels > 0) {
-	stats.meanY = static_cast<float>(sumY) / totalPixels;
-	stats.meanR = static_cast<float>(sumR) / totalPixels;
-	stats.meanG = static_cast<float>(sumG) / totalPixels;
-	stats.meanB = static_cast<float>(sumB) / totalPixels;
-	}
+	return 255.0f;
 }
 
-void generateStatsFromRGB565(const uint8_t* data, const ImageInfo& info, ImageStats& stats)
+uint32_t findHistogramPeak(const std::array<uint32_t, 512> &histogram, int startBin, int endBin)
 {
-	const unsigned int width = info.width;
-	const unsigned int height = info.height;
-	/* Clear histograms */
-	stats.yHistogram.fill(0);
-	stats.rHistogram.fill(0);
-	stats.gHistogram.fill(0);
-	stats.bHistogram.fill(0);
-	/* Reset statistics */
-	stats.meanY = stats.meanR = stats.meanG = stats.meanB = 0.0f;
-	stats.minY = stats.minR = stats.minG = stats.minB = 255;
-	stats.maxY = stats.maxR = stats.maxG = stats.maxB = 0;
-	/* Region size for statistics */
-	constexpr int regionSize = 16;
-	const int regionsX = (width + regionSize - 1) / regionSize;
-	const int regionsY = (height + regionSize - 1) / regionSize;
-	/* Prepare regions */
-	stats.regions.resize(regionsX * regionsY);
-	/* Accumulators for mean calculation */
-	uint64_t sumY = 0, sumR = 0, sumG = 0, sumB = 0;
+	uint32_t maxCount = 0;
+	uint32_t peakBin = startBin;
+	for (int bin = startBin; bin <= endBin && bin < 512; bin++) {
+		if (histogram[bin] > maxCount) {
+			maxCount = histogram[bin];
+			peakBin = bin;
+		}
+	}
+	return peakBin;
+}
+
+float calculateHistogramVariance(const std::array<uint32_t, 512> &histogram)
+{
 	uint32_t totalPixels = 0;
-	/* Process each region */
-	for (int ry = 0; ry < regionsY; ry++) {
-	for (int rx = 0; rx < regionsX; rx++) {
-	/* Region boundaries */
-	int startX = rx * regionSize;
-	int startY = ry * regionSize;
-	int endX = std::min(startX + regionSize, static_cast<int>(width));
-	int endY = std::min(startY + regionSize, static_cast<int>(height));
-	/* Accumulators for region stats */
-	float regionSumR = 0.0f, regionSumG = 0.0f, regionSumB = 0.0f, regionSumY = 0.0f;
-	int regionPixelCount = 0;
-	/* Process pixels in this region */
-	for (int y = startY; y < endY; y++) {
-	for (int x = startX; x < endX; x++) {
-	/* Calculate index in RGB565 data (2 bytes per pixel) */
-	size_t idx = (y * width + x) * 2;
-	/* Extract RGB565 value (little endian) */
-	uint16_t pixel = static_cast<uint16_t>(data[idx]) |
-	(static_cast<uint16_t>(data[idx + 1]) << 8);
-	/* Extract RGB components (5 bits R, 6 bits G, 5 bits B) */
-	uint8_t r = (pixel >> 11) & 0x1F;
-	uint8_t g = (pixel >> 5) & 0x3F;
-	uint8_t b = pixel & 0x1F;
-	/* Expand to 8 bits */
-	r = (r << 3) | (r >> 2);
-	g = (g << 2) | (g >> 4);
-	b = (b << 3) | (b >> 2);
-	/* Calculate luminance (Y) */
-	uint8_t yValue = static_cast<uint8_t>(0.299f*r + 0.587f*g + 0.114f*b);
-	/* Update histograms */
-	stats.yHistogram[yValue]++;
-	stats.rHistogram[r]++;
-	stats.gHistogram[g]++;
-	stats.bHistogram[b]++;
-	/* Track min/max values */
-	stats.minY = std::min<uint8_t>(stats.minY, yValue);
-	stats.maxY = std::max<uint8_t>(stats.maxY, yValue);
-	stats.minR = std::min<uint8_t>(stats.minR, r);
-	stats.maxR = std::max<uint8_t>(stats.maxR, r);
-	stats.minG = std::min<uint8_t>(stats.minG, g);
-	stats.maxG = std::max<uint8_t>(stats.maxG, g);
-	stats.minB = std::min<uint8_t>(stats.minB, b);
-	stats.maxB = std::max<uint8_t>(stats.maxB, b);
-	/* Accumulate for global means */
-	sumY += yValue;
-	sumR += r;
-	sumG += g;
-	sumB += b;
-	totalPixels++;
-	/* Accumulate for region stats */
-	regionSumY += yValue;
-	regionSumR += r;
-	regionSumG += g;
-	regionSumB += b;
-	regionPixelCount++;
+	float weightedSum = 0.0f;
+	for (int bin = 0; bin < 512; bin++) {
+		totalPixels += histogram[bin];
+		weightedSum += bin * histogram[bin];
 	}
+	if (totalPixels == 0) return 0.0f;
+	float mean = weightedSum / totalPixels;
+	float variance = 0.0f;
+	for (int bin = 0; bin < 512; bin++) {
+		float deviation = bin - mean;
+		variance += deviation * deviation * histogram[bin];
 	}
-	/* Calculate region means */
-	if (regionPixelCount > 0) {
-	auto& region = stats.regions[ry * regionsX + rx];
-	region.meanY = regionSumY / regionPixelCount;
-	region.meanR = regionSumR / regionPixelCount;
-	region.meanG = regionSumG / regionPixelCount;
-	region.meanB = regionSumB / regionPixelCount;
-	/* Determine if the region is neutral for AWB */
-	region.isNeutral = isNeutralRegion(
-	region.meanR, region.meanG, region.meanB);
-	}
-	}
-	}
-	/* Calculate global means */
-	if (totalPixels > 0) {
-	stats.meanY = static_cast<float>(sumY) / totalPixels;
-	stats.meanR = static_cast<float>(sumR) / totalPixels;
-	stats.meanG = static_cast<float>(sumG) / totalPixels;
-	stats.meanB = static_cast<float>(sumB) / totalPixels;
-	}
+	return variance / totalPixels;
 }
 
-void generateStatsFromBayer(const uint8_t* data, const ImageInfo& info, ImageStats& stats)
+float calculateHistogramEntropy(const std::array<uint32_t, 512> &histogram)
 {
-	const unsigned int width = info.width;
-	const unsigned int height = info.height;
-
-	/* Clear histograms */
-	stats.yHistogram.fill(0);
-	stats.rHistogram.fill(0);
-	stats.gHistogram.fill(0);
-	stats.bHistogram.fill(0);
-
-	/* Reset statistics */
-	stats.meanY = stats.meanR = stats.meanG = stats.meanB = 0.0f;
-	stats.minY = stats.minR = stats.minG = stats.minB = 255;
-	stats.maxY = stats.maxR = stats.maxG = stats.maxB = 0;
-
-	/* Region size for statistics */
-	constexpr int regionSize = 16;
-	const int regionsX = (width + regionSize - 1) / regionSize;
-	const int regionsY = (height + regionSize - 1) / regionSize;
-
-	/* Prepare regions */
-	stats.regions.resize(regionsX * regionsY);
-
-	/* Accumulators for mean calculation */
-	uint64_t sumR = 0, sumG1 = 0, sumG2 = 0, sumB = 0;
-	uint32_t countR = 0, countG1 = 0, countG2 = 0, countB = 0;
-
-	/* Process each region */
-	for (int ry = 0; ry < regionsY; ry++) {
-	for (int rx = 0; rx < regionsX; rx++) {
-	/* Region boundaries */
-	int startX = rx * regionSize;
-	int startY = ry * regionSize;
-	int endX = std::min(startX + regionSize, static_cast<int>(width));
-	int endY = std::min(startY + regionSize, static_cast<int>(height));
-
-	/* Accumulators for this region */
-	uint64_t regionSumR = 0, regionSumG = 0, regionSumB = 0, regionSumY = 0;
-	int regionCountR = 0, regionCountG = 0, regionCountB = 0, regionPixelCount = 0;
-
-	/* Process pixels in this region, handling the RGGB pattern */
-	for (int y = startY; y < endY; y++) {
-	for (int x = startX; x < endX; x++) {
-	/* Calculate index for packed 10-bit data (assuming 16-bit packing) */
-	size_t idx = (y * width + x) * 2; /* 2 bytes per pixel */
-
-	/* Extract 10-bit value packed in 16 bits */
-	uint16_t pixel = data[idx] | (data[idx + 1] << 8);
-	uint16_t value = pixel & 0x03FF; /* Mask to get 10 bits */
-
-	/* Scale to 8-bit for histograms and processing */
-	uint8_t value8bit = value >> 2; /* 10-bit to 8-bit */
-
-	/* Determine pixel type based on Bayer pattern (RGGB) */
-	bool isRed = (y % 2 == 0) && (x % 2 == 0);
-	bool isBlue = (y % 2 == 1) && (x % 2 == 1);
-	bool isGreen = !isRed && !isBlue;
-	bool isGreen1 = (y % 2 == 0) && (x % 2 == 1); /* Green in red row */
-	/* bool isGreen2 = (y % 2 == 1) && (x % 2 == 0); // Green in blue row */
-
-	/* Update appropriate histogram and statistics */
-	if (isRed) {
-	stats.rHistogram[value8bit]++;
-	sumR += value;
-	countR++;
-	regionSumR += value;
-	regionCountR++;
-
-	/* Track min/max */
-	stats.minR = std::min(stats.minR, value8bit);
-	stats.maxR = std::max(stats.maxR, value8bit);
+	uint32_t totalPixels = 0;
+	for (uint32_t count : histogram) {
+		totalPixels += count;
 	}
-	else if (isBlue) {
-	stats.bHistogram[value8bit]++;
-	sumB += value;
-	countB++;
-	regionSumB += value;
-	regionCountB++;
-
-	/* Track min/max */
-	stats.minB = std::min(stats.minB, value8bit);
-	stats.maxB = std::max(stats.maxB, value8bit);
-	}
-	else if (isGreen) {
-	stats.gHistogram[value8bit]++;
-
-	if (isGreen1) {
-	sumG1 += value;
-	countG1++;
-	} else { /* isGreen2 */
-	sumG2 += value;
-	countG2++;
+	if (totalPixels == 0) return 0.0f;
+	float entropy = 0.0f;
+	for (uint32_t count : histogram) {
+		if (count > 0) {
+			float probability = static_cast<float>(count) / totalPixels;
+			entropy -= probability * std::log2(probability);
+		}
 	}
 
-	regionSumG += value;
-	regionCountG++;
-
-	/* Track min/max */
-	stats.minG = std::min(stats.minG, value8bit);
-	stats.maxG = std::max(stats.maxG, value8bit);
-	}
-
-	/* Estimate luminance (simple average) */
-	/* In a real implementation, you might want to use proper weights */
-	regionSumY += value;
-	regionPixelCount++;
-
-	/* Update Y histogram (using simple average for Y) */
-	stats.yHistogram[value8bit]++;
-	}
-	}
-
-	/* Calculate region means */
-	if (regionPixelCount > 0) {
-	auto& region = stats.regions[ry * regionsX + rx];
-
-	region.meanR = regionCountR > 0 ? static_cast<float>(regionSumR) / regionCountR : 0;
-	region.meanG = regionCountG > 0 ? static_cast<float>(regionSumG) / regionCountG : 0;
-	region.meanB = regionCountB > 0 ? static_cast<float>(regionSumB) / regionCountB : 0;
-	region.meanY = static_cast<float>(regionSumY) / regionPixelCount;
-
-	/* Determine if the region is neutral (for AWB) */
-	region.isNeutral = isNeutralRegion(
-	region.meanR, region.meanG, region.meanB);
-	}
-	}
-	}
-
-	/* Calculate global means */
-	uint32_t countG = countG1 + countG2;
-	uint64_t sumG = sumG1 + sumG2;
-
-	if (countR > 0)
-	stats.meanR = static_cast<float>(sumR) / countR;
-	if (countG > 0)
-	stats.meanG = static_cast<float>(sumG) / countG;
-	if (countB > 0)
-	stats.meanB = static_cast<float>(sumB) / countB;
-
-	/* Calculate overall luminance (simplified) */
-	stats.meanY = (0.2126f * stats.meanR + 0.7152f * stats.meanG + 0.0722f * stats.meanB);
-
-	/* Min/max for Y (estimate from RGB) */
-	stats.minY = std::min({stats.minR, stats.minG, stats.minB});
-	stats.maxY = std::max({stats.maxR, stats.maxG, stats.maxB});
-
+	return entropy;
 }
 
-void convertYUVtoRGB(uint8_t y, uint8_t u, uint8_t v,
-	uint8_t& r, uint8_t& g, uint8_t& b)
-{
-	int c = y - 16;
-	int d = u - 128;
-	int e = v - 128;
-	int r_temp = (298 * c + 409 * e + 128) >> 8;
-	int g_temp = (298 * c - 100 * d - 208 * e + 128) >> 8;
-	int b_temp = (298 * c + 516 * d + 128) >> 8;
-	r = std::clamp(r_temp, 0, 255);
-	g = std::clamp(g_temp, 0, 255);
-	b = std::clamp(b_temp, 0, 255);
-}
-void convertRGBtoYUV(uint8_t r, uint8_t g, uint8_t b,
-	uint8_t& y, uint8_t& u, uint8_t& v)
-{
-	int y_temp = (77 * r + 150 * g + 29 * b + 128) >> 8;
-	int u_temp = ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128;
-	int v_temp = ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128;
-	y = std::clamp(y_temp, 0, 255);
-	u = std::clamp(u_temp, 0, 255);
-	v = std::clamp(v_temp, 0, 255);
-}
-bool isNeutralRegion(float r, float g, float b,
-	float saturationThreshold,
-	float minValue)
-{
-	float min_val = std::min({r, g, b});
-	float max_val = std::max({r, g, b});
-	if (max_val < minValue)
-	return false;  /* Too dark */
-	if (max_val == 0)
-	return false;  /* Avoid division by zero */
-	float saturation = (max_val - min_val) / max_val;
-	return (saturation < saturationThreshold);
-}
 } /* namespace ipa::microchip_isc */
 } /* namespace libcamera */
