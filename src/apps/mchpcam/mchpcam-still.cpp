@@ -141,21 +141,6 @@ int MchpCamStill::captureStill(const std::string &filename)
 
 			/* Check for AGC/BLC parameters in request metadata */
 			const ControlList &metadata = requests_[0]->metadata();
-
-			/* Use hardcoded constants */
-			constexpr uint32_t AUTO_GAIN_ID = 0x009819d1;
-			constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
-
-			/* Check for AUTO_GAIN_ID */
-			if (metadata.contains(AUTO_GAIN_ID)) {
-				processingParams_.gainValue = metadata.get(AUTO_GAIN_ID).get<int32_t>();
-			}
-
-			/* Check for BLACK_LEVEL_ID */
-			if (metadata.contains(BLACK_LEVEL_ID)) {
-				processingParams_.blackLevel = metadata.get(BLACK_LEVEL_ID).get<int32_t>();
-			}
-
 			saveFrame(buffer, filename);
 			break;
 		}
