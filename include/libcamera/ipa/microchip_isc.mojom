@@ -3,6 +3,7 @@ import "include/libcamera/ipa/core.mojom";
 
 /* Existing AWB Control IDs */
 const uint32 ISC_PIXEL_VALUES_ID = 0x009819ff;
+const uint32 ISC_HISTOGRAM_DATA_ID = 0x009819f0;
 const uint32 RED_GAIN_ID = 0x009819c0;
 const uint32 BLUE_GAIN_ID = 0x009819c1;
 const uint32 GREEN_RED_GAIN_ID = 0x009819c2;
