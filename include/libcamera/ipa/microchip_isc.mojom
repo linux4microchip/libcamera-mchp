@@ -12,6 +12,10 @@ const uint32 RED_OFFSET_ID = 0x009819c4;
 const uint32 BLUE_OFFSET_ID = 0x009819c5;
 const uint32 GREEN_RED_OFFSET_ID = 0x009819c6;
 const uint32 GREEN_BLUE_OFFSET_ID = 0x009819c7;
+/* sensor Control parameters */
+const uint32 SENSOR_ANALOGUE_GAIN_ID = 0x009e0903;
+const uint32 SENSOR_DIGITAL_GAIN_ID = 0x009f0905;
+const uint32 SENSOR_EXPOSURE_ID = 0x00980911;
 
 /* Control IDs for additional algorithms */
 const uint32 BLACK_LEVEL_ID = 0x009819d0;
