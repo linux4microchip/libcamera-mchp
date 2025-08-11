@@ -9,7 +9,7 @@ const uint32 GREEN_RED_GAIN_ID = 0x009819c2;
 const uint32 GREEN_BLUE_GAIN_ID = 0x009819c3;
 const uint32 RED_OFFSET_ID = 0x009819c4;
 const uint32 BLUE_OFFSET_ID = 0x009819c5;
-const uint32 GREEEN_RED_OFFSET_ID = 0x009819c6;
+const uint32 GREEN_RED_OFFSET_ID = 0x009819c6;
 const uint32 GREEN_BLUE_OFFSET_ID = 0x009819c7;
 
 /* Control IDs for additional algorithms */
