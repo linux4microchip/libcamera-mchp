@@ -17,6 +17,9 @@
 #include <sstream>
 #include <filesystem>
 #include <sys/mman.h>
+#include <chrono>
+#include <thread>
+#include <mutex>
 
 #include <linux/media.h>
 #include <linux/media-bus-format.h>
@@ -47,6 +50,25 @@
 #include <libcamera/ipa/microchip_isc_ipa_interface.h>
 #include <libcamera/ipa/microchip_isc_ipa_proxy.h>
 
+struct isc_stat_buffer {
+	/* Frame metadata */
+	uint32_t frame_number;
+	uint64_t timestamp;
+	uint32_t meas_type;
+
+	/* Raw histogram data for all channels */
+	struct {
+		uint32_t hist_bins[512];    /* Raw 512 bins from hardware */
+		uint32_t hist_min;          /* Raw min value from hardware */
+		uint32_t hist_max;          /* Raw max value from hardware */
+		uint32_t total_pixels;      /* Raw total pixel count */
+	} hist[4];                      /* GR, R, GB, B channels */
+
+	/* Raw frame information */
+	uint8_t valid_channels;         /* Bitmask of channels with data */
+	uint8_t bayer_pattern;          /* Current Bayer pattern */
+	uint16_t reserved[2];           /* Padding for alignment */
+} __attribute__((packed));
 
 namespace libcamera {
 
@@ -58,9 +80,15 @@ class MicrochipISCCameraData : public Camera::Private
 {
 public:
 	MicrochipISCCameraData(PipelineHandler *pipe, MediaDevice *media)
-		: Camera::Private(pipe), media_(media), bufferCount(0)
+		: Camera::Private(pipe), media_(media), bufferCount(0),
+		statsEnabled_(false), statsStreaming_(false),
+		lastHistogramTimestamp_(0), histogramDataReady_(false),
+		currentFrameCount_(0), pendingRequest_(nullptr),
+		isShuttingDown_(false), stopStatsProcessing_(false)
+
 	{
 		streams_.resize(2);
+		channelsSeen_.fill(false);
 		/* Create IPA proxy instead of direct AWB implementation */
 		awbIPA_ = IPAManager::createIPA<ipa::microchip_isc::IPAProxyMicrochipISC>(pipe, 1, 1);
 		if (awbIPA_)
@@ -87,12 +115,36 @@ public:
 	std::unique_ptr<CameraSensor> sensor_;
 	std::map<std::string, std::unique_ptr<V4L2Subdevice>> iscSubdev_;
 	std::unique_ptr<V4L2VideoDevice> iscVideo_;
+	std::unique_ptr<V4L2VideoDevice> statsDevice_;
+	std::vector<std::unique_ptr<FrameBuffer>> statsBuffers_;
 	std::vector<Stream> streams_;
 	std::vector<Configuration> configs_;
 	std::map<PixelFormat, std::vector<const Configuration *>> formats_;
 	MediaDevice *media_;
 	std::unique_ptr<ipa::microchip_isc::IPAProxyMicrochipISC> awbIPA_;
 	unsigned int bufferCount;
+	bool statsEnabled_;
+	bool statsStreaming_;
+
+	/* Event coordination variables */
+	std::atomic<uint64_t> lastHistogramTimestamp_;
+	std::atomic<bool> histogramDataReady_;
+	std::unique_ptr<ControlList> cachedHistogramData_;
+	std::mutex histogramMutex_;
+	static constexpr uint64_t HISTOGRAM_FRESHNESS_NS = 500000000;
+
+	int currentFrameCount_;
+	Request *pendingRequest_;
+	std::array<bool, 4> channelsSeen_;
+	std::atomic<bool> isShuttingDown_;
+	std::atomic<bool> stopStatsProcessing_;
+
+	void resetFrameCycling() {
+		currentFrameCount_ = 0;
+		pendingRequest_ = nullptr;
+		channelsSeen_.fill(false);
+	}
+
 private:
 	PipelineHandlerMicrochipISC *pipe_;
 	void awbComplete([[maybe_unused]] unsigned int bufferId,
