@@ -216,6 +216,7 @@ public:
 	int queueRequestDevice(Camera *camera, Request *request) override;
 	bool match(DeviceEnumerator *enumerator) override;
 	std::string generateId(const MediaEntity *entity);
+	int applySensorControls(MicrochipISCCameraData *data, const ControlList &controls);
 	bool processingComplete_ = false;
 	Request *processingRequest_ = nullptr;
 private:
@@ -229,6 +230,7 @@ private:
 	int processControl(ControlList *controls, unsigned int id, const ControlValue &value);
 	int processControls(MicrochipISCCameraData *data, Request *request);
 	void bufferReady(FrameBuffer *buffer);
+	void completeRequestWithBuffer(Request *request, FrameBuffer *buffer);
 	Size findOptimalSize(const std::vector<MicrochipISCCameraData::Configuration>& configs,
 			     const Size& target);
 	PixelFormat findRawFormat(const std::vector<MicrochipISCCameraData::Configuration>& configs);
@@ -894,64 +896,53 @@ int PipelineHandlerMicrochipISC::exportFrameBuffers(Camera *camera, Stream *stre
 int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const ControlList *controls)
 {
 	MicrochipISCCameraData *data = cameraData(camera);
-	unsigned int count = 0;
 
-	LOG(MicrochipISC, Debug) << "Starting camera " << camera->id();
+	LOG(MicrochipISC, Debug) << "Starting camera: " << camera->id();
 
-	/* Disable V4L2 AWB and configure IPA */
+	/* Reset shutdown flag */
+	data->isShuttingDown_.store(false, std::memory_order_release);
+
+	/* Configure hardware */
 	ControlList awbCtrls(data->iscVideo_->controls());
 	awbCtrls.set(V4L2_CID_AUTO_WHITE_BALANCE, 0);
-	int awbRet = data->iscVideo_->setControls(&awbCtrls);
-	if (awbRet < 0) {
-		LOG(MicrochipISC, Warning) << "Failed to disable V4L2 AWB, will use as fallback";
-		awbCtrls.set(V4L2_CID_AUTO_WHITE_BALANCE, 1);
-		data->iscVideo_->setControls(&awbCtrls);
-	}
+	data->iscVideo_->setControls(&awbCtrls);
 
 	if (data->awbIPA_) {
 		int ipaRet = data->awbIPA_->start();
 		if (ipaRet < 0) {
-			LOG(MicrochipISC, Error) << "Failed to start IPA";
+			LOG(MicrochipISC, Error) << "Failed to start IPA: " << ipaRet;
 			return ipaRet;
 		}
 	}
 
-	/* Count total buffers needed */
-	for (const auto& stream : data->streams_) {
-		count += stream.configuration().bufferCount;
-	}
-
-	LOG(MicrochipISC, Debug) << "Starting camera " << camera->id() << " with " << count << " buffers";
-
-	/* Check if buffers are already imported */
-	if (data->bufferCount == 0) {
-		int ret = data->iscVideo_->importBuffers(count);
-		if (ret < 0) {
-			LOG(MicrochipISC, Error) << "Failed to import buffers: " << strerror(-ret);
-			return ret;
+	/* Start histogram collection with longer setup time */
+	if (data->statsEnabled_) {
+		int statsRet = data->startStatsCapture();
+		if (statsRet < 0) {
+			LOG(MicrochipISC, Warning) << "Failed to start histogram capture: " << statsRet;
+		} else {
+			LOG(MicrochipISC, Info) << "✅ Background histogram collection started first";
+			std::this_thread::sleep_for(std::chrono::milliseconds(500));
+			LOG(MicrochipISC, Info) << "📊 Extended histogram hardware initialization delay completed (500ms)";
 		}
-		data->bufferCount = count;
-	} else {
-		LOG(MicrochipISC, Debug) << "Buffers already imported, count: " << data->bufferCount;
 	}
 
-	V4L2DeviceFormat format;
-	int ret = data->iscVideo_->getFormat(&format);
+	/* Import and start video */
+	unsigned int count = 8;
+	int ret = data->iscVideo_->importBuffers(count);
 	if (ret < 0) {
-		LOG(MicrochipISC, Error) << "Failed to get current format: " << strerror(-ret);
+		LOG(MicrochipISC, Error) << "Failed to import buffers: " << ret;
 		return ret;
 	}
-	LOG(MicrochipISC, Debug) << "Current video device format: " << format.toString();
+	data->bufferCount = count;
 
 	ret = data->iscVideo_->streamOn();
 	if (ret < 0) {
-		LOG(MicrochipISC, Error) << "Failed to start streaming: " << strerror(-ret);
-		data->iscVideo_->releaseBuffers();
-		data->bufferCount = 0;
+		LOG(MicrochipISC, Error) << "Failed to start video streaming: " << ret;
 		return ret;
 	}
 
-	LOG(MicrochipISC, Debug) << "Camera " << camera->id() << " started successfully";
+	LOG(MicrochipISC, Info) << " Camera ready with event-driven histogram coordination";
 	return 0;
 }
 
@@ -959,6 +950,7 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 						const ControlValue &value)
 {
 	uint32_t cid;
+	bool isSensorControl = false;
 
 	/* Map libcamera controls to V4L2 controls */
 	if (id == controls::Brightness)
@@ -983,8 +975,25 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 		cid = 0x009819c6; /* Green-Red Offset */
 	else if (id == controls::microchip::GreenBlueOffset)
 		cid = 0x009819c7; /* Green-Blue Offset */
+	else if (id == controls::AnalogueGain) {
+		cid = 0x009e0903;
+		isSensorControl = true;
+	}
+	else if (id == controls::DigitalGain) {
+		cid = 0x009f0905;
+		isSensorControl = true;
+	}
+	else if (id == controls::ExposureTime) {
+		cid = 0x00980911;
+		isSensorControl = true;
+	}
 	else
 		return -EINVAL;
+
+	/* Handle sensor controls differently */
+	if (isSensorControl) {
+		return 0; /* Will be handled by applySensorControls() */
+	}
 
 	/* Validate and set the control value */
 	const ControlInfo &controlInfo = controls->infoMap()->at(cid);
@@ -1185,6 +1194,10 @@ int MicrochipISCCameraData::init()
 			{ &controls::Contrast, ControlInfo(-2048.0f, 2048.0f, 16.0f) },
 			{ &controls::AwbEnable, ControlInfo(false, true, true) },
 			{ &controls::Gamma, ControlInfo(0.0f, 0.0f, 0.0f) },/* actual min, max, default */
+			/* NEW: Sensor hardware controls */
+			{ &controls::AnalogueGain, ControlInfo(0.0f, 23.2f, 0.0f) },        /* 0-232 mapped to 0-23.2x */
+			{ &controls::DigitalGain, ControlInfo(1.0f, 16.0f, 1.0f) },         /* 256-4095 mapped to 1-16x */
+			{ &controls::ExposureTime, ControlInfo(4, 3522, 1600) },            /* Direct microsecond values */
 			/* Custom controls with values */
 			{ &controls::microchip::RedGain, ControlInfo(0, 8191, 512) },
 			{ &controls::microchip::BlueGain, ControlInfo(0, 8191, 512) },
@@ -1328,85 +1341,64 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
 }
 
 void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
-					 const ControlList &metadata)
+		const ControlList &metadata)
 {
-	if (!iscVideo_)
+	LOG(MicrochipISC, Debug) << "AWB processing complete - applying values to hardware";
+
+	if (!iscVideo_) {
+		LOG(MicrochipISC, Warning) << "No video device for applying AWB results";
 		return;
+	}
 
-	/* Skip hardware parameter application - we'll handle everything in software */
-	/* Add all parameters to the request metadata */
-	if (pipe_->processingRequest_) {
-		bool metadataAdded = false;
+	/* Handle ISC controls (white balance gains/offsets) */
+	const std::map<uint32_t, std::pair<uint32_t, std::string>> iscControlMap = {
+		{ipa::microchip_isc::GREEN_RED_GAIN_ID,    {0x009819c2, "GREEN_RED gain"}},
+		{ipa::microchip_isc::RED_GAIN_ID,          {0x009819c0, "RED gain"}},
+		{ipa::microchip_isc::GREEN_BLUE_GAIN_ID,   {0x009819c3, "GREEN_BLUE gain"}},
+		{ipa::microchip_isc::BLUE_GAIN_ID,         {0x009819c1, "BLUE gain"}},
+		{ipa::microchip_isc::GREEN_RED_OFFSET_ID,  {0x009819c6, "GREEN_RED offset"}},
+		{ipa::microchip_isc::RED_OFFSET_ID,        {0x009819c4, "RED offset"}},
+		{ipa::microchip_isc::GREEN_BLUE_OFFSET_ID, {0x009819c7, "GREEN_BLUE offset"}},
+		{ipa::microchip_isc::BLUE_OFFSET_ID,       {0x009819c5, "BLUE offset"}}
+	};
 
-		/* Add AGC and BLC parameters */
-		constexpr uint32_t AUTO_GAIN_ID = 0x009819d1;
-		constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
+	ControlList iscControls(iscVideo_->controls());
+	bool hasIscUpdates = false;
 
-		/* Forward AGC gain to request metadata */
-		if (metadata.contains(AUTO_GAIN_ID)) {
-			int32_t gainValue = metadata.get(AUTO_GAIN_ID).get<int32_t>();
-			pipe_->processingRequest_->metadata().set(AUTO_GAIN_ID, gainValue);
-			LOG(MicrochipISC, Debug) << "Added AGC gain to metadata: " << gainValue;
-			metadataAdded = true;
-		}
+	/* Apply ISC controls */
+	for (const auto &[ipaControlId, hwControl] : iscControlMap) {
+		if (metadata.contains(ipaControlId)) {
+			int32_t value = metadata.get(ipaControlId).get<int32_t>();
+			iscControls.set(hwControl.first, value);
+			hasIscUpdates = true;
 
-		/* Forward BLC level to request metadata */
-		if (metadata.contains(BLACK_LEVEL_ID)) {
-			int32_t blackLevel = metadata.get(BLACK_LEVEL_ID).get<int32_t>();
-			pipe_->processingRequest_->metadata().set(BLACK_LEVEL_ID, blackLevel);
-			LOG(MicrochipISC, Debug) << "Added BLC level to metadata: " << blackLevel;
-			metadataAdded = true;
-		}
-
-		/* Forward AWB and offsets if available */
-		constexpr std::array<uint32_t, 4> AWB_GAIN_IDS = {
-			0x009819c0, 0x009819c1, 0x009819c2, 0x009819c3
-		};
-
-		constexpr std::array<uint32_t, 4> AWB_OFFSET_IDS = {
-			0x009819c4, 0x009819c5, 0x009819c6, 0x009819c7
-		};
-
-		/* Add AWB gains to metadata with detailed logging */
-		for (const auto &id : AWB_GAIN_IDS) {
-			if (metadata.contains(id)) {
-				int32_t value = metadata.get(id).get<int32_t>();
-				pipe_->processingRequest_->metadata().set(id, value);
-				LOG(MicrochipISC, Debug) << "Added AWB	(0x" << std::hex << id << std::dec << ")	to metadata: " << value;
-				metadataAdded = true;
+			bool isGain = hwControl.second.find("gain") != std::string::npos;
+			if (isGain) {
+				LOG(MicrochipISC, Info) << "📊 ISC Hardware: " << hwControl.second << " " << value;
+			} else {
+				LOG(MicrochipISC, Debug) << "📊 ISC Hardware: " << hwControl.second << " " << value;
 			}
 		}
+	}
 
-		/* Add AWB offsets to metadata with detailed logging */
-		for (const auto &id : AWB_OFFSET_IDS) {
-			if (metadata.contains(id)) {
-				int32_t value = metadata.get(id).get<int32_t>();
-				pipe_->processingRequest_->metadata().set(id, value);
-				LOG(MicrochipISC, Debug) << "Added AWB	(0x" << std::hex << id << std::dec << ")	to metadata: " << value;
-				metadataAdded = true;
-			}
+	/* Apply ISC controls */
+	if (hasIscUpdates) {
+		int ret = iscVideo_->setControls(&iscControls);
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "❌ Failed to write AWB values to ISC hardware: " << ret;
+		} else {
+			LOG(MicrochipISC, Info) << "✅ AWB values written to ISC hardware";
 		}
+	}
 
-		/* Forward CCM coefficients and offsets if available */
-		constexpr std::array<uint32_t, 9> CCM_COEFF_IDS = {
-			0x009819e0, 0x009819e1, 0x009819e2,  /* CCM_COEFF_00_ID, CCM_COEFF_01_ID, CCM_COEFF_02_ID */
-			0x009819e3, 0x009819e4, 0x009819e5,  /* CCM_COEFF_10_ID, CCM_COEFF_11_ID, CCM_COEFF_12_ID */
-			0x009819e6, 0x009819e7, 0x009819e8	 /* CCM_COEFF_20_ID, CCM_COEFF_21_ID, CCM_COEFF_22_ID */
-		};
-
-		constexpr std::array<uint32_t, 3> CCM_OFFSET_IDS = {
-			0x009819e9, 0x009819ea, 0x009819eb	/* CCM_OFFSET_R_ID, CCM_OFFSET_G_ID, CCM_OFFSET_B_ID */
-		};
-
-		/* Add CCM matrix coefficients to metadata */
-		for (const auto &id : CCM_COEFF_IDS) {
-			if (metadata.contains(id)) {
-				int32_t value = metadata.get(id).get<int32_t>();
-				pipe_->processingRequest_->metadata().set(id, value);
-				LOG(MicrochipISC, Debug) << "Added CCM coefficient (0x" << std::hex << id << std::dec << ") to metadata: " << value;
-				metadataAdded = true;
-			}
+	/* Apply sensor controls */
+	if (pipe_) {
+		int ret = pipe_->applySensorControls(this, metadata);
+		if (ret < 0) {
+			LOG(MicrochipISC, Warning) << "Failed to apply sensor controls: " << ret;
 		}
+	}
+}
 
 int MicrochipISCCameraData::initStatsDevice()
 {
@@ -1486,6 +1478,48 @@ CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 	}
 
 	return status;
+}
+
+int PipelineHandlerMicrochipISC::applySensorControls(MicrochipISCCameraData *data,
+		const ControlList &controls)
+{
+	if (!data->sensor_) {
+		LOG(MicrochipISC, Error) << "No sensor available for hardware controls";
+		return -ENODEV;
+	}
+
+	ControlList sensorControls(data->sensor_->controls());
+	bool hasUpdates = false;
+
+	/* Map IPA sensor controls to sensor hardware */
+	const std::map<uint32_t, std::pair<uint32_t, std::string>> sensorControlMap = {
+		{ipa::microchip_isc::SENSOR_ANALOGUE_GAIN_ID, {0x009e0903, "analogue_gain"}},
+		{ipa::microchip_isc::SENSOR_DIGITAL_GAIN_ID,  {0x009f0905,  "digital_gain"}},
+		{ipa::microchip_isc::SENSOR_EXPOSURE_ID,      {0x00980911,      "exposure"}}
+	};
+
+	for (const auto &[ipaControlId, hwControl] : sensorControlMap) {
+		if (controls.contains(ipaControlId)) {
+			int32_t value = controls.get(ipaControlId).get<int32_t>();
+			sensorControls.set(hwControl.first, value);
+			hasUpdates = true;
+
+			LOG(MicrochipISC, Info) << "📊 Sensor Hardware: " << hwControl.second << " = " << value;
+		}
+	}
+
+	/* Apply to actual sensor hardware */
+	if (hasUpdates) {
+		int ret = data->sensor_->setControls(&sensorControls);
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "❌ Failed to apply sensor controls: " << ret;
+			return ret;
+		} else {
+			LOG(MicrochipISC, Info) << "✅ Sensor hardware controls applied successfully";
+		}
+	}
+
+	return 0;
 }
 
 int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *request)
