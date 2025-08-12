@@ -102,6 +102,11 @@ public:
 	int initSubdev(const MediaEntity *entity);
 	int setupFormats(V4L2SubdeviceFormat *format, V4L2Subdevice::Whence whence);
 	unsigned int getMediaBusFormat(PixelFormat *pixelFormat) const;
+	int initStatsDevice();
+	/* Stats streaming control methods */
+	int startStatsCapture();
+	int stopStatsCapture();
+	void statsBufferReady(FrameBuffer *buffer);
 
 	struct Configuration {
 		uint32_t code;
@@ -240,6 +245,211 @@ unsigned int MicrochipISCCameraData::getMediaBusFormat(PixelFormat *pixelFormat)
 	/* If not found, default format sets to YUYV */
 	*pixelFormat = formats::YUYV;
 	return MicrochipISCCameraConfiguration::formatsMap_.at(*pixelFormat);
+}
+
+int MicrochipISCCameraData::startStatsCapture()
+{
+	if (!statsEnabled_ || !statsDevice_) {
+		LOG(MicrochipISC, Debug) << "Stats capture not available";
+		return -ENODEV;
+	}
+
+	if (statsStreaming_) {
+		LOG(MicrochipISC, Debug) << "Background histogram already active";
+		return 0;
+	}
+
+	LOG(MicrochipISC, Info) << "Starting BACKGROUND histogram collection for instant AWB";
+
+	constexpr unsigned int kStatsBufferCount = 4;  /* More buffers for continuous operation */
+
+	int ret = statsDevice_->allocateBuffers(kStatsBufferCount, &statsBuffers_);
+	if (ret < 0) {
+		LOG(MicrochipISC, Error) << "Failed to allocate stats buffers: " << ret;
+		return ret;
+	}
+
+	/* Queue all buffers for continuous operation */
+	for (auto &buffer : statsBuffers_) {
+		ret = statsDevice_->queueBuffer(buffer.get());
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "Failed to queue stats buffer: " << ret;
+			statsDevice_->releaseBuffers();
+			statsBuffers_.clear();
+			return ret;
+		}
+	}
+
+	/* Start background streaming */
+	ret = statsDevice_->streamOn();
+	if (ret < 0) {
+		LOG(MicrochipISC, Error) << "Failed to start background histogram streaming: " << ret;
+		statsDevice_->releaseBuffers();
+		statsBuffers_.clear();
+		return ret;
+	}
+
+	statsStreaming_ = true;
+	histogramDataReady_.store(false, std::memory_order_release);  /* Reset cache state */
+
+	LOG(MicrochipISC, Info) << "Background histogram streaming active!";
+	LOG(MicrochipISC, Info) << "Continuous 4-channel histogram collection for instant AWB";
+	return 0;
+}
+
+int MicrochipISCCameraData::stopStatsCapture()
+{
+	if (!statsEnabled_ || !statsDevice_ || !statsStreaming_) {
+		LOG(MicrochipISC, Debug) << "Stats capture not running or not available";
+		return 0;
+	}
+
+	LOG(MicrochipISC, Debug) << "Stopping stats capture";
+
+	isShuttingDown_.store(true, std::memory_order_release);
+
+	try {
+		statsDevice_->bufferReady.disconnect(this, &MicrochipISCCameraData::statsBufferReady);
+		LOG(MicrochipISC, Debug) << "📊 Disconnected statsBufferReady signal";
+	} catch (const std::exception& e) {
+		LOG(MicrochipISC, Warning) << "Failed to disconnect signal: " << e.what();
+	}
+
+	/* Clear histogram cache */
+	{
+		std::lock_guard<std::mutex> lock(histogramMutex_);
+		histogramDataReady_.store(false, std::memory_order_release);
+		lastHistogramTimestamp_.store(0, std::memory_order_release);
+		cachedHistogramData_.reset();
+		LOG(MicrochipISC, Debug) << "Histogram cache cleared";
+	}
+
+	int ret = statsDevice_->streamOff();
+	if (ret < 0) {
+		LOG(MicrochipISC, Error) << "Failed to stop stats streaming: " << ret;
+	}
+
+	try {
+		statsDevice_->releaseBuffers();
+		statsBuffers_.clear();
+	} catch (const std::exception& e) {
+		LOG(MicrochipISC, Error) << "Exception during buffer release: " << e.what();
+	}
+
+	statsStreaming_ = false;
+	LOG(MicrochipISC, Info) << "Hardware histogram collection stopped cleanly";
+	return ret;
+}
+
+void MicrochipISCCameraData::statsBufferReady(FrameBuffer *buffer)
+{
+	static int statsCallCount = 0;
+	statsCallCount++;
+
+	/* Early exit if we already captured perfect data */
+	if (stopStatsProcessing_.load(std::memory_order_acquire)) {
+		LOG(MicrochipISC, Debug) << "📊 Perfect histogram already captured, ignoring buffer #" << statsCallCount;
+		return;
+	}
+
+	if (isShuttingDown_.load(std::memory_order_acquire)) {
+		LOG(MicrochipISC, Debug) << "📊 Ignoring stats buffer #" << statsCallCount << " during shutdown";
+		return;
+	}
+
+	if (!buffer || buffer->planes().empty() || !awbIPA_ || !statsDevice_) {
+		LOG(MicrochipISC, Warning) << "📊 Invalid buffer or missing components in statsBufferReady #"
+			<< statsCallCount;
+		goto requeue_buffer;
+	}
+
+	if (!statsStreaming_) {
+		LOG(MicrochipISC, Debug) << "📊 Not streaming, ignoring buffer #" << statsCallCount;
+		goto requeue_buffer;
+	}
+
+	LOG(MicrochipISC, Debug) << "📊 Processing stats buffer #" << statsCallCount;
+
+	{
+	size_t bufferSize = buffer->planes()[0].length;
+	uint64_t bufferTimestamp = buffer->metadata().timestamp;
+
+	void *mappedMemory = mmap(NULL, bufferSize, PROT_READ, MAP_SHARED,
+			buffer->planes()[0].fd.get(), buffer->planes()[0].offset);
+	if (mappedMemory == MAP_FAILED) {
+		LOG(MicrochipISC, Error) << "❌ Failed to map histogram buffer: " << strerror(errno);
+		goto requeue_buffer;
+	}
+
+	{
+	const struct isc_stat_buffer *statsData = static_cast<const struct isc_stat_buffer*>(mappedMemory);
+
+	if (statsData->valid_channels == 0x0F &&
+			statsData->frame_number > 0 &&
+			statsData->timestamp > 0) {
+
+		LOG(MicrochipISC, Info) << "🎉 Complete hardware histogram data received! Channels: 0x"
+			<< std::hex << (int)statsData->valid_channels;
+
+		uint32_t totalPixels = 0;
+		int validChannelCount = 0;
+
+		for (int ch = 0; ch < 4; ch++) {
+			if (statsData->valid_channels & (1 << ch)) {
+				validChannelCount++;
+				totalPixels += statsData->hist[ch].total_pixels;
+			}
+		}
+
+		if (validChannelCount == 4 && totalPixels > 50000) {
+			/* Keep your existing caching logic: */
+			std::lock_guard<std::mutex> lock(histogramMutex_);
+
+			if (!isShuttingDown_.load(std::memory_order_acquire)) {
+				const uint8_t* raw = static_cast<const uint8_t*>(mappedMemory);
+				cachedHistogramData_ = std::make_unique<ControlList>(controls::controls);
+				cachedHistogramData_->set(ipa::microchip_isc::ISC_HISTOGRAM_DATA_ID,
+						Span<const uint8_t>(raw, bufferSize));
+
+				uint64_t timestamp = (statsData->timestamp > 0) ? statsData->timestamp : bufferTimestamp;
+				lastHistogramTimestamp_.store(timestamp, std::memory_order_release);
+				histogramDataReady_.store(true, std::memory_order_release);
+
+				/* 🔧 NEW: Stop all future processing */
+				stopStatsProcessing_.store(true, std::memory_order_release);
+
+				LOG(MicrochipISC, Info) << "🎯 PERFECT HISTOGRAM CAPTURED - stopping stats processing";
+
+				munmap(mappedMemory, bufferSize);
+				return;  /* Don't re-queue */
+			}
+		}
+	}
+	}
+
+	munmap(mappedMemory, bufferSize);
+	}
+
+requeue_buffer:
+	if (!stopStatsProcessing_.load(std::memory_order_acquire) &&
+		!isShuttingDown_.load(std::memory_order_acquire) &&
+		statsDevice_ && statsStreaming_) {
+
+		int ret = statsDevice_->queueBuffer(buffer);
+		if (ret < 0) {
+			if (ret == -ESHUTDOWN || ret == -108) {
+				LOG(MicrochipISC, Debug) << "📊 Device stopping, buffer re-queue expected to fail";
+			} else {
+				LOG(MicrochipISC, Error) << "❌ Failed to re-queue stats buffer: " << ret;
+				/* Stop trying on error */
+				stopStatsProcessing_.store(true, std::memory_order_release);
+			}
+		} else {
+			LOG(MicrochipISC, Debug) << "📊 Re-queued histogram buffer #" << statsCallCount;
+		}
+	} else {
+		LOG(MicrochipISC, Debug) << "📊 Not re-queuing - perfect data captured or shutting down";
+	}
 }
 
 const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::formatsMap_ = {
@@ -1060,32 +1270,29 @@ void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
 			}
 		}
 
-		/* Add CCM offsets to metadata */
-		for (const auto &id : CCM_OFFSET_IDS) {
-			if (metadata.contains(id)) {
-				int32_t value = metadata.get(id).get<int32_t>();
-				pipe_->processingRequest_->metadata().set(id, value);
-				LOG(MicrochipISC, Debug) << "Added CCM offset (0x" << std::hex << id << std::dec << ") to metadata: " << value;
-				metadataAdded = true;
-			}
-		}
-
-		/* Add temperature info if available */
-		constexpr uint32_t SCENE_COLOR_CORRECTION_ID = 0x009819d2;
-		if (metadata.contains(SCENE_COLOR_CORRECTION_ID)) {
-			int32_t value = metadata.get(SCENE_COLOR_CORRECTION_ID).get<int32_t>();
-			pipe_->processingRequest_->metadata().set(SCENE_COLOR_CORRECTION_ID, value);
-			LOG(MicrochipISC, Debug) << "Added color temperature to metadata: " << value << "K";
-			metadataAdded = true;
-		}
-
-		if (metadataAdded) {
-			LOG(MicrochipISC, Debug) << "Added all ISC processing parameters to request metadata for software processing";
-		}
+int MicrochipISCCameraData::initStatsDevice()
+{
+	if (!statsDevice_) {
+		LOG(MicrochipISC, Warning) << "No stats device found during initialization - hardware histogram unavailable";
+		statsEnabled_ = false;
+		return 0; /* Not fatal - basic camera operation can continue */
 	}
 
-	/* Signal that processing is complete */
-	pipe_->processingComplete_ = true;
+	/* Verify the format matches our expectation */
+	V4L2DeviceFormat statsFormat;
+	int ret = statsDevice_->getFormat(&statsFormat);
+	if (ret < 0) {
+		LOG(MicrochipISC, Error) << "Failed to get stats device format: " << ret;
+		statsEnabled_ = false;
+		return 0;
+	}
+
+	/* Log the stats format details */
+	LOG(MicrochipISC, Info) << "Stats device format: " << statsFormat.fourcc
+		<< " size: " << statsFormat.size.width << "x" << statsFormat.size.height;
+
+	LOG(MicrochipISC, Info) << "ISC hardware stats device ready - signal connected and waiting for histogram data";
+	return 0;
 }
 
 CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
