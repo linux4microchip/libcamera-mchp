@@ -66,6 +66,7 @@ public:
 	virtual void setGreenRedOffset(int value);
 	virtual void setBlueOffset(int value);
 	virtual void setGreenBlueOffset(int value);
+	virtual void setAWBMode(int mode);
 
 protected:
 	std::unique_ptr<libcamera::CameraManager> cameraManager_;
@@ -84,6 +85,7 @@ protected:
 	bool whiteBalanceAutomatic_;
 	int gamma_;
 	AWBParameters awbParams_;
+	int awbMode_ = 0;
 
 	void requestComplete(libcamera::Request *request);
 	virtual void processFrame(const libcamera::FrameBuffer *buffer);

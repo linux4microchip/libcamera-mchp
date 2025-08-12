@@ -22,7 +22,8 @@ MchpCamCommon::MchpCamCommon()
 	  brightness_(1),
 	  contrast_(18),
 	  whiteBalanceAutomatic_(false),
-	  gamma_(1)
+	  gamma_(1),
+	  awbMode_(0)
 {
 }
 
@@ -361,4 +362,10 @@ void MchpCamCommon::setBlueOffset(int value)
 void MchpCamCommon::setGreenBlueOffset(int value)
 {
 	awbParams_.greenBlueOffset = value;
+}
+
+void MchpCamCommon::setAWBMode(int mode)
+{
+    awbMode_ = mode;
+    std::cout << "AWB mode set to " << mode << std::endl;
 }
