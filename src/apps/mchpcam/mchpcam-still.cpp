@@ -59,15 +59,15 @@ protected:
 
 private:
 	MchpCamStill() : MchpCamCommon(),
-			 imageFormat_("jpeg"),
-			 enableSoftwareProcessing_(false),
-			 rawCapture_(false),
-			 jpeg_quality_(95),
-			 png_compression_(6),
-			 enableAGC_(true),
-			 enableBLC_(false),
-			 enableAWB_(true),
-			 enableCCM_(true) {}
+		imageFormat_("jpeg"),
+		enableSoftwareProcessing_(false),
+		rawCapture_(false),
+		jpeg_quality_(95),
+		png_compression_(6),
+		enableAGC_(true),
+		enableBLC_(false),
+		enableAWB_(true),
+		enableCCM_(true) {}
 	std::string imageFormat_;
 	bool enableSoftwareProcessing_;
 	bool rawCapture_;
@@ -138,6 +138,7 @@ int MchpCamStill::captureStill(const std::string &filename)
 
 			/* Check for AGC parameters in request metadata */
 			const ControlList &metadata = requests_[0]->metadata();
+			std::cout << "Metadata size: " << metadata.size() << std::endl;
 			saveFrame(buffer, filename);
 			break;
 		}
@@ -149,232 +150,185 @@ int MchpCamStill::captureStill(const std::string &filename)
 void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filename)
 {
 	const FrameBuffer::Plane &plane = buffer->planes()[0];
-	void *mappedMemory = mmap(NULL, plane.length, PROT_READ, MAP_SHARED, plane.fd.get(), plane.offset);
-	if (mappedMemory == MAP_FAILED) {
-		std::cerr << "Failed to map memory" << std::endl;
+
+	std::cout << "  Buffer debug info:" << std::endl;
+	std::cout << "  Plane length: " << plane.length << " bytes" << std::endl;
+	std::cout << "  Expected size: " << (width_ * height_ * 2) << " bytes (RGB565)" << std::endl;
+	std::cout << "  Resolution: " << width_ << "x" << height_ << std::endl;
+
+	// Validate buffer size
+	size_t expectedSize = width_ * height_ * 2;  /* RGB565 = 2 bytes per pixel */
+	if (plane.length < expectedSize) {
+		std::cerr << "  Buffer too small! Expected: " << expectedSize
+			<< ", got: " << plane.length << std::endl;
 		return;
 	}
 
-	/* Create a copy of the buffer data for processing */
-	std::vector<uint8_t> processedData(static_cast<const uint8_t*>(mappedMemory),
-					   static_cast<const uint8_t*>(mappedMemory) + plane.length);
+	void *mappedMemory = mmap(NULL, plane.length, PROT_READ, MAP_SHARED, plane.fd.get(), plane.offset);
 
-	/* If raw capture is enabled, save the raw data directly without processing */
+	if (mappedMemory == MAP_FAILED) {
+		std::cerr << " Failed to map memory: " << strerror(errno) << std::endl;
+		return;
+	}
+
+	std::cout << " Memory mapped successfully" << std::endl;
+	std::cout << " Hardware AWB Mode - Using ISC processed pixels directly" << std::endl;
+
+	/* For raw capture - save directly without any processing */
 	if (rawCapture_) {
+		std::cout << " Saving raw data (hardware processed)" << std::endl;
 		saveRaw(static_cast<const unsigned char*>(mappedMemory), plane.length, filename);
 		munmap(mappedMemory, plane.length);
 		return;
 	}
 
-	/* Apply software processing if enabled */
-	if (enableSoftwareProcessing_) {
-		/* Check for metadata from the request */
-		const ControlList &metadata = requests_[0]->metadata();
+	std::cout << " Converting format: " << pixelFormat_.toString() << " → RGB888" << std::endl;
 
-		/* Setup processing parameters */
-		mchpcam::ImageProcessingParams processingParams;
-		bool hasParams = false;
-
-		/* Configure which algorithms to enable */
-		processingParams.enableAGC = enableAGC_;
-		processingParams.enableBLC = enableBLC_;
-		processingParams.enableAWB = enableAWB_;
-		processingParams.enableCCM = enableCCM_;
-
-		/* Set AWB mode */
-		processingParams.awbMode = awbMode_;
-
-		/* Get AGC gain */
-		constexpr uint32_t AUTO_GAIN_ID = 0x009819d1;
-		if (metadata.contains(AUTO_GAIN_ID)) {
-			processingParams.gainValue = metadata.get(AUTO_GAIN_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		/* Get BLC level */
-		constexpr uint32_t BLACK_LEVEL_ID = 0x009819d0;
-		if (metadata.contains(BLACK_LEVEL_ID)) {
-			processingParams.blackLevel = metadata.get(BLACK_LEVEL_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		/* Get AWB parameters - use the correct control IDs */
-		constexpr uint32_t RED_GAIN_ID = 0x009819c0;
-		constexpr uint32_t BLUE_GAIN_ID = 0x009819c1;
-		constexpr uint32_t GREEN_RED_GAIN_ID = 0x009819c2;
-		constexpr uint32_t GREEN_BLUE_GAIN_ID = 0x009819c3;
-		constexpr uint32_t RED_OFFSET_ID = 0x009819c4;
-		constexpr uint32_t BLUE_OFFSET_ID = 0x009819c5;
-		constexpr uint32_t GREEN_RED_OFFSET_ID = 0x009819c6;
-		constexpr uint32_t GREEN_BLUE_OFFSET_ID = 0x009819c7;
-
-		/* Extract AWB gains if available */
-		if (metadata.contains(RED_GAIN_ID)) {
-			processingParams.awbParams.redGain = metadata.get(RED_GAIN_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		if (metadata.contains(BLUE_GAIN_ID)) {
-			processingParams.awbParams.blueGain = metadata.get(BLUE_GAIN_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		if (metadata.contains(GREEN_RED_GAIN_ID)) {
-			processingParams.awbParams.greenRedGain = metadata.get(GREEN_RED_GAIN_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		if (metadata.contains(GREEN_BLUE_GAIN_ID)) {
-			processingParams.awbParams.greenBlueGain = metadata.get(GREEN_BLUE_GAIN_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		/* Extract AWB offsets if available */
-		if (metadata.contains(RED_OFFSET_ID)) {
-			processingParams.awbParams.redOffset = metadata.get(RED_OFFSET_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		if (metadata.contains(BLUE_OFFSET_ID)) {
-			processingParams.awbParams.blueOffset = metadata.get(BLUE_OFFSET_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		if (metadata.contains(GREEN_RED_OFFSET_ID)) {
-			processingParams.awbParams.greenRedOffset = metadata.get(GREEN_RED_OFFSET_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		if (metadata.contains(GREEN_BLUE_OFFSET_ID)) {
-			processingParams.awbParams.greenBlueOffset = metadata.get(GREEN_BLUE_OFFSET_ID).get<int32_t>();
-			hasParams = true;
-		}
-
-		/* Get CCM parameters */
-		constexpr std::array<uint32_t, 9> CCM_COEFF_IDS = {
-			0x009819e0, 0x009819e1, 0x009819e2,  /* CCM_COEFF_00_ID, CCM_COEFF_01_ID, CCM_COEFF_02_ID */
-			0x009819e3, 0x009819e4, 0x009819e5,  /* CCM_COEFF_10_ID, CCM_COEFF_11_ID, CCM_COEFF_12_ID */
-			0x009819e6, 0x009819e7, 0x009819e8   /* CCM_COEFF_20_ID, CCM_COEFF_21_ID, CCM_COEFF_22_ID */
-		};
-
-		constexpr std::array<uint32_t, 3> CCM_OFFSET_IDS = {
-			0x009819e9, 0x009819ea, 0x009819eb	/* CCM_OFFSET_R_ID, CCM_OFFSET_G_ID, CCM_OFFSET_B_ID */
-		};
-
-		/* Check if at least one CCM coefficient exists */
-		if (metadata.contains(CCM_COEFF_IDS[0])) {
-			/* Get all CCM coefficients */
-			for (size_t i = 0; i < CCM_COEFF_IDS.size(); i++) {
-				if (metadata.contains(CCM_COEFF_IDS[i])) {
-					processingParams.ccmMatrix[i] = metadata.get(CCM_COEFF_IDS[i]).get<int32_t>();
-				}
-			}
-
-			/* Get CCM offsets */
-			for (size_t i = 0; i < CCM_OFFSET_IDS.size(); i++) {
-				if (metadata.contains(CCM_OFFSET_IDS[i])) {
-					processingParams.ccmOffset[i] = metadata.get(CCM_OFFSET_IDS[i]).get<int32_t>();
-				}
-			}
-
-			/* Get color temperature if available */
-			constexpr uint32_t SCENE_COLOR_CORRECTION_ID = 0x009819d2;
-			if (metadata.contains(SCENE_COLOR_CORRECTION_ID)) {
-				processingParams.colorTemperature =
-					metadata.get(SCENE_COLOR_CORRECTION_ID).get<int32_t>();
-			}
-
-			hasParams = true;
-		}
-
-		/* Apply all processing to the image data if we have parameters */
-		if (hasParams) {
-			mchpcam::ImageProcessor::applySoftwareProcessing(
-				processedData.data(), width_, height_, processingParams);
-		} else {
-			std::cout << "No processing parameters found in metadata" << std::endl;
-		}
-	}
-
-	/* Buffer for RGB888 data (used for PNG/JPEG output) */
-	std::vector<uint8_t> rgbBuffer(width_ * height_ * 3);
-
-	/* Convert based on pixel format */
-	if (pixelFormat_ == formats::RGB565) {
-		/* Convert RGB565 to RGB888 */
-		for (unsigned int y = 0; y < height_; ++y) {
-			for (unsigned int x = 0; x < width_; ++x) {
-				/* RGB565 stores 2 bytes per pixel */
-				uint16_t pixel = processedData[y * width_ * 2 + x * 2] |
-					(processedData[y * width_ * 2 + x * 2 + 1] << 8);
-				/* Extract RGB components (5 bits R, 6 bits G, 5 bits B) */
-				uint8_t r = ((pixel >> 11) & 0x1F) << 3;	/* 5 bits to 8 bits */
-				uint8_t g = ((pixel >> 5) & 0x3F) << 2;		/* 6 bits to 8 bits */
-				uint8_t b = (pixel & 0x1F) << 3;					/* 5 bits to 8 bits */
-				/* Store in RGB buffer with bit expansion for highest quality */
-				rgbBuffer[(y * width_ + x) * 3] = r | (r >> 5);			/* Expand 5-bit to full 8-bit */
-				rgbBuffer[(y * width_ + x) * 3 + 1] = g | (g >> 6); /* Expand 6-bit to full 8-bit */
-				rgbBuffer[(y * width_ + x) * 3 + 2] = b | (b >> 5); /* Expand 5-bit to full 8-bit */
-			}
-		}
-	} else if (pixelFormat_ == formats::YUYV) {
-		/* Convert YUYV to RGB888 with improved coefficients */
-		for (unsigned int y = 0; y < height_; ++y) {
-			for (unsigned int x = 0; x < width_; x += 2) {
-				int y0 = processedData[y * width_ * 2 + x * 2];
-				int u = processedData[y * width_ * 2 + x * 2 + 1];
-				int y1 = processedData[y * width_ * 2 + x * 2 + 2];
-				int v = processedData[y * width_ * 2 + x * 2 + 3];
-
-				/* BT.601 conversion (standard coefficients) */
-				int r0 = std::clamp(y0 + 1.402f * (v - 128), 0.0f, 255.0f);
-				int g0 = std::clamp(y0 - 0.344f * (u - 128) - 0.714f * (v - 128), 0.0f, 255.0f);
-				int b0 = std::clamp(y0 + 1.772f * (u - 128), 0.0f, 255.0f);
-
-				int r1 = std::clamp(y1 + 1.402f * (v - 128), 0.0f, 255.0f);
-				int g1 = std::clamp(y1 - 0.344f * (u - 128) - 0.714f * (v - 128), 0.0f, 255.0f);
-				int b1 = std::clamp(y1 + 1.772f * (u - 128), 0.0f, 255.0f);
-
-				rgbBuffer[(y * width_ + x) * 3] = r0;
-				rgbBuffer[(y * width_ + x) * 3 + 1] = g0;
-				rgbBuffer[(y * width_ + x) * 3 + 2] = b0;
-				rgbBuffer[(y * width_ + x + 1) * 3] = r1;
-				rgbBuffer[(y * width_ + x + 1) * 3 + 1] = g1;
-				rgbBuffer[(y * width_ + x + 1) * 3 + 2] = b1;
-			}
-		}
-	} else {
-		std::cerr << "Unsupported pixel format: " << pixelFormat_.toString() << std::endl;
+	/* Validate pixel format */
+	if (pixelFormat_ != formats::RGB565 && pixelFormat_ != formats::YUYV) {
+		std::cerr << " Unsupported pixel format: " << pixelFormat_.toString() << std::endl;
 		munmap(mappedMemory, plane.length);
 		return;
 	}
 
-	/* Create appropriate filename with extension if needed */
+	/* Create RGB888 buffer with extra safety margin */
+	size_t rgbBufferSize = width_ * height_ * 3;
+	std::vector<uint8_t> rgbBuffer;
+
+	try {
+		rgbBuffer.resize(rgbBufferSize);
+		std::cout << " RGB buffer allocated: " << rgbBufferSize << " bytes" << std::endl;
+	} catch (const std::exception& e) {
+		std::cerr << " Failed to allocate RGB buffer: " << e.what() << std::endl;
+		munmap(mappedMemory, plane.length);
+		return;
+	}
+
+	const uint8_t* data = static_cast<const uint8_t*>(mappedMemory);
+
+	if (pixelFormat_ == formats::RGB565) {
+		std::cout << " Converting RGB565 → RGB888 (hardware AWB already applied)" << std::endl;
+
+		// Safe conversion with bounds checking
+		for (unsigned int y = 0; y < height_; ++y) {
+			for (unsigned int x = 0; x < width_; ++x) {
+				/* Calculate indices with bounds checking */
+				size_t pixelIndex = (y * width_ + x) * 2;
+				size_t rgbIndex = (y * width_ + x) * 3;
+
+				/* Bounds check for input buffer */
+				if (pixelIndex + 1 >= plane.length) {
+					std::cerr << " Input buffer overflow at pixel (" << x << "," << y << ")" << std::endl;
+					munmap(mappedMemory, plane.length);
+					return;
+				}
+
+				/* Bounds check for output buffer */
+				if (rgbIndex + 2 >= rgbBufferSize) {
+					std::cerr << " Output buffer overflow at pixel (" << x << "," << y << ")" << std::endl;
+					munmap(mappedMemory, plane.length);
+					return;
+				}
+
+				/* Read RGB565 pixel safely */
+				uint16_t pixel = data[pixelIndex] | (data[pixelIndex + 1] << 8);
+
+				/* Extract RGB components */
+				uint8_t r = (pixel >> 11) & 0x1F;  /* 5 bits */
+				uint8_t g = (pixel >> 5) & 0x3F;   /* 6 bits */
+				uint8_t b = pixel & 0x1F;          /* 5 bits */
+
+				/* Expand to 8-bit */
+				r = (r << 3) | (r >> 2);  /* 5→8 bit expansion */
+				g = (g << 2) | (g >> 4);  /* 6→8 bit expansion */
+				b = (b << 3) | (b >> 2);  /* 5→8 bit expansion */
+
+				/* Store safely */
+				rgbBuffer[rgbIndex] = r;
+				rgbBuffer[rgbIndex + 1] = g;
+				rgbBuffer[rgbIndex + 2] = b;
+			}
+
+		}
+
+	} else if (pixelFormat_ == formats::YUYV) {
+		std::cout << " Converting YUYV → RGB888 (hardware AWB already applied)" << std::endl;
+
+		/* YUYV conversion with bounds checking */
+		for (unsigned int y = 0; y < height_; ++y) {
+			for (unsigned int x = 0; x < width_; x += 2) {
+				size_t yuvIndex = (y * width_ + x) * 2;
+				size_t rgb0Index = (y * width_ + x) * 3;
+				size_t rgb1Index = (y * width_ + x + 1) * 3;
+
+				/* Bounds checks */
+				if (yuvIndex + 3 >= plane.length ||
+						rgb1Index + 2 >= rgbBufferSize) {
+					std::cerr << " Buffer overflow in YUYV conversion" << std::endl;
+					munmap(mappedMemory, plane.length);
+					return;
+				}
+
+				/* Read YUYV safely */
+				int y0 = data[yuvIndex];
+				int u = data[yuvIndex + 1];
+				int y1 = data[yuvIndex + 2];
+				int v = data[yuvIndex + 3];
+
+				/* Convert with clamping */
+				auto clamp = [](float val) -> uint8_t {
+					return static_cast<uint8_t>(std::max(0.0f, std::min(255.0f, val)));
+				};
+
+				rgbBuffer[rgb0Index] = clamp(y0 + 1.402f * (v - 128));
+				rgbBuffer[rgb0Index + 1] = clamp(y0 - 0.344f * (u - 128) - 0.714f * (v - 128));
+				rgbBuffer[rgb0Index + 2] = clamp(y0 + 1.772f * (u - 128));
+
+				rgbBuffer[rgb1Index] = clamp(y1 + 1.402f * (v - 128));
+				rgbBuffer[rgb1Index + 1] = clamp(y1 - 0.344f * (u - 128) - 0.714f * (v - 128));
+				rgbBuffer[rgb1Index + 2] = clamp(y1 + 1.772f * (u - 128));
+			}
+		}
+	}
+
+	std::cout << " Format conversion completed successfully" << std::endl;
+
 	std::string outfilename = filename;
 
-	/* Save in requested format */
-	if (imageFormat_ == "jpeg" || imageFormat_ == "jpg") {
-		if (outfilename.find(".jpg") == std::string::npos &&
-		    outfilename.find(".jpeg") == std::string::npos) {
-			outfilename += ".jpg";
+	try {
+		if (imageFormat_ == "jpeg" || imageFormat_ == "jpg") {
+			if (outfilename.find(".jpg") == std::string::npos &&
+					outfilename.find(".jpeg") == std::string::npos) {
+				outfilename += ".jpg";
+			}
+			std::cout << " Saving JPEG: " << outfilename << std::endl;
+			saveJpeg(rgbBuffer.data(), width_, height_, outfilename);
+
+		} else if (imageFormat_ == "png") {
+			if (outfilename.find(".png") == std::string::npos) {
+				outfilename += ".png";
+			}
+			std::cout << " Saving PNG: " << outfilename << std::endl;
+			savePng(rgbBuffer.data(), width_, height_, outfilename);
+
+		} else {
+			if (outfilename.find(".png") == std::string::npos &&
+					outfilename.find(".jpg") == std::string::npos &&
+					outfilename.find(".jpeg") == std::string::npos) {
+				outfilename += ".png";
+			}
+			std::cout << " Saving PNG (default): " << outfilename << std::endl;
+			savePng(rgbBuffer.data(), width_, height_, outfilename);
 		}
-		saveJpeg(rgbBuffer.data(), width_, height_, outfilename);
-	} else if (imageFormat_ == "png") {
-		if (outfilename.find(".png") == std::string::npos) {
-			outfilename += ".png";
-		}
-		savePng(rgbBuffer.data(), width_, height_, outfilename);
-	} else {
-		/* Default to PNG if format not recognized */
-		if (outfilename.find(".png") == std::string::npos &&
-		    outfilename.find(".jpg") == std::string::npos &&
-		    outfilename.find(".jpeg") == std::string::npos) {
-			outfilename += ".png";
-		}
-		savePng(rgbBuffer.data(), width_, height_, outfilename);
+
+		std::cout << " File saved successfully!" << std::endl;
+
+	} catch (const std::exception& e) {
+		std::cerr << " Error during file save: " << e.what() << std::endl;
 	}
 
 	munmap(mappedMemory, plane.length);
+	std::cout << " Hardware AWB test completed!" << std::endl;
 }
 
 void MchpCamStill::saveRaw(const unsigned char *data, size_t size, const std::string &filename)

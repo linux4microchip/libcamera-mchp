@@ -172,8 +172,49 @@ int MchpCamCommon::init(const std::string &cameraId)
 	controls.set(controls::AwbEnable, whiteBalanceAutomatic_);
 	controls.set(controls::Gamma, gamma_);
 
-	/* Add AWB component controls */
-	MchpCamCommon::applyAWBDefaults(controls, awbParams_);
+	/* Enhanced AWB Control Logic - CORRECTED */
+	if (!whiteBalanceAutomatic_ && hasManualAWBParams()) {
+		std::cout << " MANUAL AWB MODE" << std::endl;
+		std::cout << " Applying user-specified manual AWB parameters" << std::endl;
+
+		/*  Disable both kernel and IPA AWB for manual control */
+		controls.set(controls::AwbEnable, false);
+
+		/* Apply manual values */
+		MchpCamCommon::applyManualAWB(controls, awbParams_);
+
+	} else if (awbMode_ != 0) {  /* Non-auto AWB mode selected */
+		std::cout << " PRESET AWB MODE: ";
+		switch (awbMode_) {
+		case 0: std::cout << "Auto"; break;
+		case 1: std::cout << "Daylight"; break;
+		case 2: std::cout << "Cloudy"; break;
+		case 3: std::cout << "Tungsten"; break;
+		case 4: std::cout << "Fluorescent"; break;
+		case 5: std::cout << "Shade"; break;
+		case 6: std::cout << "Manual"; break;
+		default: std::cout << "Unknown (" << awbMode_ << ")"; break;
+		}
+		std::cout << std::endl;
+
+		controls.set(controls::AwbEnable, false);
+
+		/* Send AWB mode to IPA using custom control */
+		constexpr uint32_t AWB_PRESET_MODE_ID = 0x009819f0;
+		controls.set(AWB_PRESET_MODE_ID, awbMode_);
+
+	} else if (whiteBalanceAutomatic_) {
+		std::cout << " AUTOMATIC AWB (Kernel Driver)" << std::endl;
+		std::cout << " Using simple kernel/driver AWB" << std::endl;
+
+		controls.set(controls::AwbEnable, true);
+
+	} else {
+		std::cout << " AUTOMATIC AWB (Advanced IPA)" << std::endl;
+		std::cout << " Using advanced IPA AWB algorithms" << std::endl;
+
+		controls.set(controls::AwbEnable, false);
+	}
 
 	/* Add controls to request */
 	request->controls() = controls;
