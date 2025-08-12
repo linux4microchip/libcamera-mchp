@@ -542,9 +542,9 @@ Size PipelineHandlerMicrochipISC::findOptimalSize(const std::vector<MicrochipISC
 
 	for (const auto& config : configs) {
 		if (config.captureSize.width <= target.width &&
-		    config.captureSize.height <= target.height &&
-		    config.captureSize.width * config.captureSize.height >
-		    optimal.width * optimal.height) {
+			config.captureSize.height <= target.height &&
+			config.captureSize.width * config.captureSize.height >
+			optimal.width * optimal.height) {
 			optimal = config.captureSize;
 		}
 	}
@@ -1526,22 +1526,25 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 {
 	MicrochipISCCameraData *data = cameraData(camera);
 
-	/* Process controls first */
+	data->stopStatsProcessing_.store(false, std::memory_order_release);
+
+	data->resetFrameCycling();
+
 	int ret = processControls(data, request);
 	if (ret < 0)
 		return ret;
 
-	/* Queue all buffers - don't try to process AWB here */
 	for (Stream &stream : data->streams_) {
 		FrameBuffer *buffer = request->findBuffer(&stream);
 		if (buffer) {
 			ret = data->iscVideo_->queueBuffer(buffer);
 			if (ret < 0) {
+				LOG(MicrochipISC, Error) << "Failed to queue buffer: " << ret;
 				return ret;
 			}
+			LOG(MicrochipISC, Debug) << "📸 Queued initial buffer for histogram cycling";
 		}
 	}
-
 	return 0;
 }
 
@@ -1549,98 +1552,168 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 {
 	Request *request = buffer->request();
 	if (!request) {
-		LOG(MicrochipISC, Warning) << "Buffer " << buffer
-					   << " is not associated with a request";
+		LOG(MicrochipISC, Warning) << "Buffer without associated request";
 		return;
 	}
 
-	LOG(MicrochipISC, Debug) << "Buffer ready: " << buffer
-				 << ", request: " << request;
+	MicrochipISCCameraData *data = activeData_;
+	if (!data) {
+		LOG(MicrochipISC, Error) << "No active camera data";
+		return;
+	}
 
-	/* Map the buffer memory to access the image data */
-	void *mappedMemory = mmap(NULL, buffer->planes()[0].length, PROT_READ, MAP_SHARED,
-				  buffer->planes()[0].fd.get(), buffer->planes()[0].offset);
+	if (data->isShuttingDown_.load(std::memory_order_acquire)) {
+		LOG(MicrochipISC, Debug) << "Ignoring buffer during shutdown";
+		return;
+	}
 
-	if (mappedMemory != MAP_FAILED) {
-		/* Debug the buffer data */
-		const uint8_t* bytes = static_cast<const uint8_t*>(mappedMemory);
+	data->currentFrameCount_++;
+	LOG(MicrochipISC, Info) << "📷 Frame " << data->currentFrameCount_ << " ready - monitoring for all 4 histogram channels";
 
-		/* Check if buffer contains data */
-		bool bufferHasData = false;
-		for (size_t i = 0; i < std::min(buffer->planes()[0].length, static_cast<size_t>(100)); i++) {
-			if (bytes[i] != 0) {
-				bufferHasData = true;
-				break;
+	/* Store the first request for frame cycling */
+	if (data->currentFrameCount_ == 1) {
+		data->pendingRequest_ = request;
+		LOG(MicrochipISC, Info) << "🔄 Starting extended histogram cycling (20 frames like fswebcam -S 20)";
+	}
+
+	const int MAX_FRAMES_FOR_HISTOGRAM = 20;
+
+	bool hardwareDataReady = data->histogramDataReady_.load(std::memory_order_acquire);
+
+	if (hardwareDataReady) {
+		LOG(MicrochipISC, Info) << "⚡ Frame " << data->currentFrameCount_ << ": SUCCESS! Using hardware histogram";
+
+		std::lock_guard<std::mutex> lock(data->histogramMutex_);
+		if (data->cachedHistogramData_ && data->awbIPA_) {
+			try {
+				data->awbIPA_->processStats(*data->cachedHistogramData_);
+				data->histogramDataReady_.store(false, std::memory_order_release);
+				LOG(MicrochipISC, Info) << "✅ Hardware histogram processed successfully on frame " << data->currentFrameCount_;
+
+				completeRequestWithBuffer(data->pendingRequest_ ? data->pendingRequest_ : request, buffer);
+				LOG(MicrochipISC, Info) << "🎯 SUCCESS: Request completed with HARDWARE AWB after " << data->currentFrameCount_ << " frames";
+				data->resetFrameCycling();
+				return;
+
+			} catch (const std::exception& e) {
+				LOG(MicrochipISC, Error) << "Hardware histogram processing failed: " << e.what();
 			}
 		}
+	}
 
-		LOG(MicrochipISC, Debug) << "Buffer data all zeros: "
-					 << (bufferHasData ? "no" : "yes");
+	if (data->currentFrameCount_ < MAX_FRAMES_FOR_HISTOGRAM) {
+		/* Continue cycling - still waiting for hardware histogram */
+		LOG(MicrochipISC, Debug) << "🔄 Frame " << data->currentFrameCount_ << "/" << MAX_FRAMES_FOR_HISTOGRAM
+			<< ": Continuing (waiting for all 4 histogram channels)";
 
-		/* Debug first few bytes */
-		std::stringstream hexBytes;
-		hexBytes << "Buffer data (first 16 bytes): ";
-		for (size_t i = 0; i < std::min(buffer->planes()[0].length, static_cast<size_t>(16)); i++) {
-			hexBytes << std::hex << std::setw(2) << std::setfill('0')
-				 << static_cast<int>(bytes[i]) << " ";
+		/* Re-queue the same buffer to get more frames */
+		int ret = data->iscVideo_->queueBuffer(buffer);
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "Failed to re-queue buffer: " << ret;
+			/* Force completion on error - fall through to software processing */
+		} else {
+			return;
 		}
-		LOG(MicrochipISC, Debug) << hexBytes.str();
+	}
 
-		/* Process the data with the IPA asynchronously */
-		processingRequest_ = request;
+	/* TIMEOUT: Use software fallback after MAX_FRAMES_FOR_HISTOGRAM */
+	LOG(MicrochipISC, Warning) << "⏰ Timeout after " << data->currentFrameCount_ << " frames - completing with software AWB";
 
-		/* Create control list with pixel data for the IPA */
+	void *mappedMemory = mmap(NULL, buffer->planes()[0].length, PROT_READ, MAP_SHARED,
+			buffer->planes()[0].fd.get(), buffer->planes()[0].offset);
+
+	if (mappedMemory != MAP_FAILED) {
+		/* Send pixel data to IPA for software histogram processing */
 		ControlList controls(controls::controls);
 		controls.set(ipa::microchip_isc::ISC_PIXEL_VALUES_ID,
-			     Span<const uint8_t>(bytes, buffer->planes()[0].length));
+				Span<const uint8_t>(static_cast<const uint8_t*>(mappedMemory),
+					buffer->planes()[0].length));
 
-		/* Process stats asynchronously - the awbComplete callback will be called later */
-		if (activeData_ && activeData_->awbIPA_) {
-			LOG(MicrochipISC, Debug) << "Sending buffer to IPA for async processing";
-			activeData_->awbIPA_->processStats(controls);
+		if (data->awbIPA_) {
+			LOG(MicrochipISC, Debug) << "Sending pixel data to IPA for software AWB processing";
+			data->awbIPA_->processStats(controls);
 		}
 
 		munmap(mappedMemory, buffer->planes()[0].length);
+
+		completeRequestWithBuffer(data->pendingRequest_ ? data->pendingRequest_ : request, buffer);
+		LOG(MicrochipISC, Info) << "🏁 Request completed with software AWB after " << data->currentFrameCount_ << " frames";
+		data->resetFrameCycling();
+
 	} else {
-		LOG(MicrochipISC, Error) << "Failed to map buffer memory: " << strerror(errno);
+		LOG(MicrochipISC, Error) << "Failed to map buffer for software processing: " << strerror(errno);
+
+		completeRequestWithBuffer(data->pendingRequest_ ? data->pendingRequest_ : request, buffer);
+		data->resetFrameCycling();
 	}
+}
 
-	if (!request->metadata().contains(controls::SensorTimestamp.id()))
-		request->metadata().set(controls::SensorTimestamp,
-					buffer->metadata().timestamp);
-
-	completeBuffer(request, buffer);
-	if (request->hasPendingBuffers()) {
-		LOG(MicrochipISC, Debug) << "Request " << request
-					 << " still has pending buffers";
+void PipelineHandlerMicrochipISC::completeRequestWithBuffer(Request *request, FrameBuffer *buffer)
+{
+	if (!request) {
+		LOG(MicrochipISC, Warning) << "Attempting to complete null request";
 		return;
 	}
 
-	LOG(MicrochipISC, Debug) << "Completing request " << request;
-	completeRequest(request);
+	if (buffer->metadata().timestamp) {
+		request->metadata().set(controls::SensorTimestamp, buffer->metadata().timestamp);
+	}
+
+	completeBuffer(request, buffer);
+	if (!request->hasPendingBuffers()) {
+		completeRequest(request);
+	}
 }
 
 void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 {
 	MicrochipISCCameraData *data = cameraData(camera);
+	LOG(MicrochipISC, Debug) << "Stopping device for camera: " << camera->id();
 
-	LOG(MicrochipISC, Debug) << "Stopping device for camera " << camera->id();
+	data->isShuttingDown_.store(true, std::memory_order_release);
+
+	data->resetFrameCycling();
+
+	if (data->statsEnabled_ && data->statsStreaming_) {
+		LOG(MicrochipISC, Info) << "Stopping background histogram collection";
+		data->stopStatsCapture();
+	}
 
 	if (data->iscVideo_) {
-		data->iscVideo_->streamOff();
-		data->iscVideo_->releaseBuffers();
+		try {
+			data->iscVideo_->streamOff();
+			data->iscVideo_->releaseBuffers();
+			data->bufferCount = 0;
+			LOG(MicrochipISC, Debug) << "Main video stopped cleanly";
+		} catch (const std::exception& e) {
+			LOG(MicrochipISC, Error) << "Video stop failed: " << e.what();
+		}
 	}
 
-	if (data->awbIPA_)
-		data->awbIPA_->stop();
+	if (data->awbIPA_) {
+		try {
+			data->awbIPA_->stop();
+			LOG(MicrochipISC, Debug) << "IPA stopped cleanly";
+		} catch (const std::exception& e) {
+			LOG(MicrochipISC, Error) << "IPA stop failed: " << e.what();
+		}
+	}
 
 	for (const auto &[name, subdev] : data->iscSubdev_) {
-		subdev->close();
+		if (subdev) {
+			try {
+				subdev->close();
+			} catch (...) {
+				/* Ignore exceptions during cleanup */
+			}
+		}
 	}
 
-	LOG(MicrochipISC, Debug) << "Device stopped for camera " << camera->id();
+	LOG(MicrochipISC, Info) << "Device stopped cleanly with proper event coordination cleanup";
 }
 
 REGISTER_PIPELINE_HANDLER(PipelineHandlerMicrochipISC, "microchip-isc")
 
 } /* namespace libcamera */
+
+
