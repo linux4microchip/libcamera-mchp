@@ -31,35 +31,47 @@ MchpCamCommon::~MchpCamCommon()
 	stop();
 }
 
-int MchpCamCommon::applyAWBDefaults(libcamera::ControlList& controls, const AWBParameters& params)
+bool MchpCamCommon::hasManualAWBParams() const
 {
-	std::cout << "Applying Default AWB parameters :" << std::endl;
-	std::cout << "    Red Gain: " << params.redGain << std::endl;
-	std::cout << "    Blue Gain: " << params.blueGain << std::endl;
-	std::cout << "    Green-Red Gain: " << params.greenRedGain << std::endl;
-	std::cout << "    Green-Blue Gain: " << params.greenBlueGain << std::endl;
-	std::cout << "    Red Offset: " << params.redOffset << std::endl;
-	std::cout << "    Blue Offset: " << params.blueOffset << std::endl;
-	std::cout << "    Green-Red Offset: " << params.greenRedOffset << std::endl;
-	std::cout << "    Green-Blue Offset: " << params.greenBlueOffset << std::endl;
+	/* Check if user explicitly set any AWB parameter via command line */
+	return (awbParams_.redGain != static_cast<int>(AWBSentinel::GAIN_NOT_SET) ||
+		awbParams_.blueGain != static_cast<int>(AWBSentinel::GAIN_NOT_SET) ||
+		awbParams_.greenRedGain != static_cast<int>(AWBSentinel::GAIN_NOT_SET) ||
+		awbParams_.greenBlueGain != static_cast<int>(AWBSentinel::GAIN_NOT_SET) ||
+		awbParams_.redOffset != static_cast<int>(AWBSentinel::OFFSET_NOT_SET) ||
+		awbParams_.blueOffset != static_cast<int>(AWBSentinel::OFFSET_NOT_SET) ||
+		awbParams_.greenRedOffset != static_cast<int>(AWBSentinel::OFFSET_NOT_SET) ||
+		awbParams_.greenBlueOffset != static_cast<int>(AWBSentinel::OFFSET_NOT_SET));
+}
 
-	/* Use a helper function */
-	auto setControl = [&](const libcamera::ControlId *id, auto value) {
-		controls.set(id->id(), libcamera::ControlValue(value));
+int MchpCamCommon::applyManualAWB(libcamera::ControlList& controls, const AWBParameters& params)
+{
+	std::cout << "Applying User-Specified Manual AWB parameters:" << std::endl;
+
+	auto setControlWithDefault = [&](const libcamera::ControlId *id, int value, const char* name, int defaultVal, AWBSentinel sentinel) {
+		int actualValue = (value == static_cast<int>(sentinel)) ? defaultVal : value;
+		controls.set(id->id(), libcamera::ControlValue(actualValue));
+		std::cout << "    " << name << ": " << actualValue;
+		if (value == static_cast<int>(sentinel)) {
+			std::cout << " (default)";
+		} else {
+			std::cout << " (user-set)";
+		}
+		std::cout << std::endl;
 	};
 
-	/* Set white balance parameters */
-	setControl(&libcamera::controls::microchip::RedGain, params.redGain);
-	setControl(&libcamera::controls::microchip::BlueGain, params.blueGain);
-	setControl(&libcamera::controls::microchip::GreenRedGain, params.greenRedGain);
-	setControl(&libcamera::controls::microchip::GreenBlueGain, params.greenBlueGain);
-	setControl(&libcamera::controls::microchip::RedOffset, params.redOffset);
-	setControl(&libcamera::controls::microchip::BlueOffset, params.blueOffset);
-	setControl(&libcamera::controls::microchip::GreenRedOffset, params.greenRedOffset);
-	setControl(&libcamera::controls::microchip::GreenBlueOffset, params.greenBlueOffset);
+	/* Apply gains (default to 512 if not set) */
+	setControlWithDefault(&libcamera::controls::microchip::RedGain, params.redGain, "Red Gain", 512, AWBSentinel::GAIN_NOT_SET);
+	setControlWithDefault(&libcamera::controls::microchip::BlueGain, params.blueGain, "Blue Gain", 512, AWBSentinel::GAIN_NOT_SET);
+	setControlWithDefault(&libcamera::controls::microchip::GreenRedGain, params.greenRedGain, "Green-Red Gain", 512, AWBSentinel::GAIN_NOT_SET);
+	setControlWithDefault(&libcamera::controls::microchip::GreenBlueGain, params.greenBlueGain, "Green-Blue Gain", 512, AWBSentinel::GAIN_NOT_SET);
 
-	/* Disable automatic white balance to use manual parameters */
-	setControl(&libcamera::controls::AwbEnable, false);
+	/* Apply offsets (default to 0 if not set) */
+	setControlWithDefault(&libcamera::controls::microchip::RedOffset, params.redOffset, "Red Offset", 0, AWBSentinel::OFFSET_NOT_SET);
+	setControlWithDefault(&libcamera::controls::microchip::BlueOffset, params.blueOffset, "Blue Offset", 0, AWBSentinel::OFFSET_NOT_SET);
+	setControlWithDefault(&libcamera::controls::microchip::GreenRedOffset, params.greenRedOffset, "Green-Red Offset", 0, AWBSentinel::OFFSET_NOT_SET);
+	setControlWithDefault(&libcamera::controls::microchip::GreenBlueOffset, params.greenBlueOffset, "Green-Blue Offset", 0, AWBSentinel::OFFSET_NOT_SET);
+
 	return 0;
 }
 

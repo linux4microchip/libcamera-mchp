@@ -107,7 +107,6 @@ int MchpCamStill::captureStill(const std::string &filename)
 	setControl(&controls::Brightness, brightness_);
 	setControl(&controls::Contrast, contrast_);
 	setControl(&controls::Gamma, gamma_);
-	MchpCamCommon::applyAWBDefaults(controls, awbParams_);
 
 	int ret = camera_->start(&controls);
 	if (ret < 0) {

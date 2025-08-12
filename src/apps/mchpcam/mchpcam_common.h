@@ -56,7 +56,8 @@ public:
 	virtual void setContrast(int value);
 	virtual void setWhiteBalanceAutomatic(bool value);
 	virtual void setGamma(int value);
-	static int applyAWBDefaults(libcamera::ControlList& controls, const AWBParameters& params);
+	bool hasManualAWBParams() const;
+	static int applyManualAWB(libcamera::ControlList& controls, const AWBParameters& params);
 	virtual void setRedGain(int value);
 	virtual void setGreenRedGain(int value);
 	virtual void setBlueGain(int value);
