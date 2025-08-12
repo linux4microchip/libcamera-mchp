@@ -22,23 +22,21 @@
 
 using namespace libcamera;
 
-struct AWBParameters {
-	int redGain;
-	int blueGain;
-	int greenRedGain;
-	int greenBlueGain;
-	int redOffset;
-	int blueOffset;
-	int greenRedOffset;
-	int greenBlueOffset;
+/* Sentinel values to detect if user explicitly set AWB parameters */
+enum class AWBSentinel : int {
+	GAIN_NOT_SET = -1,      /* Valid gains: 0-8191, so -1 is impossible */
+	OFFSET_NOT_SET = -9999  /* Valid offsets: -8191 to 8191, so -9999 is impossible */
+};
 
-	/* Constructor with defaults */
-	AWBParameters()
-		: redGain(1944), blueGain(3404),
-		  greenRedGain(1103), greenBlueGain(1619),
-		  redOffset(7928), blueOffset(7936),
-		  greenRedOffset(7920), greenBlueOffset(7920)
-		{}
+struct AWBParameters {
+	int redGain = static_cast<int>(AWBSentinel::GAIN_NOT_SET);
+	int blueGain = static_cast<int>(AWBSentinel::GAIN_NOT_SET);
+	int greenRedGain = static_cast<int>(AWBSentinel::GAIN_NOT_SET);
+	int greenBlueGain = static_cast<int>(AWBSentinel::GAIN_NOT_SET);
+	int redOffset = static_cast<int>(AWBSentinel::OFFSET_NOT_SET);
+	int blueOffset = static_cast<int>(AWBSentinel::OFFSET_NOT_SET);
+	int greenRedOffset = static_cast<int>(AWBSentinel::OFFSET_NOT_SET);
+	int greenBlueOffset = static_cast<int>(AWBSentinel::OFFSET_NOT_SET);
 };
 
 class MchpCamCommon {
