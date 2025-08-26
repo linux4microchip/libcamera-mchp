@@ -13,7 +13,6 @@
 #include "algorithms/common.h"
 #include "algorithms/awb.h"
 #include "algorithms/agc.h"
-#include "algorithms/blc.h"
 #include "algorithms/ccm.h"
 
 namespace libcamera {
@@ -27,7 +26,6 @@ public:
 	IPAMicrochipISC()
 	: awb_(std::make_unique<AWB>()),
 	agc_(std::make_unique<AGC>()),
-	blc_(std::make_unique<BLC>()),
 	ccm_(std::make_unique<CCM>())
 	{
 	}
@@ -66,7 +64,6 @@ public:
 	/* Configure all algorithms */
 	awb_->configure(sensorInfo);
 	agc_->configure(sensorInfo);
-	blc_->configure(sensorInfo);
 	ccm_->configure(sensorInfo);
 
 	return 0;
@@ -122,7 +119,6 @@ public:
 	/* Process each algorithm using the common statistics */
 	awb_->process(imageStats, results);
 	agc_->process(imageStats, results);
-	blc_->process(imageStats, results);
 	ccm_->process(imageStats, results);
 
 	/* Emit complete signal */
@@ -134,7 +130,6 @@ private:
 	/* Unique pointers to algorithms */
 	std::unique_ptr<AWB> awb_;
 	std::unique_ptr<AGC> agc_;
-	std::unique_ptr<BLC> blc_;
 	std::unique_ptr<CCM> ccm_;
 
 	/* Common image information */

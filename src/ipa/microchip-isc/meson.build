@@ -6,7 +6,6 @@ microchip_isc_sources = files([
     'microchip_isc_ipa.cpp',     # Add the IPA interface implementation
     'algorithms/awb.cpp',
     'algorithms/agc.cpp',
-    'algorithms/blc.cpp',
     'algorithms/common.cpp',
     'algorithms/ccm.cpp',
 ])

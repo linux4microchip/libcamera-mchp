@@ -48,11 +48,10 @@ public:
 
 	/* New methods for algorithm control */
 	void setEnableAGC(bool enable) { enableAGC_ = enable; }
-	void setEnableBLC(bool enable) { enableBLC_ = enable; }
 	void setEnableAWB(bool enable) { enableAWB_ = enable; }
 	void setEnableCCM(bool enable) { enableCCM_ = enable; }
 	void setEnableAllProcessing(bool enable) {
-		enableAGC_ = enableBLC_ = enableAWB_ = enableCCM_ = enable;
+		enableAGC_ = enableAWB_ = enableCCM_ = enable;
 	}
 
 protected:
@@ -78,7 +77,6 @@ private:
 
 	/* Algorithm control flags */
 	bool enableAGC_;
-	bool enableBLC_;
 	bool enableAWB_;
 	bool enableCCM_;
 	mchpcam::ImageProcessingParams processingParams_;
@@ -139,7 +137,7 @@ int MchpCamStill::captureStill(const std::string &filename)
 			std::cout << "Captured image with resolution: "
 				  << width_ << "x" << height_ << std::endl;
 
-			/* Check for AGC/BLC parameters in request metadata */
+			/* Check for AGC parameters in request metadata */
 			const ControlList &metadata = requests_[0]->metadata();
 			saveFrame(buffer, filename);
 			break;
@@ -554,7 +552,6 @@ void printUsage(const char *argv0)
 
 	std::cout << "\nAlgorithm options:" << std::endl;
 	std::cout << "	--enable-agc                 Enable Automatic Gain Control" << std::endl;
-	std::cout << "	--enable-blc                 Enable Black Level Correction" << std::endl;
 	std::cout << "	--enable-ccm                 Enable Color Correction Matrix" << std::endl;
 	std::cout << "	--enable-awb                 Enable Software Auto white balance processing" << std::endl;
 	std::cout << "	--enable-all                 Enable all image processing algorithms" << std::endl;
@@ -591,7 +588,6 @@ int main(int argc, char **argv)
 		{"green-red-offset",    required_argument, 0, 0},
 		{"green-blue-offset",   required_argument, 0, 0},
 		{"enable-agc",	        no_argument, 0, 0},
-		{"enable-blc",	        no_argument, 0, 0},
 		{"enable-ccm",	        no_argument, 0, 0},
 		{"enable-awb",	        no_argument, 0, 0},
 		{"enable-all",	        no_argument, 0, 0},
@@ -685,9 +681,6 @@ int main(int argc, char **argv)
 				app->setGreenBlueOffset(std::stoi(optarg));
 			} else if (strcmp(option_name, "enable-agc") == 0) {
 				app->setEnableAGC(true);
-				app->setEnableSoftwareProcessing(true);
-			} else if (strcmp(option_name, "enable-blc") == 0) {
-				app->setEnableBLC(true);
 				app->setEnableSoftwareProcessing(true);
 			} else if (strcmp(option_name, "enable-ccm") == 0) {
 				app->setEnableCCM(true);
