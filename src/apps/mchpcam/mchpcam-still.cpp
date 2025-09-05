@@ -46,14 +46,6 @@ public:
 	void setJpegQuality(int quality) { jpeg_quality_ = std::clamp(quality, 1, 100); }
 	void setPngCompression(int level) { png_compression_ = std::clamp(level, 0, 9); }
 
-	/* New methods for algorithm control */
-	void setEnableAGC(bool enable) { enableAGC_ = enable; }
-	void setEnableAWB(bool enable) { enableAWB_ = enable; }
-	void setEnableCCM(bool enable) { enableCCM_ = enable; }
-	void setEnableAllProcessing(bool enable) {
-		enableAGC_ = enableAWB_ = enableCCM_ = enable;
-	}
-
 protected:
 	void saveFrame(const FrameBuffer *buffer, const std::string &filename) override;
 
@@ -63,23 +55,13 @@ private:
 		enableSoftwareProcessing_(false),
 		rawCapture_(false),
 		jpeg_quality_(95),
-		png_compression_(6),
-		enableAGC_(true),
-		enableBLC_(false),
-		enableAWB_(true),
-		enableCCM_(true) {}
+		png_compression_(6) {}
+
 	std::string imageFormat_;
 	bool enableSoftwareProcessing_;
 	bool rawCapture_;
 	int jpeg_quality_;
 	int png_compression_;
-	int awbMode_ = 0; /* Default to auto (WB_AUTO) */
-
-	/* Algorithm control flags */
-	bool enableAGC_;
-	bool enableAWB_;
-	bool enableCCM_;
-	mchpcam::ImageProcessingParams processingParams_;
 
 	void saveJpeg(const unsigned char *data, int width, int height, const std::string &filename);
 	void savePng(const unsigned char *data, int width, int height, const std::string &filename);

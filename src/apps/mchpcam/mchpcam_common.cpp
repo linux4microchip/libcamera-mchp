@@ -23,7 +23,10 @@ MchpCamCommon::MchpCamCommon()
 	  contrast_(18),
 	  whiteBalanceAutomatic_(false),
 	  gamma_(1),
-	  awbMode_(0)
+	  awbMode_(0),
+	  enableAWB_(true),
+	  enableAGC_(true),
+	  enableCCM_(true)
 {
 }
 

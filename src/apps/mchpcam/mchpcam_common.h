@@ -56,6 +56,15 @@ public:
 	virtual void setContrast(int value);
 	virtual void setWhiteBalanceAutomatic(bool value);
 	virtual void setGamma(int value);
+
+	/* Algorithm control methods */
+	virtual void setEnableAWB(bool enable) { enableAWB_ = enable; }
+	virtual void setEnableAGC(bool enable) { enableAGC_ = enable; }
+	virtual void setEnableCCM(bool enable) { enableCCM_ = enable; }
+	virtual void setEnableAllProcessing(bool enable) {
+		enableAWB_ = enableAGC_ = enableCCM_ = enable;
+	}
+
 	bool hasManualAWBParams() const;
 	static int applyManualAWB(libcamera::ControlList& controls, const AWBParameters& params);
 	virtual void setRedGain(int value);
@@ -86,6 +95,9 @@ protected:
 	int gamma_;
 	AWBParameters awbParams_;
 	int awbMode_ = 0;
+	bool enableAWB_ = true;
+	bool enableAGC_ = true;
+	bool enableCCM_ = true;
 
 	void requestComplete(libcamera::Request *request);
 	virtual void processFrame(const libcamera::FrameBuffer *buffer);
