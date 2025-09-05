@@ -466,13 +466,12 @@ void printUsage(const char *argv0)
 	std::cout << "	--raw                        Save raw sensor data instead of processed image" << std::endl;
 	std::cout << "	--image-format=FORMAT        Set output image format (jpeg, png, raw)" << std::endl;
 
-	std::cout << "\nImage processing options:" << std::endl;
+	std::cout << "\nImage control options:" << std::endl;
 	std::cout << "	--brightness=VALUE           Set brightness (-100 to 100)" << std::endl;
 	std::cout << "	--contrast=VALUE             Set contrast (0 to 100)" << std::endl;
 	std::cout << "	--gamma=VALUE                Set gamma (0 to 2)" << std::endl;
-	std::cout << "	--enable-processing          Enable software image processing" << std::endl;
 
-	std::cout << "\nWhite balance options:" << std::endl;
+	std::cout << "\nWhite balance control options:" << std::endl;
 	std::cout << "	--awb=MODE                   Set white balance mode (auto, daylight, cloudy, tungsten, fluorescent, shade, manual)" << std::endl;
 	std::cout << "	--awb-enable                 Enable auto white balance" << std::endl;
 	std::cout << "	--red-gain=VALUE             Set red component gain (0 to 8191)" << std::endl;
@@ -484,11 +483,15 @@ void printUsage(const char *argv0)
 	std::cout << "	--green-red-offset=VALUE     Set green-red component offset (-4095 to 4095)" << std::endl;
 	std::cout << "	--green-blue-offset=VALUE    Set green-blue component offset (-4095 to 4095)" << std::endl;
 
-	std::cout << "\nAlgorithm options:" << std::endl;
+	std::cout << "\nImage processing options:" << std::endl;
 	std::cout << "	--enable-agc                 Enable Automatic Gain Control" << std::endl;
+	std::cout << "	--disable-agc                Disable Automatic Gain Control" << std::endl;
 	std::cout << "	--enable-ccm                 Enable Color Correction Matrix" << std::endl;
-	std::cout << "	--enable-awb                 Enable Software Auto white balance processing" << std::endl;
-	std::cout << "	--enable-all                 Enable all image processing algorithms" << std::endl;
+	std::cout << "	--disable-ccm                Disable Color Correction Matrix" << std::endl;
+	std::cout << "	--enable-awb                 Enable Auto White Balance processing" << std::endl;
+	std::cout << "	--disable-awb                Disable Auto White Balance processing" << std::endl;
+	std::cout << "	--enable-all                 Enable all IPA algorithms" << std::endl;
+	std::cout << "	--disable-all                Disable all IPA algorithms" << std::endl;
 
 	std::cout << "\nGeneral options:" << std::endl;
 	std::cout << "	-h, --help                   Print this help message" << std::endl;
@@ -510,7 +513,6 @@ int main(int argc, char **argv)
 		{"brightness",	        required_argument, 0, 0},
 		{"contrast",	        required_argument, 0, 0},
 		{"gamma",	        required_argument, 0, 0},
-		{"enable-processing",   no_argument, 0, 0},
 		{"awb",		        required_argument, 0, 0},
 		{"awb-enable",	        no_argument, 0, 0},
 		{"red-gain",	        required_argument, 0, 0},
@@ -525,6 +527,11 @@ int main(int argc, char **argv)
 		{"enable-ccm",	        no_argument, 0, 0},
 		{"enable-awb",	        no_argument, 0, 0},
 		{"enable-all",	        no_argument, 0, 0},
+		{"disable-agc",         no_argument, 0, 0},
+		{"disable-ccm",         no_argument, 0, 0},
+		{"disable-awb",         no_argument, 0, 0},
+		{"disable-all",         no_argument, 0, 0},
+
 		{"help",                no_argument, 0, 'h'},
 		{0, 0, 0, 0}
 	};
@@ -574,8 +581,6 @@ int main(int argc, char **argv)
 				app->setContrast(std::stoi(optarg));
 			} else if (strcmp(option_name, "gamma") == 0) {
 				app->setGamma(std::stoi(optarg));
-			} else if (strcmp(option_name, "enable-processing") == 0) {
-				app->setEnableSoftwareProcessing(true);
 			} else if (strcmp(option_name, "awb") == 0) {
 				/* Handle AWB mode setting */
 				std::string mode = optarg;
@@ -615,16 +620,20 @@ int main(int argc, char **argv)
 				app->setGreenBlueOffset(std::stoi(optarg));
 			} else if (strcmp(option_name, "enable-agc") == 0) {
 				app->setEnableAGC(true);
-				app->setEnableSoftwareProcessing(true);
-			} else if (strcmp(option_name, "enable-ccm") == 0) {
-				app->setEnableCCM(true);
-				app->setEnableSoftwareProcessing(true);
 			} else if (strcmp(option_name, "enable-awb") == 0) {
 				app->setEnableAWB(true);
-				app->setEnableSoftwareProcessing(true);
+			} else if (strcmp(option_name, "enable-ccm") == 0) {
+				app->setEnableCCM(true);
 			} else if (strcmp(option_name, "enable-all") == 0) {
 				app->setEnableAllProcessing(true);
-				app->setEnableSoftwareProcessing(true);
+			} else if (strcmp(option_name, "disable-agc") == 0) {
+				app->setEnableAGC(false);
+			} else if (strcmp(option_name, "disable-ccm") == 0) {
+				app->setEnableCCM(false);
+			} else if (strcmp(option_name, "disable-awb") == 0) {
+				app->setEnableAWB(false);
+			} else if (strcmp(option_name, "disable-all") == 0) {
+				app->setEnableAllProcessing(false);
 			}
 			break;
 		default:
