@@ -1362,6 +1362,21 @@ void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
 		{ipa::microchip_isc::BLUE_OFFSET_ID,       {0x009819c5, "BLUE offset"}}
 	};
 
+	const std::map<uint32_t, std::pair<uint32_t, std::string>> ccmControlMap = {
+		{0x009819c8, {0x009819c8, "CCM cc_rr"}},  /* V4L2_CID_ISC_CC_RR */
+		{0x009819c9, {0x009819c9, "CCM cc_rg"}},  /* V4L2_CID_ISC_CC_RG */
+		{0x009819ca, {0x009819ca, "CCM cc_rb"}},  /* V4L2_CID_ISC_CC_RB */
+		{0x009819cb, {0x009819cb, "CCM cc_or"}},  /* V4L2_CID_ISC_CC_OR */
+		{0x009819cc, {0x009819cc, "CCM cc_gr"}},  /* V4L2_CID_ISC_CC_GR */
+		{0x009819cd, {0x009819cd, "CCM cc_gg"}},  /* V4L2_CID_ISC_CC_GG */
+		{0x009819ce, {0x009819ce, "CCM cc_gb"}},  /* V4L2_CID_ISC_CC_GB */
+		{0x009819cf, {0x009819cf, "CCM cc_og"}},  /* V4L2_CID_ISC_CC_OG */
+		{0x009819d0, {0x009819d0, "CCM cc_br"}},  /* V4L2_CID_ISC_CC_BR */
+		{0x009819d1, {0x009819d1, "CCM cc_bg"}},  /* V4L2_CID_ISC_CC_BG */
+		{0x009819d2, {0x009819d2, "CCM cc_bb"}},  /* V4L2_CID_ISC_CC_BB */
+		{0x009819d3, {0x009819d3, "CCM cc_ob"}},  /* V4L2_CID_ISC_CC_OB */
+	};
+
 	ControlList iscControls(iscVideo_->controls());
 	bool hasIscUpdates = false;
 
@@ -1378,6 +1393,15 @@ void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
 			} else {
 				LOG(MicrochipISC, Debug) << "📊 ISC Hardware: " << hwControl.second << " " << value;
 			}
+		}
+	}
+
+	for (const auto &[ipaControlId, hwControl] : ccmControlMap) {
+		if (metadata.contains(ipaControlId)) {
+			int32_t value = metadata.get(ipaControlId).get<int32_t>();
+			iscControls.set(hwControl.first, value);
+			hasIscUpdates = true;
+			LOG(MicrochipISC, Info) << "🎨 CCM Hardware: " << hwControl.second << " " << value;
 		}
 	}
 

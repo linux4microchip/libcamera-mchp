@@ -20,6 +20,19 @@ const uint32 SENSOR_EXPOSURE_ID = 0x00980911;
 const uint32 ISC_AWB_CCT_ESTIMATE_ID = 0x009819d4;
 const uint32 ISC_AWB_FLUORESCENT_STRENGTH_ID = 0x009819d5;
 const uint32 ISC_AWB_GREEN_CAST_CORRECTION_ID = 0x009819d6;
+/* CCM Control IDs */
+const uint32 V4L2_CID_ISC_CC_RR = 0x009819c8;
+const uint32 V4L2_CID_ISC_CC_RG = 0x009819c9;
+const uint32 V4L2_CID_ISC_CC_RB = 0x009819ca;
+const uint32 V4L2_CID_ISC_CC_OR = 0x009819cb;
+const uint32 V4L2_CID_ISC_CC_GR = 0x009819cc;
+const uint32 V4L2_CID_ISC_CC_GG = 0x009819cd;
+const uint32 V4L2_CID_ISC_CC_GB = 0x009819ce;
+const uint32 V4L2_CID_ISC_CC_OG = 0x009819cf;
+const uint32 V4L2_CID_ISC_CC_BR = 0x009819d0;
+const uint32 V4L2_CID_ISC_CC_BG = 0x009819d1;
+const uint32 V4L2_CID_ISC_CC_BB = 0x009819d2;
+const uint32 V4L2_CID_ISC_CC_OB = 0x009819d3;
 
 /* Structures for sensor and algorithm statuses */
 struct MicrochipISCSensorInfo {
