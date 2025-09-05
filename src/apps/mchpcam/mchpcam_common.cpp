@@ -35,6 +35,46 @@ MchpCamCommon::~MchpCamCommon()
 	stop();
 }
 
+uint32_t MchpCamCommon::algorithmEnableFlags() const
+{
+	uint32_t enableFlags = 0;
+
+	if (enableAWB_) enableFlags |= static_cast<uint32_t>(IPAAlgorithmBits::AWB);
+	if (enableAGC_) enableFlags |= static_cast<uint32_t>(IPAAlgorithmBits::AGC);
+	if (enableCCM_) enableFlags |= static_cast<uint32_t>(IPAAlgorithmBits::CCM);
+
+	return enableFlags;
+}
+
+void MchpCamCommon::printAlgorithmStatus() const
+{
+	std::vector<std::string> enabled;
+
+	if (enableAWB_) enabled.push_back("AWB");
+	if (enableAGC_) enabled.push_back("AGC");
+	if (enableCCM_) enabled.push_back("CCM");
+
+	if (!enabled.empty()) {
+		std::cout << "Enabled IPA Algorithms: ";
+		for (size_t i = 0; i < enabled.size(); ++i) {
+			std::cout << enabled[i];
+			if (i < enabled.size() - 1) std::cout << ", ";
+		}
+		std::cout << std::endl;
+	} else {
+		std::cout << "All IPA algorithms disabled" << std::endl;
+	}
+}
+
+void MchpCamCommon::applyAlgorithmControls(libcamera::ControlList& controls)
+{
+	uint32_t enableFlags = algorithmEnableFlags();
+
+	controls.set(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID, static_cast<int32_t>(enableFlags));
+
+	printAlgorithmStatus();
+}
+
 bool MchpCamCommon::hasManualAWBParams() const
 {
 	/* Check if user explicitly set any AWB parameter via command line */

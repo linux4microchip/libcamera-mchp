@@ -19,6 +19,7 @@
 #include <libcamera/stream.h>
 #include <libcamera/property_ids.h>
 #include <libcamera/logging.h>
+#include <libcamera/ipa/microchip_isc_ipa_interface.h>
 
 using namespace libcamera;
 
@@ -43,6 +44,14 @@ class MchpCamCommon {
 public:
 	MchpCamCommon();
 	virtual ~MchpCamCommon();
+
+	/* IPA Algorithm Control Bit Flags */
+	enum class IPAAlgorithmBits : uint32_t {
+		AWB = 0x01,
+		AGC = 0x02,
+		CCM = 0x04
+	};
+
 	int init(const std::string &cameraId = "");
 	void stop();
 	void setResolution(unsigned int width, unsigned int height);
@@ -65,6 +74,11 @@ public:
 		enableAWB_ = enableAGC_ = enableCCM_ = enable;
 	}
 
+	/* Algorithm status getters */
+	bool isAWBEnabled() const { return enableAWB_; }
+	bool isAGCEnabled() const { return enableAGC_; }
+	bool isCCMEnabled() const { return enableCCM_; }
+
 	bool hasManualAWBParams() const;
 	static int applyManualAWB(libcamera::ControlList& controls, const AWBParameters& params);
 	virtual void setRedGain(int value);
@@ -76,6 +90,12 @@ public:
 	virtual void setBlueOffset(int value);
 	virtual void setGreenBlueOffset(int value);
 	virtual void setAWBMode(int mode);
+
+	/* IPA algorithm control methods */
+	void applyAlgorithmControls(libcamera::ControlList& controls);
+	void printAlgorithmStatus() const;
+	uint32_t algorithmEnableFlags() const;
+
 
 protected:
 	std::unique_ptr<libcamera::CameraManager> cameraManager_;

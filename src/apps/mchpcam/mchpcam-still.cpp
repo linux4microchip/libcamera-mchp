@@ -5,7 +5,6 @@
  * mchpcam - mchpcam-still application for image capture
  */
 #include "mchpcam_common.h"
-#include "mchpcam_image_processor.h"
 #include <iostream>
 #include <iomanip>
 #include <chrono>
@@ -41,7 +40,6 @@ public:
 	}
 
 	int captureStill(const std::string &filename);
-	void setEnableSoftwareProcessing(bool enable) { enableSoftwareProcessing_ = enable; }
 	void setRawCapture(bool enable) { rawCapture_ = enable; }
 	void setJpegQuality(int quality) { jpeg_quality_ = std::clamp(quality, 1, 100); }
 	void setPngCompression(int level) { png_compression_ = std::clamp(level, 0, 9); }
@@ -52,7 +50,6 @@ protected:
 private:
 	MchpCamStill() : MchpCamCommon(),
 		imageFormat_("jpeg"),
-		enableSoftwareProcessing_(false),
 		rawCapture_(false),
 		jpeg_quality_(95),
 		png_compression_(6) {}
@@ -89,6 +86,8 @@ int MchpCamStill::captureStill(const std::string &filename)
 	setControl(&controls::Brightness, brightness_);
 	setControl(&controls::Contrast, contrast_);
 	setControl(&controls::Gamma, gamma_);
+
+	applyAlgorithmControls(controls);
 
 	int ret = camera_->start(&controls);
 	if (ret < 0) {
