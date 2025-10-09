@@ -835,6 +835,14 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 
 	/* Configure IPA if available */
 	if (data->awbIPA_) {
+		/* Sensor capabilities database */
+		struct SensorCapabilities {
+			int32_t minExposure, maxExposure, minAnalogGain, maxAnalogGain, minDigitalGain, maxDigitalGain;
+		};
+		static const std::map<std::string, SensorCapabilities> sensorDatabase = {
+			{"imx219", {4, 3522, 0, 232, 256, 2048}},
+		};
+
 		ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo = {};
 		sensorInfo.model = data->sensor_->model();
 		sensorInfo.width = captureFormat.size.width;
