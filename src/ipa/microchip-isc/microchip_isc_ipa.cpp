@@ -54,7 +54,29 @@ public:
 	[[maybe_unused]] const std::map<unsigned int, ControlInfoMap> &entityControls
 	) override
 	{
-	LOG(ISC_IPA, Debug) << "Configuring IPA for sensor " << sensorInfo.model;
+		/*
+		 * Validate sensor information from pipeline handler.
+		 * The pipeline handler is responsible for querying sensor capabilities
+		 * from V4L2 controls or using the sensor database fallback.
+		 */
+		LOG(ISC_IPA, Info) << "Configuring IPA for sensor: " << sensorInfo.model
+			<< " (" << sensorInfo.width << "x" << sensorInfo.height << ")";
+		LOG(ISC_IPA, Info) << "Exposure range: " << sensorInfo.minExposure
+			<< "-" << sensorInfo.maxExposure << "μs";
+		LOG(ISC_IPA, Info) << "Analog gain range: " << sensorInfo.minAnalogGain
+			<< "-" << sensorInfo.maxAnalogGain;
+		LOG(ISC_IPA, Info) << "Digital gain range: " << sensorInfo.minDigitalGain
+			<< "-" << sensorInfo.maxDigitalGain;
+
+		/* Validate limits before passing to algorithms */
+		if (sensorInfo.minExposure <= 0 || sensorInfo.maxExposure <= 0 ||
+		    sensorInfo.minExposure >= sensorInfo.maxExposure ||
+		    sensorInfo.minAnalogGain >= sensorInfo.maxAnalogGain ||
+		    sensorInfo.minDigitalGain >= sensorInfo.maxDigitalGain) {
+			LOG(ISC_IPA, Error) << "Invalid sensor capabilities from pipeline handler";
+			LOG(ISC_IPA, Error) << "Pipeline must provide valid sensor limits";
+			return -1;
+		}
 
 	/* Store image information */
 	imageInfo_.width = sensorInfo.width;

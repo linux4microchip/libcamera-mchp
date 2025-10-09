@@ -28,6 +28,14 @@ struct MicrochipISCSensorInfo {
 	uint32 width;
 	uint32 height;
 	uint32 pixelFormat;
+
+	/* Dynamic sensor capabilities */
+	int32 minExposure;
+	int32 maxExposure;
+	int32 minAnalogGain;
+	int32 maxAnalogGain;
+	int32 minDigitalGain;
+	int32 maxDigitalGain;
 };
 
 struct AWBStatus {
