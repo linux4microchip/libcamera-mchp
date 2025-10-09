@@ -848,9 +848,26 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		sensorInfo.width = captureFormat.size.width;
 		sensorInfo.height = captureFormat.size.height;
 		sensorInfo.pixelFormat = sensorFormat.code;
+		sensorInfo.bitsPerPixel = 10;
+
+		/* Lookup sensor capabilities */
+		auto it = sensorDatabase.find(sensorInfo.model);
+		if (it == sensorDatabase.end()) {
+			it = sensorDatabase.begin();
+			LOG(MicrochipISC, Warning) << "Unknown sensor " << sensorInfo.model
+				<< ", using " << it->first << " defaults";
+		}
+		const auto &caps = it->second;
+		sensorInfo.minExposure = caps.minExposure;
+		sensorInfo.maxExposure = caps.maxExposure;
+		sensorInfo.minAnalogGain = caps.minAnalogGain;
+		sensorInfo.maxAnalogGain = caps.maxAnalogGain;
+		sensorInfo.minDigitalGain = caps.minDigitalGain;
+		sensorInfo.maxDigitalGain = caps.maxDigitalGain;
 
 		LOG(MicrochipISC, Debug) << "Configuring IPA for sensor: " << sensorInfo.model
-			<< " (" << sensorInfo.width << "x" << sensorInfo.height << ")";
+			<< " (" << sensorInfo.width << "x" << sensorInfo.height << ")"
+			<< " E[" << caps.minExposure << "-" << caps.maxExposure << "]μs";
 
 		std::map<unsigned int, IPAStream> streamConfig;
 		std::map<unsigned int, ControlInfoMap> entityControls;
