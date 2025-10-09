@@ -110,6 +110,12 @@ public:
 	{
 		frameCount_++;
 
+		/* Read algorithm enable flags from application */
+		if (stats.contains(IPA_ALGORITHM_ENABLE_ID)) {
+			algorithmEnableFlags_ = stats.get(IPA_ALGORITHM_ENABLE_ID).get<int32_t>();
+			LOG(ISC_IPA, Debug) << "Algorithm flags: 0x" << std::hex << algorithmEnableFlags_;
+		}
+
 		LOG(ISC_IPA, Debug) << "=== UNIFIED SCENE PROCESSING (Frame " << frameCount_ << ") ===";
 
 		/* Debug available controls periodically to avoid log spam */
@@ -213,7 +219,7 @@ public:
 			 * - Detects green cast from fluorescent lighting
 			 * - Applies anti-green-cast or daylight-optimized algorithms based on scene
 			 */
-			if (awb_) {
+			if ((algorithmEnableFlags_ & IPA_ALGORITHM_AWB) && awb_) {
 				LOG(ISC_IPA, Debug) << "Processing AWB with unified scene analysis";
 				awb_->process(imageStats, results);
 				LOG(ISC_IPA, Debug) << "AWB convergence: "
@@ -228,7 +234,7 @@ public:
 			 * - Uses conservative exposure for HDR scenes to preserve highlights/shadows
 			 * - Prefers exposure over gain for outdoor scenes for better image quality
 			 */
-			if (agc_) {
+			if ((algorithmEnableFlags_ & IPA_ALGORITHM_AGC) && agc_) {
 				LOG(ISC_IPA, Debug) << "Processing AGC with unified scene analysis";
 				agc_->process(imageStats, results);
 				LOG(ISC_IPA, Debug) << "AGC convergence: "
@@ -243,7 +249,7 @@ public:
 			 * - Applies vivid enhancement matrices for daylight scenes
 			 * - Uses scene color temperature to select appropriate correction strength
 			 */
-			if (ccm_) {
+			if ((algorithmEnableFlags_ & IPA_ALGORITHM_CCM) && ccm_) {
 				LOG(ISC_IPA, Debug) << "Processing CCM with unified scene analysis";
 				ccm_->process(imageStats, results);
 				LOG(ISC_IPA, Debug) << "CCM processing complete";
@@ -296,6 +302,7 @@ private:
 	std::unique_ptr<AWB> awb_;
 	std::unique_ptr<AGC> agc_;
 	std::unique_ptr<CCM> ccm_;
+	uint32_t algorithmEnableFlags_ = IPA_ALGORITHM_ALL;
 
 	/*
 	 * COMMON STATE:

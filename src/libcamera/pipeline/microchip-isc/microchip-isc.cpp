@@ -141,6 +141,7 @@ public:
 	int currentFrameCount_;
 	Request *pendingRequest_;
 	std::array<bool, 4> channelsSeen_;
+	uint32_t algorithmEnableFlags_ = ipa::microchip_isc::IPA_ALGORITHM_ALL;
 	std::atomic<bool> isShuttingDown_;
 	std::atomic<bool> stopStatsProcessing_;
 
@@ -412,6 +413,10 @@ void MicrochipISCCameraData::statsBufferReady(FrameBuffer *buffer)
 				cachedHistogramData_ = std::make_unique<ControlList>(controls::controls);
 				cachedHistogramData_->set(ipa::microchip_isc::ISC_HISTOGRAM_DATA_ID,
 						Span<const uint8_t>(raw, bufferSize));
+
+				/* Forward algorithm enable flags */
+				cachedHistogramData_->set(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID,
+						static_cast<int32_t>(algorithmEnableFlags_));
 
 				uint64_t timestamp = (statsData->timestamp > 0) ? statsData->timestamp : bufferTimestamp;
 				lastHistogramTimestamp_.store(timestamp, std::memory_order_release);
@@ -1575,6 +1580,11 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 {
 	MicrochipISCCameraData *data = cameraData(camera);
 
+	if (request->controls().contains(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID)) {
+		data->algorithmEnableFlags_ = request->controls()
+			.get(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID).get<int32_t>();
+	}
+
 	data->stopStatsProcessing_.store(false, std::memory_order_release);
 
 	data->resetFrameCycling();
@@ -1677,6 +1687,8 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 		controls.set(ipa::microchip_isc::ISC_PIXEL_VALUES_ID,
 				Span<const uint8_t>(static_cast<const uint8_t*>(mappedMemory),
 					buffer->planes()[0].length));
+		controls.set(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID,
+				static_cast<int32_t>(data->algorithmEnableFlags_));
 
 		if (data->awbIPA_) {
 			LOG(MicrochipISC, Debug) << "Sending pixel data to IPA for software AWB processing";

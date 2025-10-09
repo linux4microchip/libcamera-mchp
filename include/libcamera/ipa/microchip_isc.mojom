@@ -20,6 +20,12 @@ const uint32 SENSOR_EXPOSURE_ID = 0x00980911;
 const uint32 ISC_AWB_CCT_ESTIMATE_ID = 0x009819d4;
 const uint32 ISC_AWB_FLUORESCENT_STRENGTH_ID = 0x009819d5;
 const uint32 ISC_AWB_GREEN_CAST_CORRECTION_ID = 0x009819d6;
+/* Algorithm runtime control */
+const uint32 IPA_ALGORITHM_ENABLE_ID = 0x009819f2;
+const uint32 IPA_ALGORITHM_AWB = 0x1;
+const uint32 IPA_ALGORITHM_AGC = 0x2;
+const uint32 IPA_ALGORITHM_CCM = 0x4;
+const uint32 IPA_ALGORITHM_ALL = 0x7;
 /* CCM Control IDs */
 const uint32 V4L2_CID_ISC_CC_RR = 0x009819c8;
 const uint32 V4L2_CID_ISC_CC_RG = 0x009819c9;
