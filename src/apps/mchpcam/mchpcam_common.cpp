@@ -216,12 +216,18 @@ int MchpCamCommon::init(const std::string &cameraId)
 	controls.set(controls::Gamma, gamma_);
 
 	/* Enhanced AWB Control Logic - CORRECTED */
-	if (!whiteBalanceAutomatic_ && hasManualAWBParams()) {
+	if ((awbMode_ == 6) || (!whiteBalanceAutomatic_ && hasManualAWBParams())) {
 		std::cout << " MANUAL AWB MODE" << std::endl;
 		std::cout << " Applying user-specified manual AWB parameters" << std::endl;
 
+		/* CRITICAL: Disable IPA AWB algorithm */
+		enableAWB_ = false;
+
 		/*  Disable both kernel and IPA AWB for manual control */
 		controls.set(controls::AwbEnable, false);
+
+		/* Send algorithm disable flags to IPA */
+		applyAlgorithmControls(controls);
 
 		/* Apply manual values */
 		MchpCamCommon::applyManualAWB(controls, awbParams_);
