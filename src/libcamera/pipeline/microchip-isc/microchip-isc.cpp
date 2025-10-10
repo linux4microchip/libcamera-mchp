@@ -877,6 +877,12 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		std::map<unsigned int, IPAStream> streamConfig;
 		std::map<unsigned int, ControlInfoMap> entityControls;
 
+		/* Add controls from video device and sensor */
+		if (data->iscVideo_)
+			entityControls[0] = data->iscVideo_->controls();
+		if (data->sensor_)
+			entityControls[1] = data->sensor_->controls();
+
 		ret = data->awbIPA_->configure(sensorInfo, streamConfig, entityControls);
 		if (ret < 0) {
 			LOG(MicrochipISC, Error) << "Failed to configure IPA: " << ret;
@@ -1240,34 +1246,6 @@ int MicrochipISCCameraData::init()
 		}, controls::controls);
 
 	LOG(MicrochipISC, Debug) << "ControlInfoMap initialized";
-
-	/* Initialize AWB IPA if available */
-	if (awbIPA_) {
-		ipa::microchip_isc::MicrochipISCSensorInfo sensorInfo;
-		sensorInfo.model = sensor_->model();
-		sensorInfo.width = sensor_->resolution().width;
-		sensorInfo.height = sensor_->resolution().height;
-
-		auto format = sensor_->getFormat(sensor_->mbusCodes(), sensor_->resolution());
-		sensorInfo.pixelFormat = format.code;
-
-		/* Create empty stream config and control info maps */
-		std::map<unsigned int, IPAStream> streamConfig;
-		std::map<unsigned int, ControlInfoMap> entityControls;
-
-		/* Add controls from video device and sensor */
-		if (iscVideo_)
-			entityControls[0] = iscVideo_->controls();
-		if (sensor_)
-			entityControls[1] = sensor_->controls();
-
-		/* Configure IPA with all required parameters */
-		int ret = awbIPA_->configure(sensorInfo, streamConfig, entityControls);
-		if (ret < 0) {
-			LOG(MicrochipISC, Error) << "Failed to configure AWB IPA";
-			return ret;
-		}
-	}
 
 	LOG(MicrochipISC, Debug) << "Camera data initialized successfully";
 
