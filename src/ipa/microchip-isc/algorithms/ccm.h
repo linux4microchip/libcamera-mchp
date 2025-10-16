@@ -50,6 +50,9 @@ public:
 	void process(const ImageStats &stats, ControlList &results);
 	void processWithSceneAnalysis(const ImageStats &stats, const UnifiedSceneAnalysis &scene, ControlList &results);
 
+	/* Scene analysis configuration */
+	void setSceneAnalysisConfig(const SceneAnalysisConfig &config) { sceneAnalyzer_->setConfig(config); }
+
 	/* Scene analysis context setter for IPA integration */
 	void setSceneAnalysisContext(float fluorescentStrength);
 

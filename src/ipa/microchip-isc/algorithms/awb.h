@@ -85,6 +85,9 @@ class AWB {
 		void configure(const MicrochipISCSensorInfo &sensorInfo);
 		void process(const ImageStats &stats, ControlList &results);
 
+		/* Scene analysis configuration */
+		void setSceneAnalysisConfig(const SceneAnalysisConfig &config) { sceneAnalyzer_->setConfig(config); }
+
 		/* Context and state management */
 		void setAWBContext(const AWBContext &context);
 		WhiteBalanceResult getLastResult() const { return lastResult_; }

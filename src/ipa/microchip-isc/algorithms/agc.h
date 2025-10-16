@@ -27,6 +27,8 @@ public:
 	/* Context and state management */
 	void setAWBContext(const AWBContext &context);
 	void resetConvergence();
+	/* Scene analysis configuration */
+	void setSceneAnalysisConfig(const SceneAnalysisConfig &config) { sceneAnalyzer_->setConfig(config); }
 	ExposureResult getLastResult() const { return lastResult_; }
 	ConvergenceState getConvergenceState() const { return convergenceState_; }
 	bool isConverged() const { return convergenceState_ == ConvergenceState::CONVERGED; }
