@@ -142,6 +142,7 @@ public:
 	Request *pendingRequest_;
 	std::array<bool, 4> channelsSeen_;
 	uint32_t algorithmEnableFlags_ = ipa::microchip_isc::IPA_ALGORITHM_ALL;
+	int32_t sceneAnalysisMode_ = 0;  /* 0 = VIDEO_MODE, 1 = STILL_MODE */
 	std::atomic<bool> isShuttingDown_;
 	std::atomic<bool> stopStatsProcessing_;
 
@@ -417,6 +418,10 @@ void MicrochipISCCameraData::statsBufferReady(FrameBuffer *buffer)
 				/* Forward algorithm enable flags */
 				cachedHistogramData_->set(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID,
 						static_cast<int32_t>(algorithmEnableFlags_));
+
+				/* Forward scene analysis mode */
+				cachedHistogramData_->set(ipa::microchip_isc::ISC_SCENE_ANALYSIS_MODE_ID,
+						static_cast<int32_t>(sceneAnalysisMode_));
 
 				uint64_t timestamp = (statsData->timestamp > 0) ? statsData->timestamp : bufferTimestamp;
 				lastHistogramTimestamp_.store(timestamp, std::memory_order_release);
@@ -1561,6 +1566,14 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 	if (request->controls().contains(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID)) {
 		data->algorithmEnableFlags_ = request->controls()
 			.get(ipa::microchip_isc::IPA_ALGORITHM_ENABLE_ID).get<int32_t>();
+	}
+
+	/* Capture scene analysis mode from request */
+	if (request->controls().contains(ipa::microchip_isc::ISC_SCENE_ANALYSIS_MODE_ID)) {
+		data->sceneAnalysisMode_ = request->controls()
+			.get(ipa::microchip_isc::ISC_SCENE_ANALYSIS_MODE_ID).get<int32_t>();
+		LOG(MicrochipISC, Info) << "Scene analysis mode set to: "
+			<< (data->sceneAnalysisMode_ == 1 ? "STILL" : "VIDEO");
 	}
 
 	data->stopStatsProcessing_.store(false, std::memory_order_release);
