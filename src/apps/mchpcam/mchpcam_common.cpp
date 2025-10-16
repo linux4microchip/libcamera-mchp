@@ -12,6 +12,7 @@
 #include <algorithm>
 
 using namespace std::chrono_literals;
+using namespace libcamera::ipa::microchip_isc;
 
 MchpCamCommon::MchpCamCommon()
 	: stream_(nullptr),
@@ -26,7 +27,8 @@ MchpCamCommon::MchpCamCommon()
 	  awbMode_(0),
 	  enableAWB_(true),
 	  enableAGC_(true),
-	  enableCCM_(true)
+	  enableCCM_(true),
+	  sceneAnalysisMode_(SceneAnalysisMode::STILL_MODE)
 {
 }
 
@@ -264,6 +266,11 @@ int MchpCamCommon::init(const std::string &cameraId)
 
 		controls.set(controls::AwbEnable, false);
 	}
+
+	/* Apply Scene Analysis Mode */
+	controls.set(ISC_SCENE_ANALYSIS_MODE_ID, static_cast<int32_t>(sceneAnalysisMode_));
+	std::cout << (sceneAnalysisMode_ == SceneAnalysisMode::STILL_MODE ?
+			"STILL MODE - Immediate classification" : "VIDEO MODE - Hysteresis enabled") << std::endl;
 
 	/* Add controls to request */
 	request->controls() = controls;

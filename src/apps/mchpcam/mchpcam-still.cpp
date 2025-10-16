@@ -20,6 +20,7 @@
 
 using namespace libcamera;
 using namespace std::chrono_literals;
+using namespace libcamera::ipa::microchip_isc;
 
 void printUsage(const char *argv0);
 
@@ -52,7 +53,9 @@ private:
 		imageFormat_("jpeg"),
 		rawCapture_(false),
 		jpeg_quality_(95),
-		png_compression_(6) {}
+		png_compression_(6) {
+			setSceneAnalysisMode(SceneAnalysisMode::STILL_MODE);
+		}
 
 	std::string imageFormat_;
 	bool enableSoftwareProcessing_;
@@ -74,6 +77,9 @@ int MchpCamStill::captureStill(const std::string &filename)
 
 	/* Set up controls */
 	ControlList controls(camera_->controls());
+
+       /* Set scene analysis mode for still capture */
+	controls.set(ISC_SCENE_ANALYSIS_MODE_ID, static_cast<int32_t>(SceneAnalysisMode::STILL_MODE));
 
 	/* Add other basic controls using the setControl helper function */
 	auto setControl = [&](const ControlId *id, auto value) {

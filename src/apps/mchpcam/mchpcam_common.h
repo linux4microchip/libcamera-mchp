@@ -52,6 +52,11 @@ public:
 		CCM = 0x04
 	};
 
+	enum class SceneAnalysisMode : int32_t {
+		VIDEO_MODE = 0,
+		STILL_MODE = 1
+	};
+
 	int init(const std::string &cameraId = "");
 	void stop();
 	void setResolution(unsigned int width, unsigned int height);
@@ -95,6 +100,7 @@ public:
 	void applyAlgorithmControls(libcamera::ControlList& controls);
 	void printAlgorithmStatus() const;
 	uint32_t algorithmEnableFlags() const;
+	void setSceneAnalysisMode(SceneAnalysisMode mode) { sceneAnalysisMode_ = mode; }
 
 
 protected:
@@ -118,6 +124,7 @@ protected:
 	bool enableAWB_ = true;
 	bool enableAGC_ = true;
 	bool enableCCM_ = true;
+	SceneAnalysisMode sceneAnalysisMode_ = SceneAnalysisMode::STILL_MODE;
 
 	void requestComplete(libcamera::Request *request);
 	virtual void processFrame(const libcamera::FrameBuffer *buffer);
