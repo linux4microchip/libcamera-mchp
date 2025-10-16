@@ -34,6 +34,14 @@ public:
 	bool isConverged() const { return convergenceState_ == ConvergenceState::CONVERGED; }
 
 private:
+	/* Scene-aware baseline configuration */
+	struct BaselineConfig {
+		uint32_t exposure;
+		uint32_t analogueGain;
+		uint32_t digitalGain;
+		const char* name;
+	};
+
 	/* Core algorithm configuration */
 	struct AGCConfig {
 		uint32_t minExposureTime = 100;      /* 0.1ms */
@@ -68,6 +76,9 @@ private:
 	ExposureResult calculateExposure(const ImageStats &stats, const UnifiedSceneAnalysis &scene);
 	void updateConvergenceState(const ExposureResult &result);
 	void applyTemporalSmoothing(ExposureResult &result);
+
+	/* Baseline selection */
+	BaselineConfig selectBaseline(const UnifiedSceneAnalysis &scene) const;
 
 	/* Exposure strategy methods */
 	void applyBacklightCompensation(ExposureResult &result, const UnifiedSceneAnalysis &scene);
