@@ -126,6 +126,35 @@ public:
 			}
 		}
 
+		/* Check for scene analysis mode control and pass to algorithms */
+		if (stats.contains(ISC_SCENE_ANALYSIS_MODE_ID)) {
+			int32_t mode = stats.get(ISC_SCENE_ANALYSIS_MODE_ID).get<int32_t>();
+
+			/* Update scene analyzer configuration */
+			SceneAnalysisConfig sceneConfig;
+			if (mode == 1) {  /* STILL_MODE */
+				sceneConfig.enableHysteresis = false;
+				sceneConfig.minFramesForStateChange = 1;
+				LOG(ISC_IPA, Info) << "Still capture mode - immediate scene classification";
+			} else {  /* VIDEO_MODE */
+				sceneConfig.enableHysteresis = true;
+				sceneConfig.minFramesForStateChange = 2;
+			}
+
+			if (awb_) {
+				awb_->setSceneAnalysisConfig(sceneConfig);
+			}
+
+			if (agc_) {
+				agc_->setSceneAnalysisConfig(sceneConfig);
+			}
+
+			if (ccm_) {
+				ccm_->setSceneAnalysisConfig(sceneConfig);
+			}
+
+		}
+
 		/*
 		 * UNIFIED STATISTICS GENERATION:
 		 * Generate ImageStats for consistent scene analysis across all algorithms.
