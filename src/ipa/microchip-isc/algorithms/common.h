@@ -191,6 +191,17 @@ struct UnifiedSceneAnalysis {
 	double mixedLightingRatio;            /* Primary/secondary light ratio */
 };
 
+/* Scene analysis configuration */
+struct SceneAnalysisConfig {
+	bool enableHysteresis = true;         /* Enable outdoor detection hysteresis */
+	uint32_t minFramesForStateChange = 2;
+	float outdoorStickyThreshold = 0.50f; /* Threshold to stay outdoor */
+	float outdoorEntryThreshold = 0.67f;  /* Threshold to become outdoor */
+	float outdoorCCTMinimum = 4000.0f;
+
+	SceneAnalysisConfig() = default;
+};
+
 /* AWB context structure */
 struct AWBContext {
 	std::string selectedAlgorithm;
@@ -275,7 +286,11 @@ std::string exposureComplexityToString(ExposureComplexity complexity);
 /* Enhanced Unified Scene Analyzer class with spatial analysis */
 class UnifiedSceneAnalyzer {
 public:
-	UnifiedSceneAnalyzer();
+	UnifiedSceneAnalyzer(const SceneAnalysisConfig &config = SceneAnalysisConfig());
+
+	/* Runtime configuration update */
+	void setConfig(const SceneAnalysisConfig &config) { config_ = config; }
+
 	UnifiedSceneAnalysis analyzeScene(const ImageStats &stats);
 	void resetOutdoorDetectionState();
 
@@ -336,11 +351,8 @@ private:
 	uint32_t consecutiveOutdoorFrames_;
 	uint32_t consecutiveIndoorFrames_;
 
-	/* Hysteresis constants */
-	static constexpr float kOutdoorStickyThreshold = 0.50f;
-	static constexpr float kOutdoorEntryThreshold = 0.67f;
-	static constexpr uint32_t kMinFramesForStateChange = 2;
-	static constexpr float kOutdoorCCTMinimum = 4000.0f;
+	/* Configuration */
+	SceneAnalysisConfig config_;
 };
 
 } /* namespace ipa::microchip_isc */

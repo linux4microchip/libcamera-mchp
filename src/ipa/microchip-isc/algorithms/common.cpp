@@ -298,10 +298,11 @@ float calculateHistogramEntropy(const std::array<uint32_t, 512> &histogram)
 
 /* Enhanced UnifiedSceneAnalyzer Implementation with Spatial Analysis */
 
-UnifiedSceneAnalyzer::UnifiedSceneAnalyzer()
+UnifiedSceneAnalyzer::UnifiedSceneAnalyzer(const SceneAnalysisConfig &config)
 	: previousOutdoorState_(false),
 	consecutiveOutdoorFrames_(0),
-	consecutiveIndoorFrames_(0)
+	consecutiveIndoorFrames_(0),
+	config_(config)
 {
 }
 
@@ -796,7 +797,7 @@ bool UnifiedSceneAnalyzer::detectOutdoorLightingPattern(const SpatialZoneAnalysi
 	bool hasBrightTop = spatial.topZone.avgBrightness > spatial.bottomZone.avgBrightness * 1.3 &&
 		spatial.topZone.avgBrightness > 80.0;  /* Absolute brightness guard */
 	bool hasTopVariance = spatial.topZone.variance > 1200;
-	bool hasCoolTop = spatial.topZone.cct > kOutdoorCCTMinimum &&
+	bool hasCoolTop = spatial.topZone.cct > config_.outdoorCCTMinimum &&
 		overallBrightness > 60.0;  /* Absolute brightness guard */
 	bool hasGoodConfidence = spatial.topZone.confidence > 0.65 &&
 		spatial.bottomZone.confidence > 0.65;
@@ -825,14 +826,25 @@ bool UnifiedSceneAnalyzer::detectOutdoorLightingPattern(const SpatialZoneAnalysi
 		hasCoolTop + hasGoodConfidence + noSevereClipping;
 	float outdoorScore = static_cast<float>(outdoorCriteria) / 6.0f;
 
+	/* Check if hysteresis is disabled (still capture mode) */
+	if (!config_.enableHysteresis) {
+		bool isOutdoor = (outdoorScore >= config_.outdoorEntryThreshold);
+		LOG(ISC_COMMON, Info) << "Still capture mode - immediate classification: "
+			<< "score=" << outdoorScore << " -> " << (isOutdoor ? "OUTDOOR" : "INDOOR");
+		previousOutdoorState_ = isOutdoor;
+		consecutiveOutdoorFrames_ = isOutdoor ? 1 : 0;
+		consecutiveIndoorFrames_ = isOutdoor ? 0 : 1;
+		return isOutdoor;
+	}
+
 	/* Apply hysteresis - different thresholds based on previous state */
 	float threshold;
 	if (previousOutdoorState_) {
-		threshold = kOutdoorStickyThreshold;
+		threshold = config_.outdoorStickyThreshold;
 		LOG(ISC_COMMON, Debug) << "Hysteresis: was outdoor, staying outdoor needs "
 			<< (threshold * 6) << "/6 criteria";
 	} else {
-		threshold = kOutdoorEntryThreshold;
+		threshold = config_.outdoorEntryThreshold;
 		LOG(ISC_COMMON, Debug) << "Hysteresis: was indoor, becoming outdoor needs "
 			<< (threshold * 6) << "/6 criteria";
 	}
@@ -850,16 +862,16 @@ bool UnifiedSceneAnalyzer::detectOutdoorLightingPattern(const SpatialZoneAnalysi
 
 	/* Require minimum consecutive frames before state change */
 	if (currentOutdoorState != previousOutdoorState_) {
-		if (currentOutdoorState && consecutiveOutdoorFrames_ < kMinFramesForStateChange) {
+		if (currentOutdoorState && consecutiveOutdoorFrames_ < config_.minFramesForStateChange) {
 			LOG(ISC_COMMON, Info) << "Outdoor detected but awaiting confirmation ("
 				<< consecutiveOutdoorFrames_ << "/"
-				<< kMinFramesForStateChange << " frames)";
+				<< config_.minFramesForStateChange << " frames)";
 			return previousOutdoorState_;
 		}
-		if (!currentOutdoorState && consecutiveIndoorFrames_ < kMinFramesForStateChange) {
+		if (!currentOutdoorState && consecutiveIndoorFrames_ < config_.minFramesForStateChange) {
 			LOG(ISC_COMMON, Info) << "Indoor detected but awaiting confirmation ("
 				<< consecutiveIndoorFrames_ << "/"
-				<< kMinFramesForStateChange << " frames)";
+				<< config_.minFramesForStateChange << " frames)";
 			return previousOutdoorState_;
 		}
 	}
@@ -1036,7 +1048,7 @@ LightSourceType UnifiedSceneAnalyzer::analyzeLightSourceWithSpatial(
 
 	/* Fast-path: Strong outdoor indicators even during hysteresis confirmation */
 	bool strongOutdoorIndicators =
-		(spatial.topZone.cct > kOutdoorCCTMinimum) &&
+		(spatial.topZone.cct > config_.outdoorCCTMinimum) &&
 		(spatial.verticalGradient > 0.30) &&
 		(spatial.topZone.avgBrightness > spatial.bottomZone.avgBrightness * 1.2) &&
 		(overallLuminance > 150.0f || spatial.topZone.avgBrightness > 200.0f);
