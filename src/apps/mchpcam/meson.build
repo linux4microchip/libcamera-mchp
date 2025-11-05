@@ -15,7 +15,7 @@ mchpcam_still_deps = [
 
 if mchpcam_still_enabled
     executable('mchpcam-still',
-        [mchpcam_common_sources, mchpcam_still_sources],
+        [mchpcam_common_sources, mchpcam_still_sources, libcamera_generated_ipa_headers],
         dependencies : mchpcam_still_deps,
         install : true
     )
