@@ -77,9 +77,9 @@ void CCM::initializeProfessionalProfiles()
 			.name = "LED_Neutral",
 			.cct_min = 3800, .cct_max = 5200,
 			.matrix = {
-			1.03f, -0.02f, -0.01f,    /* Red: minimal boost */
+			1.00f, -0.01f, -0.01f,    /* Red: minimal boost */
 			-0.01f, 1.00f,  0.01f,    /* Green: nearly neutral */
-			0.00f, -0.02f,  1.02f     /* Blue: minimal boost */
+			0.00f, -0.02f,  1.03f     /* Blue: minimal boost */
 			},
 			.offset = {0.0f, 0.0f, 0.0f},
 			.saturation_boost = 1.05f,
