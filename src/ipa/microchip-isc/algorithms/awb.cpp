@@ -598,77 +598,140 @@ WhiteBalanceResult LEDWhiteBalance::process(const ImageStats &stats, const Unifi
 	float contrast = calculateContrastFromBayer(stats);
 	float avgGreen = (stats.meanGR + stats.meanGB) / 2.0f;
 
-	/* LED processing with gentle corrections */
-	double correctionStrength = 0.4;
-
-	/* Adjust based on contrast - high contrast may indicate non-uniform LED */
-	if (contrast > 0.6f) {
-		correctionStrength *= 0.8;  /* Reduce correction for high contrast scenes */
-		LOG(ISC_AWB, Debug) << "High contrast LED scene - reduced correction: " << contrast;
+	/* Calculate green cast strength */
+	float rbMean = (stats.meanR + stats.meanB) / 2.0f;
+	float greenCast = 0.0f;
+	if (rbMean > 0.1f) {
+		greenCast = (avgGreen - rbMean) / rbMean;
+		greenCast = std::max(0.0f, greenCast);
 	}
 
-	/* Adjust correction strength based on scene brightness */
-	if (avgLuminance < 30.0f) {
-		/* Very dark scenes may need slightly more correction */
-		correctionStrength = 0.6;
-		LOG(ISC_AWB, Debug) << "Dark LED scene - moderate correction";
-	} else if (avgLuminance > 100.0f) {
-		/* Bright scenes need minimal correction */
-		correctionStrength = 0.2;
-		LOG(ISC_AWB, Debug) << "Bright LED scene - minimal correction";
+	/* Calculate yellow cast (excess R+G relative to B) */
+	float yellowCast = 0.0f;
+	if (stats.meanB > 0.1f) {
+		float rgMean = (stats.meanR + avgGreen) / 2.0f;
+		yellowCast = (rgMean - stats.meanB) / stats.meanB;
+		yellowCast = std::max(0.0f, yellowCast);
 	}
 
-	/* Validate LED characteristics */
-	if (avgGreen < 10.0f) {
-		/* Very dark - boost correction slightly */
-		correctionStrength *= 1.2;
-	} else if (avgGreen > 150.0f) {
-		/* Very bright - reduce correction */
-		correctionStrength *= 0.7;
+	/* Use the MAXIMUM of green or yellow cast - yellow is common in LED */
+	float totalCast = std::max(greenCast, yellowCast);
+
+	LOG(ISC_AWB, Debug) << "LED cast detection: green=" << std::fixed
+		<< std::setprecision(3) << greenCast
+		<< " yellow=" << yellowCast
+		<< " → total=" << totalCast;
+
+	/* Determine correction strength using smooth linear interpolation */
+	double correctionStrength = 0.0;
+
+	if (totalCast <= 0.0f) {
+		correctionStrength = 0.05;
+		LOG(ISC_AWB, Debug) << "LED: No cast detected";
+	} else if (totalCast <= 0.015f) {
+		/* Very mild range: 0.0 to 0.015 → strength 0.05 to 0.15 */
+		correctionStrength = 0.05 + (totalCast / 0.015f) * (0.15 - 0.05);
+		LOG(ISC_AWB, Debug) << "LED: Very mild cast: " << totalCast;
+	} else if (totalCast <= 0.03f) {
+		/* Mild range: 0.015 to 0.03 → strength 0.15 to 0.30 */
+		float t = (totalCast - 0.015f) / (0.03f - 0.015f);
+		correctionStrength = 0.15 + t * (0.30 - 0.15);
+		LOG(ISC_AWB, Info) << "LED: Mild cast: " << totalCast;
+	} else if (totalCast <= 0.08f) {
+		/* Moderate range: 0.03 to 0.08 → strength 0.30 to 0.50 */
+		float t = (totalCast - 0.03f) / (0.08f - 0.03f);
+		correctionStrength = 0.30 + t * (0.50 - 0.30);
+		LOG(ISC_AWB, Info) << "LED: Moderate cast: " << totalCast;
+	} else if (totalCast <= 0.15f) {
+		/* Strong range: 0.08 to 0.15 → strength 0.50 to 0.70 */
+		float t = (totalCast - 0.08f) / (0.15f - 0.08f);
+		correctionStrength = 0.50 + t * (0.70 - 0.50);
+		LOG(ISC_AWB, Info) << "LED: Strong cast: " << totalCast;
+	} else {
+		/* Severe: > 0.15 → cap at 0.70 */
+		correctionStrength = 0.70;
+		LOG(ISC_AWB, Info) << "LED: Severe cast (capped): " << totalCast;
+	}
+
+	LOG(ISC_AWB, Debug) << "Interpolated correction strength: "
+		<< std::fixed << std::setprecision(3) << correctionStrength;
+
+	/* Adjust for extreme brightness conditions */
+	if (avgLuminance < 20.0f && correctionStrength < 0.3) {
+		correctionStrength = std::max(correctionStrength, 0.20);
+		LOG(ISC_AWB, Debug) << "Very dark scene - boosting correction to: "
+			<< correctionStrength;
+	} else if (avgLuminance > 200.0f && correctionStrength > 0.1) {
+		correctionStrength *= 0.8;
+		LOG(ISC_AWB, Debug) << "Very bright scene - reducing correction to: "
+			<< correctionStrength;
+	}
+
+	/* Adjust for high contrast scenes */
+	if (contrast > 0.7f && correctionStrength > 0.2) {
+		correctionStrength *= 0.85;
+		LOG(ISC_AWB, Debug) << "High contrast - reducing correction to: "
+			<< correctionStrength;
 	}
 
 	/* Reduce correction for mixed lighting scenarios */
 	if (scene.spatialAnalysis.isMixedLighting) {
 		correctionStrength *= scene.mixedLightingRatio;
-		LOG(ISC_AWB, Debug) << "Mixed LED lighting - reduced correction";
+		LOG(ISC_AWB, Debug) << "Mixed lighting - reducing correction to: "
+			<< correctionStrength;
 	}
 
 	/* Apply corrections based on CCT - LED-specific gentle approach */
 	if (scene.colorTemperature < 4000.0f) {
 		/* Warm white LEDs (2700-4000K) */
-		result.redGain = 1.0f + (0.95f - 1.0f) * correctionStrength;      /* -2% red max */
-		result.greenRedGain = 1.0f + (1.02f - 1.0f) * correctionStrength;  /* +0.8% green max */
-		result.greenBlueGain = 1.0f + (1.02f - 1.0f) * correctionStrength;
-		result.blueGain = 1.0f + (1.08f - 1.0f) * correctionStrength;      /* +3.2% blue max */
+		result.redGain = 1.0f + (1.08f - 1.0f) * correctionStrength;
+		result.greenRedGain = 1.0f + (0.92f - 1.0f) * correctionStrength;
+		result.greenBlueGain = 1.0f + (0.92f - 1.0f) * correctionStrength;
+		result.blueGain = 1.0f + (1.15f - 1.0f) * correctionStrength;
 		LOG(ISC_AWB, Debug) << "Warm LED correction applied";
-
 	} else if (scene.colorTemperature > 5000.0f) {
 		/* Cool white LEDs (5000-6500K) */
-		result.redGain = 1.0f + (1.06f - 1.0f) * correctionStrength;      /* +2.4% red max */
-		result.greenRedGain = 1.0f + (0.98f - 1.0f) * correctionStrength;  /* -0.8% green max */
-		result.greenBlueGain = 1.0f + (0.98f - 1.0f) * correctionStrength;
-		result.blueGain = 1.0f + (0.96f - 1.0f) * correctionStrength;      /* -1.6% blue max */
+		result.redGain = 1.0f + (1.12f - 1.0f) * correctionStrength;
+		result.greenRedGain = 1.0f + (0.94f - 1.0f) * correctionStrength;
+		result.greenBlueGain = 1.0f + (0.94f - 1.0f) * correctionStrength;
+		result.blueGain = 1.0f + (1.08f - 1.0f) * correctionStrength;
 		LOG(ISC_AWB, Debug) << "Cool LED correction applied";
-
 	} else {
 		/* Neutral white LEDs (4000-5000K) - minimal correction needed */
-		result.redGain = 1.0f + (1.02f - 1.0f) * correctionStrength;      /* +0.8% red max */
-		result.greenRedGain = 1.0f + (0.99f - 1.0f) * correctionStrength;  /* -0.4% green max */
-		result.greenBlueGain = 1.0f + (0.99f - 1.0f) * correctionStrength;
-		result.blueGain = 1.0f + (1.01f - 1.0f) * correctionStrength;      /* +0.4% blue max */
+		result.redGain = 1.0f + (0.99f - 1.0f) * correctionStrength;
+		result.greenRedGain = 1.0f + (0.866f - 1.0f) * correctionStrength;
+		result.greenBlueGain = 1.0f + (0.866f - 1.0f) * correctionStrength;
+		result.blueGain = 1.0f + (1.145f - 1.0f) * correctionStrength;
 		LOG(ISC_AWB, Debug) << "Neutral LED correction applied";
 	}
 
+	/* Safety clamps to prevent overcorrection */
+	result.redGain = std::clamp(result.redGain, 0.85f, 1.25f);
+	result.greenRedGain = std::clamp(result.greenRedGain, 0.85f, 1.15f);
+	result.greenBlueGain = std::clamp(result.greenBlueGain, 0.85f, 1.15f);
+	result.blueGain = std::clamp(result.blueGain, 0.85f, 1.25f);
+
 	/* No offsets for stable LED lighting */
-	result.redOffset = result.greenRedOffset = result.greenBlueOffset = result.blueOffset = 0;
+	result.redOffset = static_cast<int32_t>(8 * correctionStrength);
+	result.greenRedOffset = static_cast<int32_t>(-12 * correctionStrength);
+	result.greenBlueOffset = static_cast<int32_t>(-12 * correctionStrength);
+	result.blueOffset = static_cast<int32_t>(8 * correctionStrength);
 
 	result.algorithmConfidence = 0.85f;
-	result.chromaticityCorrection = scene.chromaticityShift * 0.3f;  /* Very gentle */
+	result.chromaticityCorrection = totalCast * 0.3f;  /* Very gentle */
 	result.stabilityMetric = 0.95f;  /* LEDs are very stable */
 
-	LOG(ISC_AWB, Info) << "LED AWB: CCT=" << scene.colorTemperature
-		<< "K strength=" << std::fixed << std::setprecision(2) << correctionStrength
-		<< " luminance=" << avgLuminance;
+	LOG(ISC_AWB, Info) << "LED AWB: CCT=" << scene.colorTemperature << "K"
+		<< " greenCast=" << std::fixed << std::setprecision(3) << greenCast
+		<< " yellowCast=" << yellowCast
+		<< " totalCast=" << totalCast
+		<< " strength=" << correctionStrength
+		<< " → R:" << std::setprecision(4) << result.redGain
+		<< " G:" << result.greenRedGain
+		<< " B:" << result.blueGain
+		<< " (hw: R=" << static_cast<int>(result.redGain * 512)
+		<< " G=" << static_cast<int>(result.greenRedGain * 512)
+		<< " B=" << static_cast<int>(result.blueGain * 512) << ")";
 
 	return result;
 }
