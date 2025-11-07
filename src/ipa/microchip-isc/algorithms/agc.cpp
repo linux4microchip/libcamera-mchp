@@ -422,13 +422,27 @@ void AGC::applyBacklightCompensation(ExposureResult &result, const UnifiedSceneA
 
 void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAnalysis &scene)
 {
-	/* STEP 1: Set target luminance FIRST - this is what we're trying to achieve */
+	/* STEP 1: Set target luminance with simplified bright detection */
+	bool hasBrightTop = (scene.spatialAnalysis.topZone.avgBrightness > 40.0f);
+
 	if (scene.lightSource == LightSourceType::LED) {
-		result.targetLuminance = std::clamp(scene.illuminationStrength * 3.5f, 85.0f, 150.0f);
+		if (hasBrightTop) {
+			/* Bright ceiling lights detected */
+			result.targetLuminance = std::clamp(scene.illuminationStrength * 4.5f, 105.0f, 135.0f);
+			LOG(ISC_AGC, Info) << "LED with bright top (zone="
+				<< scene.spatialAnalysis.topZone.avgBrightness
+				<< "): balanced target=" << result.targetLuminance;
+		} else {
+			/* Normal LED low-light */
+			result.targetLuminance = std::clamp(scene.illuminationStrength * 5.0f, 115.0f, 145.0f);
+			LOG(ISC_AGC, Info) << "LED low-light: balanced target="
+				<< result.targetLuminance;
+		}
 	} else if (scene.lightSource == LightSourceType::DAYLIGHT) {
 		result.targetLuminance = std::clamp(scene.illuminationStrength * 6.0f, 100.0f, 180.0f);
 	} else {
-		result.targetLuminance = std::clamp(scene.illuminationStrength * 3.5f, 85.0f, 150.0f);
+		/* Other light sources */
+		result.targetLuminance = std::clamp(scene.illuminationStrength * 4.5f, 105.0f, 145.0f);
 	}
 
 	/* Determine optimization level based on actual brightness */
@@ -469,32 +483,20 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 	LOG(ISC_AGC, Debug) << "Exposure set to: " << result.exposureTime
 		<< " (max safe: " << maxSafeExposure << ")";
 
-	/* STEP 3: Calculate gain needed to reach target FROM CURRENT STATE */
+	/* STEP 3: Calculate gain needed to reach target */
 	float currentBrightness = scene.illuminationStrength;
 	float targetBrightness = result.targetLuminance;
 
-	/* Calculate boost needed considering both exposure and gain from baseline */
+	/* Get baseline for reference */
 	BaselineConfig baseline = selectBaseline(scene);
 
-	/* Exposure contribution: (current_exposure / baseline_exposure) */
-	float exposureBoost = static_cast<float>(result.exposureTime) /
-		std::max(static_cast<float>(baseline.exposure), 1.0f);
-
-	/* Total boost needed = target / (current * exposure_boost) */
-	float effectiveCurrent = currentBrightness * exposureBoost;
-	float boostNeeded = targetBrightness / std::max(effectiveCurrent, 1.0f);
-
-	LOG(ISC_AGC, Debug) << "Gain calculation: current=" << currentBrightness
-		<< " baseline_E=" << baseline.exposure
-		<< " current_E=" << result.exposureTime
-		<< " exposure_boost=" << std::fixed << std::setprecision(2) << exposureBoost
-		<< " target=" << targetBrightness
-		<< " boost needed=" << boostNeeded << "x";
-
-	/* STEP 4: Apply gain if exposure is maxed and we need more brightness */
+	/* Check if exposure is maxed */
 	bool exposureIsMaxed = (result.exposureTime >= config_.maxExposureTime * 0.95f);
 
-	if (exposureIsMaxed && boostNeeded > 1.2f) {
+	if (exposureIsMaxed && currentBrightness < targetBrightness * 0.85f) {
+		/* Calculate direct gain ratio needed */
+		float totalGainNeeded = targetBrightness / std::max(currentBrightness, 1.0f);
+
 		/* Get sensor's gain range */
 		uint32_t minGain = config_.minAnalogueGain;
 		uint32_t maxGain = config_.maxAnalogueGain;
@@ -505,30 +507,29 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 			LOG(ISC_AGC, Debug) << "Sensor reports minGain=0, using safe minimum: " << minGain;
 		}
 
-		/* Start from baseline gain */
-		uint32_t baseGain = std::max(baseline.analogueGain, minGain);
+		/* Calculate target gain directly from total ratio */
+		uint32_t targetGain = static_cast<uint32_t>(minGain * totalGainNeeded * 1.30f);
 
-		/* Apply the boost multiplier to base gain */
-		uint32_t targetGain = static_cast<uint32_t>(baseGain * boostNeeded);
+		/* Safety clamp */
+		targetGain = std::clamp(targetGain, minGain, static_cast<uint32_t>(maxGain * 0.8f));
 
-		/* Clamp to sensor limits */
-		result.analogueGain = std::clamp(targetGain, minGain, maxGain);
+		result.analogueGain = targetGain;
 
-		/* Calculate achieved multiplier */
+		/* Calculate achieved multiplier for logging */
 		float achievedMultiplier = static_cast<float>(result.analogueGain) /
-			std::max(static_cast<float>(baseGain), 1.0f);
+			std::max(static_cast<float>(minGain), 1.0f);
 
-		LOG(ISC_AGC, Info) << "Applied analogue gain: " << result.analogueGain
-			<< " (from " << baseGain << " → " << result.analogueGain
-			<< " = " << std::fixed << std::setprecision(2) << achievedMultiplier << "x"
-			<< " | needed=" << boostNeeded << "x"
+		LOG(ISC_AGC, Info) << "Applied analogue gain (DIRECT): " << result.analogueGain
+			<< " (ratio=" << std::fixed << std::setprecision(2) << totalGainNeeded
+			<< "x from minGain=" << minGain
+			<< ", achieved=" << achievedMultiplier << "x"
 			<< " | range=" << minGain << "-" << maxGain << ")";
 
-		/* Warn if we hit the limit */
-		if (result.analogueGain >= maxGain) {
-			LOG(ISC_AGC, Warning) << "Gain maxed at " << maxGain
-				<< " but scene needs " << boostNeeded
-				<< "x boost - image will remain underexposed";
+		/* Warn if we're near the limit */
+		if (result.analogueGain >= maxGain * 0.75f) {
+			LOG(ISC_AGC, Warning) << "Gain high at " << result.analogueGain
+				<< " (max=" << maxGain << ") - scene needs "
+				<< totalGainNeeded << "x total boost";
 		}
 
 		result.exposureStrategy += " + Gain(" + std::to_string(result.analogueGain) + ")";
@@ -539,10 +540,11 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 		LOG(ISC_AGC, Debug) << "Exposure not maxed, using baseline gain: " << result.analogueGain;
 
 	} else {
-		/* Exposure maxed but only need small boost */
+		/* Exposure maxed but brightness is close enough to target */
 		result.analogueGain = baseline.analogueGain;
-		LOG(ISC_AGC, Debug) << "Small boost needed (" << boostNeeded
-			<< "x), using minimum gain: " << result.analogueGain;
+		LOG(ISC_AGC, Debug) << "Brightness close to target ("
+			<< currentBrightness << "/" << targetBrightness
+			<< "), using baseline gain: " << result.analogueGain;
 	}
 
 	result.exposureStrategy += " + LowLightOptimization(L:" +
@@ -552,7 +554,8 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 	LOG(ISC_AGC, Info) << "Low-light optimization complete: E=" << result.exposureTime
 		<< " A=" << result.analogueGain
 		<< " D=" << result.digitalGain
-		<< " target=" << result.targetLuminance;
+		<< " target=" << result.targetLuminance
+		<< " current=" << currentBrightness;
 }
 
 void AGC::applyHDRStrategy(ExposureResult &result, const UnifiedSceneAnalysis &scene)
@@ -777,15 +780,13 @@ void AGC::applyTemporalSmoothing(ExposureResult &result)
 {
 	if (!hasValidHistory_) return;
 
-	/* Skip smoothing for outdoor - use calibrated values directly */
+	float smoothingFactor;
 	if (currentSceneAnalysis_.environment == EnvironmentType::OUTDOOR) {
-		LOG(ISC_AGC, Debug) << "Skipping temporal smoothing for outdoor (using calibrated exposure)";
-		return;
-	}
-
-	float smoothingFactor = 0.3f;
-	if (convergenceState_ == ConvergenceState::CONVERGED) {
+		smoothingFactor = 0.2f;  /* Light smoothing for outdoor */
+	} else if (convergenceState_ == ConvergenceState::CONVERGED) {
 		smoothingFactor = 0.1f;  /* Less smoothing when converged */
+	} else {
+		smoothingFactor = 0.3f;  /* Normal indoor smoothing */
 	}
 
 	result.exposureTime = static_cast<uint32_t>(
