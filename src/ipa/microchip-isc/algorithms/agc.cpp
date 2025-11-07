@@ -75,7 +75,9 @@ void AGC::process(const ImageStats &stats, ControlList &results)
 	LOG(ISC_AGC, Debug) << "=== AGC PROCESS START (Frame " << frameCount_ << ") ===";
 
 	if (!validateImageStats(stats)) {
-		LOG(ISC_AGC, Warning) << "Invalid image statistics - skipping AGC";
+		results.set(SENSOR_EXPOSURE_ID, static_cast<int32_t>(600));
+		results.set(SENSOR_ANALOGUE_GAIN_ID, static_cast<int32_t>(48));
+		results.set(SENSOR_DIGITAL_GAIN_ID, static_cast<int32_t>(256));
 		return;
 	}
 
@@ -198,10 +200,10 @@ uint32_t AGC::interpolateExposure(float brightness) const
 	float minBrightness = points.back().first;
 	float maxBrightness = points.front().first;
 
-	if (brightness >= maxBrightness) {
+	if (brightness >= maxBrightness - 5.0f) {  /* Dead zone: 195-250+ */
 		LOG(ISC_AGC, Debug) << "Brightness " << brightness
-			<< " exceeds curve max " << maxBrightness
-			<< ", using minimum exposure " << points.front().second;
+			<< " in dead zone (>=" << (maxBrightness - 5.0f)
+			<< "), using minimum exposure " << points.front().second;
 		return points.front().second;
 	}
 
