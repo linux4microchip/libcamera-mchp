@@ -263,7 +263,7 @@ int MicrochipISCCameraData::startStatsCapture()
 		return 0;
 	}
 
-	LOG(MicrochipISC, Info) << "Starting BACKGROUND histogram collection for instant AWB";
+	LOG(MicrochipISC, Debug) << "Starting BACKGROUND histogram collection for instant AWB";
 
 	constexpr unsigned int kStatsBufferCount = 4;  /* More buffers for continuous operation */
 
@@ -296,8 +296,8 @@ int MicrochipISCCameraData::startStatsCapture()
 	statsStreaming_ = true;
 	histogramDataReady_.store(false, std::memory_order_release);  /* Reset cache state */
 
-	LOG(MicrochipISC, Info) << "Background histogram streaming active!";
-	LOG(MicrochipISC, Info) << "Continuous 4-channel histogram collection for instant AWB";
+	LOG(MicrochipISC, Debug) << "Background histogram streaming active!";
+	LOG(MicrochipISC, Debug) << "Continuous 4-channel histogram collection for instant AWB";
 	return 0;
 }
 
@@ -341,7 +341,7 @@ int MicrochipISCCameraData::stopStatsCapture()
 	}
 
 	statsStreaming_ = false;
-	LOG(MicrochipISC, Info) << "Hardware histogram collection stopped cleanly";
+	LOG(MicrochipISC, Debug) << "Hardware histogram collection stopped cleanly";
 	return ret;
 }
 
@@ -392,7 +392,7 @@ void MicrochipISCCameraData::statsBufferReady(FrameBuffer *buffer)
 			statsData->frame_number > 0 &&
 			statsData->timestamp > 0) {
 
-		LOG(MicrochipISC, Info) << "🎉 Complete hardware histogram data received! Channels: 0x"
+		LOG(MicrochipISC, Debug) << "🎉 Complete hardware histogram data received! Channels: 0x"
 			<< std::hex << (int)statsData->valid_channels;
 
 		uint32_t totalPixels = 0;
@@ -430,7 +430,7 @@ void MicrochipISCCameraData::statsBufferReady(FrameBuffer *buffer)
 				/* 🔧 NEW: Stop all future processing */
 				stopStatsProcessing_.store(true, std::memory_order_release);
 
-				LOG(MicrochipISC, Info) << "🎯 PERFECT HISTOGRAM CAPTURED - stopping stats processing";
+				LOG(MicrochipISC, Debug) << "PERFECT HISTOGRAM CAPTURED - stopping stats processing";
 
 				munmap(mappedMemory, bufferSize);
 				return;  /* Don't re-queue */
@@ -644,7 +644,7 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 					data->statsDevice_.reset();
 					data->statsEnabled_ = false;
 				} else {
-					LOG(MicrochipISC, Info) << "✅ Opened stats device: " << entity->name();
+					LOG(MicrochipISC, Debug) << "✅ Opened stats device: " << entity->name();
 
 					/* Set up stats format immediately after opening */
 					V4L2DeviceFormat statsFormat;
@@ -657,7 +657,7 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 						LOG(MicrochipISC, Warning) << "Failed to set stats format: " << ret;
 						/* Continue anyway - format might be set later */
 					} else {
-						LOG(MicrochipISC, Info) << "📊 Stats device format configured successfully";
+						LOG(MicrochipISC, Debug) << "📊 Stats device format configured successfully";
 					}
 
 					/* Connect the  bufferReady signal AFTER successful open and format setup */
@@ -666,8 +666,8 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 					data->statsEnabled_ = true;
 					foundStatsVideo = true;
 
-					LOG(MicrochipISC, Info) << "📊 Connected statsBufferReady signal to stats device";
-					LOG(MicrochipISC, Info) << "📊 Hardware histogram support enabled and ready!";
+					LOG(MicrochipISC, Debug) << "📊 Connected statsBufferReady signal to stats device";
+					LOG(MicrochipISC, Debug) << "📊 Hardware histogram support enabled and ready!";
 				}
 			} else {
 				/* Handle main video device (capture) */
@@ -748,11 +748,11 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 
 	/* Log stats device status */
 	if (foundStatsVideo) {
-		LOG(MicrochipISC, Info) << "✅ Hardware histogram support: ENABLED";
-		LOG(MicrochipISC, Info) << "📊 Stats device ready for 512-bin Bayer histograms";
+		LOG(MicrochipISC, Debug) << "✅ Hardware histogram support: ENABLED";
+		LOG(MicrochipISC, Debug) << "📊 Stats device ready for 512-bin Bayer histograms";
 	} else {
-		LOG(MicrochipISC, Info) << "⚠️  Hardware histogram support: DISABLED (stats device not found)";
-		LOG(MicrochipISC, Info) << "📊 Will use software histogram fallback";
+		LOG(MicrochipISC, Debug) << "⚠️  Hardware histogram support: DISABLED (stats device not found)";
+		LOG(MicrochipISC, Debug) << "📊 Will use software histogram fallback";
 	}
 
 	/* Initialize the camera data */
@@ -809,7 +809,7 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	sensorFormat.code = pipeConfig->code;
 	sensorFormat.size = pipeConfig->sensorSize;
 
-	LOG(MicrochipISC, Info) << "🔧 Using validated config: sensor="
+	LOG(MicrochipISC, Debug) << "🔧 Using validated config: sensor="
 		<< sensorFormat.size.width << "x" << sensorFormat.size.height;
 
 	/* Configure the sensor with validated format */
@@ -833,7 +833,7 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	captureFormat.fourcc = data->iscVideo_->toV4L2PixelFormat(pipeConfig->captureFormat);
 	captureFormat.size = pipeConfig->captureSize;
 
-	LOG(MicrochipISC, Info) << "🔧 Using validated config: capture="
+	LOG(MicrochipISC, Debug) << "🔧 Using validated config: capture="
 		<< captureFormat.size.width << "x" << captureFormat.size.height;
 	LOG(MicrochipISC, Debug) << "Capture format configured: " << captureFormat.toString();
 
@@ -893,14 +893,14 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 			LOG(MicrochipISC, Error) << "Failed to configure IPA: " << ret;
 			return ret;
 		}
-		LOG(MicrochipISC, Debug) << "✅ IPA configured successfully";
+		LOG(MicrochipISC, Info) << "✅ IPA configured successfully";
 	}
 
 	/* Stats device info */
 	if (data->statsEnabled_) {
-		LOG(MicrochipISC, Info) << "📊 Hardware histogram available - will start FIRST during camera start";
+		LOG(MicrochipISC, Debug) << "📊 Hardware histogram available - will start FIRST during camera start";
 	} else {
-		LOG(MicrochipISC, Info) << "📊 Hardware histogram not available - using software processing only";
+		LOG(MicrochipISC, Debug) << "📊 Hardware histogram not available - using software processing only";
 	}
 
 	/* Set stream configurations with validated sizes */
@@ -911,7 +911,7 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		cfg.size = captureFormat.size;
 	}
 
-	LOG(MicrochipISC, Info) << "🎯 Camera configuration complete: " << camera->id();
+	LOG(MicrochipISC, Info) << "Camera configuration complete: " << camera->id();
 	return 0;
 }
 
@@ -962,9 +962,9 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 		if (statsRet < 0) {
 			LOG(MicrochipISC, Warning) << "Failed to start histogram capture: " << statsRet;
 		} else {
-			LOG(MicrochipISC, Info) << "✅ Background histogram collection started first";
+			LOG(MicrochipISC, Debug) << "✅ Background histogram collection started first";
 			std::this_thread::sleep_for(std::chrono::milliseconds(500));
-			LOG(MicrochipISC, Info) << "📊 Extended histogram hardware initialization delay completed (500ms)";
+			LOG(MicrochipISC, Debug) << "📊 Extended histogram hardware initialization delay completed (500ms)";
 		}
 	}
 
@@ -983,7 +983,7 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 		return ret;
 	}
 
-	LOG(MicrochipISC, Info) << " Camera ready with event-driven histogram coordination";
+	LOG(MicrochipISC, Debug) << " Camera ready with event-driven histogram coordination";
 	return 0;
 }
 
@@ -1402,7 +1402,7 @@ void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
 
 			bool isGain = hwControl.second.find("gain") != std::string::npos;
 			if (isGain) {
-				LOG(MicrochipISC, Info) << "📊 ISC Hardware: " << hwControl.second << " " << value;
+				LOG(MicrochipISC, Debug) << "📊 ISC Hardware: " << hwControl.second << " " << value;
 			} else {
 				LOG(MicrochipISC, Debug) << "📊 ISC Hardware: " << hwControl.second << " " << value;
 			}
@@ -1414,7 +1414,7 @@ void MicrochipISCCameraData::awbComplete([[maybe_unused]] unsigned int bufferId,
 			int32_t value = metadata.get(ipaControlId).get<int32_t>();
 			iscControls.set(hwControl.first, value);
 			hasIscUpdates = true;
-			LOG(MicrochipISC, Info) << "🎨 CCM Hardware: " << hwControl.second << " " << value;
+			LOG(MicrochipISC, Debug) << "🎨 CCM Hardware: " << hwControl.second << " " << value;
 		}
 	}
 
@@ -1455,10 +1455,10 @@ int MicrochipISCCameraData::initStatsDevice()
 	}
 
 	/* Log the stats format details */
-	LOG(MicrochipISC, Info) << "Stats device format: " << statsFormat.fourcc
+	LOG(MicrochipISC, Debug) << "Stats device format: " << statsFormat.fourcc
 		<< " size: " << statsFormat.size.width << "x" << statsFormat.size.height;
 
-	LOG(MicrochipISC, Info) << "ISC hardware stats device ready - signal connected and waiting for histogram data";
+	LOG(MicrochipISC, Debug) << "ISC hardware stats device ready - signal connected and waiting for histogram data";
 	return 0;
 }
 
@@ -1541,7 +1541,7 @@ int PipelineHandlerMicrochipISC::applySensorControls(MicrochipISCCameraData *dat
 			sensorControls.set(hwControl.first, value);
 			hasUpdates = true;
 
-			LOG(MicrochipISC, Info) << "📊 Sensor Hardware: " << hwControl.second << " = " << value;
+			LOG(MicrochipISC, Debug) << "📊 Sensor Hardware: " << hwControl.second << " = " << value;
 		}
 	}
 
@@ -1572,7 +1572,7 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 	if (request->controls().contains(ipa::microchip_isc::ISC_SCENE_ANALYSIS_MODE_ID)) {
 		data->sceneAnalysisMode_ = request->controls()
 			.get(ipa::microchip_isc::ISC_SCENE_ANALYSIS_MODE_ID).get<int32_t>();
-		LOG(MicrochipISC, Info) << "Scene analysis mode set to: "
+		LOG(MicrochipISC, Debug) << "Scene analysis mode set to: "
 			<< (data->sceneAnalysisMode_ == 1 ? "STILL" : "VIDEO");
 	}
 
@@ -1618,12 +1618,12 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	}
 
 	data->currentFrameCount_++;
-	LOG(MicrochipISC, Info) << "📷 Frame " << data->currentFrameCount_ << " ready - monitoring for all 4 histogram channels";
+	LOG(MicrochipISC, Debug) << "📷 Frame " << data->currentFrameCount_ << " ready - monitoring for all 4 histogram channels";
 
 	/* Store the first request for frame cycling */
 	if (data->currentFrameCount_ == 1) {
 		data->pendingRequest_ = request;
-		LOG(MicrochipISC, Info) << "🔄 Starting extended histogram cycling (20 frames like fswebcam -S 20)";
+		LOG(MicrochipISC, Debug) << "🔄 Starting extended histogram cycling (20 frames like fswebcam -S 20)";
 	}
 
 	const int MAX_FRAMES_FOR_HISTOGRAM = 20;
@@ -1631,17 +1631,17 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	bool hardwareDataReady = data->histogramDataReady_.load(std::memory_order_acquire);
 
 	if (hardwareDataReady) {
-		LOG(MicrochipISC, Info) << "⚡ Frame " << data->currentFrameCount_ << ": SUCCESS! Using hardware histogram";
+		LOG(MicrochipISC, Debug) << "⚡ Frame " << data->currentFrameCount_ << ": SUCCESS! Using hardware histogram";
 
 		std::lock_guard<std::mutex> lock(data->histogramMutex_);
 		if (data->cachedHistogramData_ && data->awbIPA_) {
 			try {
 				data->awbIPA_->processStats(*data->cachedHistogramData_);
 				data->histogramDataReady_.store(false, std::memory_order_release);
-				LOG(MicrochipISC, Info) << "✅ Hardware histogram processed successfully on frame " << data->currentFrameCount_;
+				LOG(MicrochipISC, Debug) << "✅ Hardware histogram processed successfully on frame " << data->currentFrameCount_;
 
 				completeRequestWithBuffer(data->pendingRequest_ ? data->pendingRequest_ : request, buffer);
-				LOG(MicrochipISC, Info) << "🎯 SUCCESS: Request completed with HARDWARE AWB after " << data->currentFrameCount_ << " frames";
+				LOG(MicrochipISC, Debug) << "🎯 SUCCESS: Request completed with HARDWARE AWB after " << data->currentFrameCount_ << " frames";
 				data->resetFrameCycling();
 				return;
 
@@ -1689,7 +1689,7 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 		munmap(mappedMemory, buffer->planes()[0].length);
 
 		completeRequestWithBuffer(data->pendingRequest_ ? data->pendingRequest_ : request, buffer);
-		LOG(MicrochipISC, Info) << "🏁 Request completed with software AWB after " << data->currentFrameCount_ << " frames";
+		LOG(MicrochipISC, Debug) << "🏁 Request completed with software AWB after " << data->currentFrameCount_ << " frames";
 		data->resetFrameCycling();
 
 	} else {
@@ -1727,7 +1727,7 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 	data->resetFrameCycling();
 
 	if (data->statsEnabled_ && data->statsStreaming_) {
-		LOG(MicrochipISC, Info) << "Stopping background histogram collection";
+		LOG(MicrochipISC, Debug) << "Stopping background histogram collection";
 		data->stopStatsCapture();
 	}
 
@@ -1761,7 +1761,7 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 		}
 	}
 
-	LOG(MicrochipISC, Info) << "Device stopped cleanly with proper event coordination cleanup";
+	LOG(MicrochipISC, Debug) << "Device stopped cleanly with proper event coordination cleanup";
 }
 
 REGISTER_PIPELINE_HANDLER(PipelineHandlerMicrochipISC, "microchip-isc")

@@ -123,9 +123,6 @@ int MchpCamStill::captureStill(const std::string &filename)
 			std::cout << "Captured image with resolution: "
 				  << width_ << "x" << height_ << std::endl;
 
-			/* Check for AGC parameters in request metadata */
-			const ControlList &metadata = requests_[0]->metadata();
-			std::cout << "Metadata size: " << metadata.size() << std::endl;
 			saveFrame(buffer, filename);
 			break;
 		}
@@ -137,11 +134,6 @@ int MchpCamStill::captureStill(const std::string &filename)
 void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filename)
 {
 	const FrameBuffer::Plane &plane = buffer->planes()[0];
-
-	std::cout << "  Buffer debug info:" << std::endl;
-	std::cout << "  Plane length: " << plane.length << " bytes" << std::endl;
-	std::cout << "  Expected size: " << (width_ * height_ * 2) << " bytes (RGB565)" << std::endl;
-	std::cout << "  Resolution: " << width_ << "x" << height_ << std::endl;
 
 	// Validate buffer size
 	size_t expectedSize = width_ * height_ * 2;  /* RGB565 = 2 bytes per pixel */
@@ -158,9 +150,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 		return;
 	}
 
-	std::cout << " Memory mapped successfully" << std::endl;
-	std::cout << " Hardware AWB Mode - Using ISC processed pixels directly" << std::endl;
-
 	/* For raw capture - save directly without any processing */
 	if (rawCapture_) {
 		std::cout << " Saving raw data (hardware processed)" << std::endl;
@@ -168,8 +157,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 		munmap(mappedMemory, plane.length);
 		return;
 	}
-
-	std::cout << " Converting format: " << pixelFormat_.toString() << " → RGB888" << std::endl;
 
 	/* Validate pixel format */
 	if (pixelFormat_ != formats::RGB565 && pixelFormat_ != formats::YUYV) {
@@ -184,7 +171,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 
 	try {
 		rgbBuffer.resize(rgbBufferSize);
-		std::cout << " RGB buffer allocated: " << rgbBufferSize << " bytes" << std::endl;
 	} catch (const std::exception& e) {
 		std::cerr << " Failed to allocate RGB buffer: " << e.what() << std::endl;
 		munmap(mappedMemory, plane.length);
@@ -194,7 +180,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	const uint8_t* data = static_cast<const uint8_t*>(mappedMemory);
 
 	if (pixelFormat_ == formats::RGB565) {
-		std::cout << " Converting RGB565 → RGB888 (hardware AWB already applied)" << std::endl;
 
 		// Safe conversion with bounds checking
 		for (unsigned int y = 0; y < height_; ++y) {
@@ -239,7 +224,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 		}
 
 	} else if (pixelFormat_ == formats::YUYV) {
-		std::cout << " Converting YUYV → RGB888 (hardware AWB already applied)" << std::endl;
 
 		/* YUYV conversion with bounds checking */
 		for (unsigned int y = 0; y < height_; ++y) {
@@ -288,14 +272,12 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 					outfilename.find(".jpeg") == std::string::npos) {
 				outfilename += ".jpg";
 			}
-			std::cout << " Saving JPEG: " << outfilename << std::endl;
 			saveJpeg(rgbBuffer.data(), width_, height_, outfilename);
 
 		} else if (imageFormat_ == "png") {
 			if (outfilename.find(".png") == std::string::npos) {
 				outfilename += ".png";
 			}
-			std::cout << " Saving PNG: " << outfilename << std::endl;
 			savePng(rgbBuffer.data(), width_, height_, outfilename);
 
 		} else {
@@ -304,7 +286,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 					outfilename.find(".jpeg") == std::string::npos) {
 				outfilename += ".png";
 			}
-			std::cout << " Saving PNG (default): " << outfilename << std::endl;
 			savePng(rgbBuffer.data(), width_, height_, outfilename);
 		}
 
@@ -315,7 +296,6 @@ void MchpCamStill::saveFrame(const FrameBuffer *buffer, const std::string &filen
 	}
 
 	munmap(mappedMemory, plane.length);
-	std::cout << " Hardware AWB test completed!" << std::endl;
 }
 
 void MchpCamStill::saveRaw(const unsigned char *data, size_t size, const std::string &filename)

@@ -61,7 +61,7 @@ void AGC::configure(const MicrochipISCSensorInfo &sensorInfo)
 	convergenceFrames_ = 0;
 	stableFrameCount_ = 0;
 
-	LOG(ISC_AGC, Info) << "AGC configured: exposure=" << config_.minExposureTime
+	LOG(ISC_AGC, Debug) << "AGC configured: exposure=" << config_.minExposureTime
 		<< "-" << config_.maxExposureTime << "μs"
 		<< " gain=" << config_.minAnalogueGain << "-" << config_.maxAnalogueGain
 		<< " (scene-aware baselines enabled)";
@@ -84,7 +84,7 @@ void AGC::process(const ImageStats &stats, ControlList &results)
 	/* Perform unified scene analysis */
 	currentSceneAnalysis_ = sceneAnalyzer_->analyzeScene(stats);
 
-	LOG(ISC_AGC, Info) << "Scene: "
+	LOG(ISC_AGC, Debug) << "Scene: "
 		<< exposureComplexityToString(currentSceneAnalysis_.exposureComplexity)
 		<< " + " << lightSourceTypeToString(currentSceneAnalysis_.lightSource)
 		<< " + " << environmentTypeToString(currentSceneAnalysis_.environment)
@@ -126,7 +126,7 @@ void AGC::process(const ImageStats &stats, ControlList &results)
 	results.set(SENSOR_ANALOGUE_GAIN_ID, static_cast<int32_t>(result.analogueGain));
 	results.set(SENSOR_DIGITAL_GAIN_ID, static_cast<int32_t>(result.digitalGain));
 
-	LOG(ISC_AGC, Info) << "Applied: E:" << result.exposureTime
+	LOG(ISC_AGC, Debug) << "Applied: E:" << result.exposureTime
 		<< " A:" << result.analogueGain
 		<< " D:" << result.digitalGain
 		<< " (" << result.exposureStrategy << ")"
@@ -176,7 +176,7 @@ void AGC::initializeSensorCurves()
 			}
 		}
 
-		LOG(ISC_AGC, Info) << "Loaded " << points.size()
+		LOG(ISC_AGC, Debug) << "Loaded " << points.size()
 			<< " calibration points for sensor: " << sensorName;
 	}
 }
@@ -399,7 +399,7 @@ void AGC::applyBacklightCompensation(ExposureResult &result, const UnifiedSceneA
 	/* Apply exposure limitation based on scene analysis */
 	if (result.exposureTime > maxExposureLimit) {
 		result.exposureTime = maxExposureLimit;
-		LOG(ISC_AGC, Info) << "Backlight: Limited exposure to " << result.exposureTime
+		LOG(ISC_AGC, Debug) << "Backlight: Limited exposure to " << result.exposureTime
 			<< "μs (DR:" << std::fixed << std::setprecision(2) << scene.dynamicRange
 			<< " Env:" << environmentTypeToString(scene.environment) << ")";
 	}
@@ -429,13 +429,13 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 		if (hasBrightTop) {
 			/* Bright ceiling lights detected */
 			result.targetLuminance = std::clamp(scene.illuminationStrength * 4.5f, 105.0f, 135.0f);
-			LOG(ISC_AGC, Info) << "LED with bright top (zone="
+			LOG(ISC_AGC, Debug) << "LED with bright top (zone="
 				<< scene.spatialAnalysis.topZone.avgBrightness
 				<< "): balanced target=" << result.targetLuminance;
 		} else {
 			/* Normal LED low-light */
 			result.targetLuminance = std::clamp(scene.illuminationStrength * 5.0f, 115.0f, 145.0f);
-			LOG(ISC_AGC, Info) << "LED low-light: balanced target="
+			LOG(ISC_AGC, Debug) << "LED low-light: balanced target="
 				<< result.targetLuminance;
 		}
 	} else if (scene.lightSource == LightSourceType::DAYLIGHT) {
@@ -458,14 +458,14 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 
 	if (scene.lightSource == LightSourceType::LED) {
 		maxSafeExposure = 33000;
-		LOG(ISC_AGC, Info) << "LED low-light: extended exposure limits";
+		LOG(ISC_AGC, Debug) << "LED low-light: extended exposure limits";
 	} else if (scene.lightSource == LightSourceType::INCANDESCENT) {
 		maxSafeExposure = 20000;
 	} else if (scene.lightSource == LightSourceType::FLUORESCENT) {
 		maxSafeExposure = 16667;
 	} else if (scene.lightSource == LightSourceType::DAYLIGHT) {
 		maxSafeExposure = 33000;
-		LOG(ISC_AGC, Info) << "Daylight low-light: extended exposure limits";
+		LOG(ISC_AGC, Debug) << "Daylight low-light: extended exposure limits";
 	}
 
 	/* Environment adjustments */
@@ -519,7 +519,7 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 		float achievedMultiplier = static_cast<float>(result.analogueGain) /
 			std::max(static_cast<float>(minGain), 1.0f);
 
-		LOG(ISC_AGC, Info) << "Applied analogue gain (DIRECT): " << result.analogueGain
+		LOG(ISC_AGC, Debug) << "Applied analogue gain (DIRECT): " << result.analogueGain
 			<< " (ratio=" << std::fixed << std::setprecision(2) << totalGainNeeded
 			<< "x from minGain=" << minGain
 			<< ", achieved=" << achievedMultiplier << "x"
@@ -551,7 +551,7 @@ void AGC::applyLowLightOptimization(ExposureResult &result, const UnifiedSceneAn
 		std::to_string(scene.illuminationStrength).substr(0,4) +
 		" Src:" + lightSourceTypeToString(scene.lightSource) + ")";
 
-	LOG(ISC_AGC, Info) << "Low-light optimization complete: E=" << result.exposureTime
+	LOG(ISC_AGC, Debug) << "Low-light optimization complete: E=" << result.exposureTime
 		<< " A=" << result.analogueGain
 		<< " D=" << result.digitalGain
 		<< " target=" << result.targetLuminance
@@ -619,7 +619,7 @@ void AGC::applyHDRStrategy(ExposureResult &result, const UnifiedSceneAnalysis &s
 			std::to_string(result.analogueGain) + " weighted=" +
 			std::to_string(static_cast<int>(exposureBrightness)) + ")";
 
-		LOG(ISC_AGC, Info) << "Bright daylight HDR: calibrated=" << calibratedExposure
+		LOG(ISC_AGC, Debug) << "Bright daylight HDR: calibrated=" << calibratedExposure
 			<< "us actual=" << result.exposureTime
 			<< "us G=" << result.analogueGain
 			<< " (brightness=" << scene.illuminationStrength
@@ -652,7 +652,7 @@ void AGC::applyHDRStrategy(ExposureResult &result, const UnifiedSceneAnalysis &s
 			std::to_string(result.exposureTime) + "us DR:" +
 			std::to_string(scene.dynamicRange).substr(0,4) + ")";
 
-		LOG(ISC_AGC, Info) << "Outdoor HDR: calibrated=" << calibratedExposure
+		LOG(ISC_AGC, Debug) << "Outdoor HDR: calibrated=" << calibratedExposure
 			<< "us actual=" << result.exposureTime
 			<< "us (brightness=" << scene.illuminationStrength << ")";
 		return;
@@ -683,7 +683,7 @@ void AGC::applyHDRStrategy(ExposureResult &result, const UnifiedSceneAnalysis &s
 	result.exposureStrategy += " + HDRStrategy(Indoor DR:" +
 		std::to_string(scene.dynamicRange).substr(0,4) + ")";
 
-	LOG(ISC_AGC, Info) << "Indoor HDR: E=" << result.exposureTime
+	LOG(ISC_AGC, Debug) << "Indoor HDR: E=" << result.exposureTime
 		<< "us G=" << result.analogueGain
 		<< " target=" << result.targetLuminance;
 }

@@ -162,7 +162,7 @@ void generateStatsFromFormat(const uint8_t *data, const ImageInfo &info, ImageSt
 
 void dumpImageStats(const ImageStats &stats, const std::string &prefix)
 {
-	LOG(ISC_COMMON, Info) << prefix << " ImageStats: "
+	LOG(ISC_COMMON, Debug) << prefix << " ImageStats: "
 		<< "GR[mean=" << stats.meanGR << " count=" << stats.totalPixelsGR << "] "
 		<< "R[mean=" << stats.meanR << " count=" << stats.totalPixelsR << "] "
 		<< "GB[mean=" << stats.meanGB << " count=" << stats.totalPixelsGB << "] "
@@ -343,7 +343,7 @@ UnifiedSceneAnalysis UnifiedSceneAnalyzer::analyzeScene(const ImageStats &stats)
 	/* Step 7: Enhanced confidence calculation using spatial data */
 	analysis.overallConfidence = calculateOverallConfidenceWithSpatial(analysis);
 
-	LOG(ISC_COMMON, Info) << "Enhanced Scene Analysis: "
+	LOG(ISC_COMMON, Debug) << "Enhanced Scene Analysis: "
 		<< lightSourceTypeToString(analysis.lightSource)
 		<< " (" << analysis.colorTemperature << "K) "
 		<< "Mixed=" << analysis.spatialAnalysis.isMixedLighting
@@ -379,7 +379,7 @@ SpatialZoneAnalysis UnifiedSceneAnalyzer::performSpatialZoneAnalysis(const Image
 	spatial.dominantCCT = calculateDominantCCT(spatial);
 	spatial.sceneConfidence = calculateSpatialConfidence(spatial);
 
-	LOG(ISC_COMMON, Info) << "Spatial analysis complete: mixed=" << spatial.isMixedLighting
+	LOG(ISC_COMMON, Debug) << "Spatial analysis complete: mixed=" << spatial.isMixedLighting
 		<< " outdoor=" << spatial.isOutdoorScene
 		<< " dominantCCT=" << spatial.dominantCCT;
 
@@ -811,7 +811,7 @@ bool UnifiedSceneAnalyzer::detectOutdoorLightingPattern(const SpatialZoneAnalysi
 
 	/* Definite indoor - reject outdoor immediately */
 	if (hasLowOverallBrightness && hasNeutralCCT && hasLowVariance && hasUniformLighting) {
-		LOG(ISC_COMMON, Info) << "Strong indoor characteristics - rejecting outdoor: "
+		LOG(ISC_COMMON, Debug) << "Strong indoor characteristics - rejecting outdoor: "
 			<< "brightness=" << overallBrightness
 			<< " CCT=" << spatial.dominantCCT
 			<< " variance=" << spatial.centerZone.variance;
@@ -829,7 +829,7 @@ bool UnifiedSceneAnalyzer::detectOutdoorLightingPattern(const SpatialZoneAnalysi
 	/* Check if hysteresis is disabled (still capture mode) */
 	if (!config_.enableHysteresis) {
 		bool isOutdoor = (outdoorScore >= config_.outdoorEntryThreshold);
-		LOG(ISC_COMMON, Info) << "Still capture mode - immediate classification: "
+		LOG(ISC_COMMON, Debug) << "Still capture mode - immediate classification: "
 			<< "score=" << outdoorScore << " -> " << (isOutdoor ? "OUTDOOR" : "INDOOR");
 		previousOutdoorState_ = isOutdoor;
 		consecutiveOutdoorFrames_ = isOutdoor ? 1 : 0;
@@ -863,13 +863,13 @@ bool UnifiedSceneAnalyzer::detectOutdoorLightingPattern(const SpatialZoneAnalysi
 	/* Require minimum consecutive frames before state change */
 	if (currentOutdoorState != previousOutdoorState_) {
 		if (currentOutdoorState && consecutiveOutdoorFrames_ < config_.minFramesForStateChange) {
-			LOG(ISC_COMMON, Info) << "Outdoor detected but awaiting confirmation ("
+			LOG(ISC_COMMON, Debug) << "Outdoor detected but awaiting confirmation ("
 				<< consecutiveOutdoorFrames_ << "/"
 				<< config_.minFramesForStateChange << " frames)";
 			return previousOutdoorState_;
 		}
 		if (!currentOutdoorState && consecutiveIndoorFrames_ < config_.minFramesForStateChange) {
-			LOG(ISC_COMMON, Info) << "Indoor detected but awaiting confirmation ("
+			LOG(ISC_COMMON, Debug) << "Indoor detected but awaiting confirmation ("
 				<< consecutiveIndoorFrames_ << "/"
 				<< config_.minFramesForStateChange << " frames)";
 			return previousOutdoorState_;
@@ -899,7 +899,7 @@ void UnifiedSceneAnalyzer::resetOutdoorDetectionState()
 	previousOutdoorState_ = false;
 	consecutiveOutdoorFrames_ = 0;
 	consecutiveIndoorFrames_ = 0;
-	LOG(ISC_COMMON, Info) << "Outdoor detection state reset";
+	LOG(ISC_COMMON, Debug) << "Outdoor detection state reset";
 }
 
 double UnifiedSceneAnalyzer::calculateDominantCCT(const SpatialZoneAnalysis &spatial)
@@ -984,7 +984,7 @@ WashoutAnalysis UnifiedSceneAnalyzer::analyzeWashoutPatterns(
 			washout.hasOutdoorWashout = true;
 			washout.washoutLocation = ZoneType::TOP_ZONE;
 			washout.washoutSeverity = std::min(1.0, spatial.topZone.highlightRatio * 2.5);
-			LOG(ISC_COMMON, Info) << "Outdoor washout confirmed: luminance=" << overallLuminance
+			LOG(ISC_COMMON, Debug) << "Outdoor washout confirmed: luminance=" << overallLuminance
 				<< " overexp=" << hasOverexposure;
 		} else {
 			/* Spatial suggests washout but histogram doesn't support it */
@@ -997,7 +997,7 @@ WashoutAnalysis UnifiedSceneAnalyzer::analyzeWashoutPatterns(
 			washout.hasIndoorWashout = true;
 			washout.washoutLocation = centerClipping ? ZoneType::CENTER_ZONE : ZoneType::TOP_ZONE;
 			washout.washoutSeverity = std::min(1.0, spatial.centerZone.highlightRatio * 3.0);
-			LOG(ISC_COMMON, Info) << "Indoor washout confirmed: contrast=" << contrast
+			LOG(ISC_COMMON, Debug) << "Indoor washout confirmed: contrast=" << contrast
 				<< " overexp=" << hasOverexposure;
 		} else {
 			/* Spatial suggests washout but histogram shows normal distribution */
@@ -1037,7 +1037,7 @@ LightSourceType UnifiedSceneAnalyzer::analyzeLightSourceWithSpatial(
 	/* Only trigger for SEVERE underexposure with strong evidence */
 	if (hasLocalizedBrightness && sceneIsUnderexposed && hasDaylightColorTemp &&
 			hasStrongContrast && hasLowVarianceAcrossZones) {
-		LOG(ISC_COMMON, Info) << "Localized daylight in SEVERELY underexposed scene: "
+		LOG(ISC_COMMON, Debug) << "Localized daylight in SEVERELY underexposed scene: "
 			<< "topBright=" << spatial.topZone.avgBrightness
 			<< " centerBright=" << spatial.centerZone.avgBrightness
 			<< " overall=" << overallLuminance
@@ -1056,7 +1056,7 @@ LightSourceType UnifiedSceneAnalyzer::analyzeLightSourceWithSpatial(
 	/* Outdoor detection: confirmed state OR strong indicators during transition */
 	if (spatial.isOutdoorScene || strongOutdoorIndicators) {
 		if (overallLuminance > 120.0f && rbRatio < 1.2f) {
-			LOG(ISC_COMMON, Info) << "Daylight confirmed: luminance=" << overallLuminance
+			LOG(ISC_COMMON, Debug) << "Daylight confirmed: luminance=" << overallLuminance
 				<< " rbRatio=" << rbRatio
 				<< (strongOutdoorIndicators ? " (strong indicators)" : " (confirmed)");
 			return LightSourceType::DAYLIGHT;
@@ -1124,13 +1124,13 @@ LightSourceType UnifiedSceneAnalyzer::analyzeLightSourceWithSpatial(
 
 		/* Make decision based on scores */
 		if (ledScore > fluorescentScore + 1.0) {
-			LOG(ISC_COMMON, Info) << "LED detected: score=" << ledScore
+			LOG(ISC_COMMON, Debug) << "LED detected: score=" << ledScore
 				<< " vs fluorescent=" << fluorescentScore
 				<< " (CCT=" << dominantCCT
 				<< ", variance=" << spatial.centerZone.variance << ")";
 			return LightSourceType::LED;
 		} else if (fluorescentScore > ledScore) {
-			LOG(ISC_COMMON, Info) << "Fluorescent detected: score=" << fluorescentScore
+			LOG(ISC_COMMON, Debug) << "Fluorescent detected: score=" << fluorescentScore
 				<< " vs LED=" << ledScore
 				<< " (CCT=" << dominantCCT
 				<< ", variance=" << spatial.centerZone.variance << ")";

@@ -40,7 +40,7 @@ LOG_DEFINE_CATEGORY(ISC_CCM)
 
 void CCM::configure(const MicrochipISCSensorInfo &sensorInfo)
 {
-	LOG(ISC_CCM, Info) << "Configuring Professional CCM for unified scene analysis - sensor "
+	LOG(ISC_CCM, Debug) << "Configuring Professional CCM for unified scene analysis - sensor "
 		<< sensorInfo.model << " resolution: " << sensorInfo.width << "x" << sensorInfo.height;
 
 	sensorInfo_ = sensorInfo;
@@ -51,7 +51,7 @@ void CCM::configure(const MicrochipISCSensorInfo &sensorInfo)
 	frame_count_ = 0;
 	contextFluorescentStrength_ = 0.0f;
 
-	LOG(ISC_CCM, Info) << "CCM configured with " << ccm_profiles_.size()
+	LOG(ISC_CCM, Debug) << "CCM configured with " << ccm_profiles_.size()
 		<< " professional profiles (hardware scaling: 256=1.0, range: "
 		<< V4L2_MIN_VALUE << " to " << V4L2_MAX_VALUE << ")";
 }
@@ -184,7 +184,7 @@ void CCM::initializeProfessionalProfiles()
 			.tungsten_bias = 0.3f
 			});
 
-	LOG(ISC_CCM, Info) << "Initialized " << ccm_profiles_.size()
+	LOG(ISC_CCM, Debug) << "Initialized " << ccm_profiles_.size()
 		<< " CCM profiles including LED_Neutral";
 }
 
@@ -230,7 +230,7 @@ void CCM::processWithSceneAnalysis(const ImageStats &stats, const UnifiedSceneAn
 		if (hasOverexposure && scene.lightSource == LightSourceType::FLUORESCENT) {
 			/* Apply more aggressive fluorescent correction for overexposed scenes */
 			contextFluorescentStrength_ = std::min(1.0f, contextFluorescentStrength_ + 0.2f);
-			LOG(ISC_CCM, Info) << "Enhanced fluorescent correction for overexposed scene";
+			LOG(ISC_CCM, Debug) << "Enhanced fluorescent correction for overexposed scene";
 		}
 
 		/* Calculate optimal CCM for this specific scene */
@@ -636,7 +636,7 @@ CCM::AccuracyMetrics CCM::evaluateCCMAccuracy(const CCMProfile &profile, const U
 void CCM::logSceneAnalysis(const UnifiedSceneAnalysis &scene)
 {
 	if (frame_count_ % 30 == 0) {
-		LOG(ISC_CCM, Info) << "Unified Scene Analysis: CCT=" << scene.colorTemperature << "K"
+		LOG(ISC_CCM, Debug) << "Unified Scene Analysis: CCT=" << scene.colorTemperature << "K"
 			<< " source=" << lightSourceTypeToString(scene.lightSource)
 			<< " env=" << environmentTypeToString(scene.environment)
 			<< " chromaticity=" << std::fixed << std::setprecision(2)
@@ -647,7 +647,7 @@ void CCM::logSceneAnalysis(const UnifiedSceneAnalysis &scene)
 
 void CCM::logProfileApplication(const CCMProfile &profile, const AccuracyMetrics &metrics)
 {
-	LOG(ISC_CCM, Info) << "Applied " << profile.name
+	LOG(ISC_CCM, Debug) << "Applied " << profile.name
 		<< " (accuracy: " << std::fixed << std::setprecision(1)
 		<< (metrics.overall_score * 100) << "%, saturation: +"
 		<< ((profile.saturation_boost - 1.0f) * 100) << "%)";

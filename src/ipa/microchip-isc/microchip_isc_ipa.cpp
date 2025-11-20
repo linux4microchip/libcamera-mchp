@@ -39,8 +39,8 @@ public:
 	ccm_(std::make_unique<CCM>()),
 	frameCount_(0)
 	{
-		LOG(ISC_IPA, Info) << "Microchip ISC IPA initialized with unified scene classification";
-		LOG(ISC_IPA, Info) << "Architecture: One scene analyzer -> All three algorithms";
+		LOG(ISC_IPA, Debug) << "Microchip ISC IPA initialized with unified scene classification";
+		LOG(ISC_IPA, Debug) << "Architecture: One scene analyzer -> All three algorithms";
 	}
 
 	int32_t init([[maybe_unused]] const IPASettings &settings, bool *metadataSupport) override
@@ -76,11 +76,11 @@ public:
 		 */
 		LOG(ISC_IPA, Info) << "Configuring IPA for sensor: " << sensorInfo.model
 			<< " (" << sensorInfo.width << "x" << sensorInfo.height << ")";
-		LOG(ISC_IPA, Info) << "Exposure range: " << sensorInfo.minExposure
+		LOG(ISC_IPA, Debug) << "Exposure range: " << sensorInfo.minExposure
 			<< "-" << sensorInfo.maxExposure << "μs";
-		LOG(ISC_IPA, Info) << "Analog gain range: " << sensorInfo.minAnalogGain
+		LOG(ISC_IPA, Debug) << "Analog gain range: " << sensorInfo.minAnalogGain
 			<< "-" << sensorInfo.maxAnalogGain;
-		LOG(ISC_IPA, Info) << "Digital gain range: " << sensorInfo.minDigitalGain
+		LOG(ISC_IPA, Debug) << "Digital gain range: " << sensorInfo.minDigitalGain
 			<< "-" << sensorInfo.maxDigitalGain;
 
 		/* Validate limits before passing to algorithms */
@@ -135,7 +135,7 @@ public:
 			if (mode == 1) {  /* STILL_MODE */
 				sceneConfig.enableHysteresis = false;
 				sceneConfig.minFramesForStateChange = 1;
-				LOG(ISC_IPA, Info) << "Still capture mode - immediate scene classification";
+				LOG(ISC_IPA, Debug) << "Still capture mode - immediate scene classification";
 			} else {  /* VIDEO_MODE */
 				sceneConfig.enableHysteresis = true;
 				sceneConfig.minFramesForStateChange = 2;
@@ -175,14 +175,14 @@ public:
 				if (validateImageStats(imageStats)) {
 					statsGenerated = true;
 					statsSource = "HARDWARE";
-					LOG(ISC_IPA, Info) << "Hardware stats: GR=" << std::fixed << std::setprecision(1)
+					LOG(ISC_IPA, Debug) << "Hardware stats: GR=" << std::fixed << std::setprecision(1)
 						<< imageStats.meanGR << " R=" << imageStats.meanR
 						<< " GB=" << imageStats.meanGB << " B=" << imageStats.meanB;
 				} else {
 					LOG(ISC_IPA, Warning) << "Hardware stats validation failed";
 					/* Allow early frames to proceed with incomplete data for algorithm initialization */
 					if (frameCount_ <= 3) {
-						LOG(ISC_IPA, Info) << "Allowing early frame " << frameCount_
+						LOG(ISC_IPA, Debug) << "Allowing early frame " << frameCount_
 							<< " to proceed with incomplete hardware stats";
 						statsGenerated = true;
 						statsSource = "HARDWARE_PARTIAL";
@@ -290,7 +290,7 @@ public:
 			 * All algorithms contribute to a single, consistent control list.
 			 */
 			if (!results.empty()) {
-				LOG(ISC_IPA, Info) << "Unified processing complete (" << statsSource << ") - sending "
+				LOG(ISC_IPA, Debug) << "Unified processing complete (" << statsSource << ") - sending "
 					<< results.size() << " control updates";
 
 				/* Debug control updates periodically */
@@ -315,7 +315,7 @@ public:
 
 		/* Periodic status logging */
 		if (frameCount_ % 30 == 0) {
-			LOG(ISC_IPA, Info) << "Unified scene classification frame " << frameCount_
+			LOG(ISC_IPA, Debug) << "Unified scene classification frame " << frameCount_
 				<< " (" << statsSource << ") processing complete";
 		}
 	}

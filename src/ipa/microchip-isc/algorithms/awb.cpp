@@ -49,7 +49,7 @@ void AWB::configure(const MicrochipISCSensorInfo &sensorInfo)
 	frameCount_ = 0;
 	stableFrameCount_ = 0;
 
-	LOG(ISC_AWB, Info) << "AWB configured for sensor " << sensorInfo.model
+	LOG(ISC_AWB, Debug) << "AWB configured for sensor " << sensorInfo.model
 		<< " with " << algorithms_.size() << " algorithms";
 }
 
@@ -67,7 +67,7 @@ void AWB::process(const ImageStats &stats, ControlList &results)
 	/* Perform unified scene analysis */
 	lastSceneAnalysis_ = sceneAnalyzer_->analyzeScene(stats);
 
-	LOG(ISC_AWB, Info) << "Scene: "
+	LOG(ISC_AWB, Debug) << "Scene: "
 		<< lightSourceTypeToString(lastSceneAnalysis_.lightSource)
 		<< " (" << lastSceneAnalysis_.colorTemperature << "K)"
 		<< " " << environmentTypeToString(lastSceneAnalysis_.environment)
@@ -109,7 +109,7 @@ void AWB::process(const ImageStats &stats, ControlList &results)
 	/* Apply to hardware */
 	applyResultToHardware(result, results);
 
-	LOG(ISC_AWB, Info) << "Applied: R:" << std::fixed << std::setprecision(3) << result.redGain
+	LOG(ISC_AWB, Debug) << "Applied: R:" << std::fixed << std::setprecision(3) << result.redGain
 		<< " GR:" << result.greenRedGain
 		<< " GB:" << result.greenBlueGain
 		<< " B:" << result.blueGain
@@ -179,10 +179,10 @@ WhiteBalanceAlgorithm* AWB::selectBestAlgorithm(const UnifiedSceneAnalysis &scen
 	if (!bestAlgorithm) {
 		bestAlgorithm = algorithms_[0].get();  /* Grey World is always first */
 		bestAlgorithmName = "UnifiedGreyWorld (fallback)";
-		LOG(ISC_AWB, Info) << "No algorithm selected - using Grey World fallback";
+		LOG(ISC_AWB, Debug) << "No algorithm selected - using Grey World fallback";
 	}
 
-	LOG(ISC_AWB, Info) << "=== SELECTED: " << bestAlgorithmName
+	LOG(ISC_AWB, Debug) << "=== SELECTED: " << bestAlgorithmName
 		<< " (score=" << bestScore << ") ===";
 
 	return bestAlgorithm;
@@ -402,7 +402,7 @@ WhiteBalanceResult IncandescentWhiteBalance::process(const ImageStats &stats, co
 	/* Reduce strength for mixed lighting scenarios */
 	if (scene.requiresGentleCorrection || scene.spatialAnalysis.isMixedLighting) {
 		correctionStrength *= scene.mixedLightingRatio;
-		LOG(ISC_AWB, Info) << "Reducing tungsten correction for mixed lighting: " << correctionStrength;
+		LOG(ISC_AWB, Debug) << "Reducing tungsten correction for mixed lighting: " << correctionStrength;
 	} else if (scene.overallConfidence < 0.8) {
 		correctionStrength *= scene.overallConfidence;
 	}
@@ -487,7 +487,7 @@ WhiteBalanceResult FluorescentWhiteBalance::process(const ImageStats &stats, con
 
 	if (scene.requiresGentleCorrection || scene.spatialAnalysis.isMixedLighting) {
 		correctionStrength *= scene.mixedLightingRatio;  /* Use calculated ratio */
-		LOG(ISC_AWB, Info) << "Reducing fluorescent correction strength to "
+		LOG(ISC_AWB, Debug) << "Reducing fluorescent correction strength to "
 			<< correctionStrength << " for mixed lighting";
 	} else if (scene.overallConfidence < 0.8) {
 		correctionStrength *= scene.overallConfidence;
@@ -542,7 +542,7 @@ bool FluorescentWhiteBalance::isApplicable(const UnifiedSceneAnalysis &scene)
 
 	/* CRITICAL: Reject if variance is too low (indicates LED, not fluorescent) */
 	if (scene.spatialAnalysis.centerZone.variance < 700) {
-		LOG(ISC_AWB, Info) << "Fluorescent rejected - low variance indicates LED: "
+		LOG(ISC_AWB, Debug) << "Fluorescent rejected - low variance indicates LED: "
 			<< scene.spatialAnalysis.centerZone.variance;
 		return false;
 	}
@@ -636,21 +636,21 @@ WhiteBalanceResult LEDWhiteBalance::process(const ImageStats &stats, const Unifi
 		/* Mild range: 0.015 to 0.03 → strength 0.15 to 0.30 */
 		float t = (totalCast - 0.015f) / (0.03f - 0.015f);
 		correctionStrength = 0.15 + t * (0.30 - 0.15);
-		LOG(ISC_AWB, Info) << "LED: Mild cast: " << totalCast;
+		LOG(ISC_AWB, Debug) << "LED: Mild cast: " << totalCast;
 	} else if (totalCast <= 0.08f) {
 		/* Moderate range: 0.03 to 0.08 → strength 0.30 to 0.50 */
 		float t = (totalCast - 0.03f) / (0.08f - 0.03f);
 		correctionStrength = 0.30 + t * (0.50 - 0.30);
-		LOG(ISC_AWB, Info) << "LED: Moderate cast: " << totalCast;
+		LOG(ISC_AWB, Debug) << "LED: Moderate cast: " << totalCast;
 	} else if (totalCast <= 0.15f) {
 		/* Strong range: 0.08 to 0.15 → strength 0.50 to 0.70 */
 		float t = (totalCast - 0.08f) / (0.15f - 0.08f);
 		correctionStrength = 0.50 + t * (0.70 - 0.50);
-		LOG(ISC_AWB, Info) << "LED: Strong cast: " << totalCast;
+		LOG(ISC_AWB, Debug) << "LED: Strong cast: " << totalCast;
 	} else {
 		/* Severe: > 0.15 → cap at 0.70 */
 		correctionStrength = 0.70;
-		LOG(ISC_AWB, Info) << "LED: Severe cast (capped): " << totalCast;
+		LOG(ISC_AWB, Debug) << "LED: Severe cast (capped): " << totalCast;
 	}
 
 	LOG(ISC_AWB, Debug) << "Interpolated correction strength: "
@@ -721,7 +721,7 @@ WhiteBalanceResult LEDWhiteBalance::process(const ImageStats &stats, const Unifi
 	result.chromaticityCorrection = totalCast * 0.3f;  /* Very gentle */
 	result.stabilityMetric = 0.95f;  /* LEDs are very stable */
 
-	LOG(ISC_AWB, Info) << "LED AWB: CCT=" << scene.colorTemperature << "K"
+	LOG(ISC_AWB, Debug) << "LED AWB: CCT=" << scene.colorTemperature << "K"
 		<< " greenCast=" << std::fixed << std::setprecision(3) << greenCast
 		<< " yellowCast=" << yellowCast
 		<< " totalCast=" << totalCast
@@ -781,7 +781,7 @@ WhiteBalanceResult DaylightWhiteBalance::process(const ImageStats &stats, const 
 	if (overallContrast > 0.6f && highlightRatio > 0.15f) {
 		/* High contrast + highlights support outdoor classification */
 		correctionStrength = 0.3;  /* Minimal corrections for true outdoor */
-		LOG(ISC_AWB, Info) << "Histogram confirms outdoor scene - minimal correction";
+		LOG(ISC_AWB, Debug) << "Histogram confirms outdoor scene - minimal correction";
 
 	} else if (scene.spatialAnalysis.isOutdoorScene) {
 		/* Spatial says outdoor but histogram suggests otherwise */
@@ -800,7 +800,7 @@ WhiteBalanceResult DaylightWhiteBalance::process(const ImageStats &stats, const 
 	/* Handle washout using histogram data */
 	if (scene.washoutAnalysis.hasOutdoorWashout && highlightRatio > 0.2f) {
 		correctionStrength *= 0.4;  /* Very gentle for severe outdoor washout */
-		LOG(ISC_AWB, Info) << "Severe outdoor washout detected - minimal correction";
+		LOG(ISC_AWB, Debug) << "Severe outdoor washout detected - minimal correction";
 	}
 
 	/* Use sky CCT if available and validated by histogram */
@@ -1018,7 +1018,7 @@ WhiteBalanceResult MultiIlluminantWhiteBalance::process(const ImageStats &stats,
 	result.chromaticityCorrection = scene.chromaticityShift;
 	result.stabilityMetric = 0.7f;  /* Lower stability due to complex lighting */
 
-	LOG(ISC_AWB, Info) << "Multi-illuminant: avgCCT=" << avgZoneCCT
+	LOG(ISC_AWB, Debug) << "Multi-illuminant: avgCCT=" << avgZoneCCT
 		<< " strength=" << correctionStrength
 		<< " zones=" << topWeight << "/" << centerWeight << "/" << bottomWeight
 		<< " contrast=" << overallContrast;
