@@ -280,6 +280,10 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	};
 	context_.activeState.ccm.offsets = { 0.0f, 0.0f, 0.0f };
 
+	/* Initialize CBC to neutral (brightness=0, contrast=16=1.0×) */
+	context_.activeState.cbc.brightness = 0;
+	context_.activeState.cbc.contrast = 16;
+
 	*ipaControls = ControlInfoMap(context_.ctrlMap, controls::controls);
 
 	/*
@@ -511,6 +515,10 @@ void IPAMicrochipISC::setIspControls()
 	ctrls.set(V4L2_CID_ISC_CC_OR, static_cast<int32_t>(ccm.offsets[0]));
 	ctrls.set(V4L2_CID_ISC_CC_OG, static_cast<int32_t>(ccm.offsets[1]));
 	ctrls.set(V4L2_CID_ISC_CC_OB, static_cast<int32_t>(ccm.offsets[2]));
+
+	/* CBC: adaptive brightness and contrast (ISC CBC block, post-gamma) */
+	ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);
+	ctrls.set(V4L2_CID_CONTRAST, context_.activeState.cbc.contrast);
 
 	IPAMicrochipISCInterface::setIspControls.emit(ctrls);
 }

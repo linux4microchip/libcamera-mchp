@@ -46,6 +46,7 @@ static constexpr int32_t kCcmMinValue = -2048;
 float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel);
 float calculateLuminance(const isc_stat_buffer *stats);
 float calculateClipping(const isc_stat_buffer *stats);
+float calculateHistogramSpread(const isc_stat_buffer *stats);
 float estimateColorTemperature(const isc_stat_buffer *stats);
 } /* namespace ipa::microchip_isc */
 
