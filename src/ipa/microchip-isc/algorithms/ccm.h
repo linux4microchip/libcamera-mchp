@@ -22,6 +22,7 @@ class Ccm : public Algorithm
 public:
 	Ccm() = default;
 	~Ccm() = default;
+	unsigned int priority() const override { return 20; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
 	void process(IPAContext &context, const uint32_t frame,

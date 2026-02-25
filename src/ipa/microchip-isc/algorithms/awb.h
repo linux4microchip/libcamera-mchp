@@ -18,6 +18,7 @@ class Awb : public Algorithm
 public:
 	Awb() = default;
 	~Awb() = default;
+	unsigned int priority() const override { return 10; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
 	void queueRequest(IPAContext &context, const uint32_t frame,

@@ -18,6 +18,7 @@ class Agc : public Algorithm
 public:
 	Agc() = default;
 	~Agc() = default;
+	unsigned int priority() const override { return 10; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
 	int configure(IPAContext &context,
