@@ -12,6 +12,8 @@
 
 #include <libcamera/base/log.h>
 
+#include <libcamera/control_ids.h>
+
 #include "libcamera/internal/yaml_parser.h"
 
 #include "common.h"
@@ -82,27 +84,8 @@ int Ccm::init([[maybe_unused]] IPAContext &context,
 			  return a.ct > b.ct; /* descending CT = ascending MRD */
 		  });
 
-	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
-	ctFallback_ = tuningData["ct_fallback"].get<float>(ctFallback_);
-	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
-	ctFallback_ = std::clamp(ctFallback_, 2500.0f, 10000.0f);
-
-	if (tuningData.contains("ct_snap")) {
-		const YamlObject &snap = tuningData["ct_snap"];
-		ctSnapThreshold_ = snap["snap_threshold"].get<float>(ctSnapThreshold_);
-		ctFastThreshold_ = snap["fast_threshold"].get<float>(ctFastThreshold_);
-		ctFastFactor_ = snap["fast_factor"].get<float>(ctFastFactor_);
-	}
-
-	ctSnapThreshold_ = std::clamp(ctSnapThreshold_, 100.0f, 5000.0f);
-	ctFastThreshold_ = std::clamp(ctFastThreshold_, 50.0f, ctSnapThreshold_);
-	ctFastFactor_ = std::clamp(ctFastFactor_, 0.0f, 1.0f);
-
 	LOG(ISC_CCM, Debug)
-		<< "CCM initialized with " << profiles_.size() << " profiles"
-		<< " smoothing=" << smoothingFactor_
-		<< " snapThreshold=" << ctSnapThreshold_
-		<< " fastThreshold=" << ctFastThreshold_;
+		<< "CCM initialized with " << profiles_.size() << " profiles";
 
 	return 0;
 }
@@ -223,19 +206,10 @@ void Ccm::interpolateMatrix(float ct,
 void Ccm::process(IPAContext &context,
 		  const uint32_t frame,
 		  [[maybe_unused]] IPAFrameContext &frameContext,
-		  [[maybe_unused]] const mchp_isc_stat_buffer *stats,
-		  [[maybe_unused]] ControlList &metadata)
+		  const isc_stat_buffer *stats,
+		  ControlList &metadata)
 {
-	/*
-	 * Use the colour temperature computed by AWB from the raw pre-WB
-	 * channel means. AWB is the single authority for CT estimation;
-	 * reading activeState.awb.ct here ensures both the WB gains and
-	 * the CCM matrix track the same illuminant estimate. Fall back to
-	 * 5500 K (neutral daylight) on the first frame before AWB has
-	 * produced an estimate.
-	 */
-	unsigned int rawCt = context.activeState.awb.ct;
-	float ct = (rawCt > 0) ? static_cast<float>(rawCt) : ctFallback_;
+	float ct = estimateColorTemperature(stats);
 
 	std::array<float, 9> matrix;
 	std::array<float, 3> offsets;
@@ -244,34 +218,22 @@ void Ccm::process(IPAContext &context,
 	/*
 	 * Adaptive temporal smoothing based on CT rate of change.
 	 * Large CT jumps indicate scene changes and warrant immediate
-	 * matrix snap (sf=0). Moderate changes or AWB still converging
-	 * use a faster-than-normal factor to track the changing illuminant
-	 * estimate in sync with AWB gains, preventing a transient mismatch
-	 * where new AWB gains are applied with a lagging colour matrix.
+	 * matrix snap (sf=0). Moderate changes use a faster-than-normal
+	 * factor to track the changing illuminant estimate without lag.
 	 *
-	 * The CT-delta guard takes priority: CCM speed is driven by how fast
-	 * CT is changing, not solely by the AWB stable flag, so the matrix
-	 * does not unnecessarily slam on the same frame AWB declares stable
-	 * while CT has already settled for multiple frames.
+	 * The AWB convergence flag is intentionally not used here: it
+	 * introduces a cross-module timing dependency where CCM's mode
+	 * changes on the same frame AWB declares stability while CT is
+	 * still drifting, causing visible colour casts on transitions.
 	 */
 	auto &ccm = context.activeState.ccm;
 	if (frame > 0) {
 		float ctDelta = std::abs(ct - lastCt_);
 		float sf = smoothingFactor_;
-		if (ctDelta > ctSnapThreshold_) {
-			/* Large scene change: snap immediately */
-			sf = 0.0f;
-		} else if (ctDelta > ctFastThreshold_ ||
-			   !context.activeState.awb.awbConverged) {
-			/*
-			 * Moderate CT change or AWB still converging: use
-			 * faster adaptation so the colour matrix tracks the
-			 * changing illuminant estimate in sync with the AWB
-			 * gains. Prevents a transient mismatch where new gains
-			 * are applied with an old matrix during scene changes.
-			 */
-			sf = smoothingFactor_ * ctFastFactor_;
-		}
+		if (ctDelta > 1500.0f)
+			sf = 0.0f;         /* Snap immediately on scene change */
+		else if (ctDelta > 500.0f)
+			sf = smoothingFactor_ * 0.5f;  /* Faster for moderate change */
 
 		for (size_t i = 0; i < 9; i++)
 			matrix[i] = sf * ccm.matrix[i] + (1.0f - sf) * matrix[i];
@@ -282,6 +244,8 @@ void Ccm::process(IPAContext &context,
 	lastCt_ = ct;
 	ccm.matrix = matrix;
 	ccm.offsets = offsets;
+
+	metadata.set(controls::ColourTemperature, static_cast<int32_t>(ct));
 
 	LOG(ISC_CCM, Debug)
 		<< "CCM: ct=" << ct
