@@ -1,0 +1,33 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+
+module ipa.microchip_isc;
+
+import "include/libcamera/ipa/core.mojom";
+
+struct IPAConfigInfo {
+	libcamera.IPACameraSensorInfo sensorInfo;
+	libcamera.ControlInfoMap sensorControls;
+};
+
+interface IPAMicrochipISCInterface {
+	init(libcamera.IPASettings settings, IPAConfigInfo configInfo)
+		=> (int32 ret, libcamera.ControlInfoMap ipaControls);
+	start() => (int32 ret);
+	stop();
+
+	configure(IPAConfigInfo configInfo, uint8 bayerOrder)
+		=> (int32 ret, libcamera.ControlInfoMap ipaControls);
+
+	mapBuffers(array<libcamera.IPABuffer> buffers);
+	unmapBuffers(array<uint32> ids);
+
+	[async] queueRequest(uint32 request, libcamera.ControlList reqControls);
+	[async] processStats(uint32 request, uint32 bufferId,
+			     libcamera.ControlList sensorControls);
+};
+
+interface IPAMicrochipISCEventInterface {
+	statsProcessed(uint32 request, libcamera.ControlList metadata);
+	setSensorControls(libcamera.ControlList sensorControls);
+	setIspControls(libcamera.ControlList ispControls);
+};
