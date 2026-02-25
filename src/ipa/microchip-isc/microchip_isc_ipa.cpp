@@ -263,14 +263,27 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	/* Initialize AGC and AWB to auto mode */
 	context_.activeState.agc.autoEnabled = true;
 
-	int32_t minExpUs =
-		static_cast<int32_t>(agcCfg.minShutterSpeed.get<std::micro>());
-	int32_t maxExpUs =
-		static_cast<int32_t>(agcCfg.maxShutterSpeed.get<std::micro>());
-	int32_t defExpUs =
-		static_cast<int32_t>(agcCfg.defaultExposure *
-				     lineDuration.get<std::micro>());
-	defExpUs = std::clamp(defExpUs, minExpUs, maxExpUs);
+	/* Initialize AWB to identity gains */
+	context_.activeState.awb.rGain = 1.0;
+	context_.activeState.awb.bGain = 1.0;
+	context_.activeState.awb.grGain = 1.0;
+	context_.activeState.awb.gbGain = 1.0;
+	context_.activeState.awb.autoEnabled = true;
+
+	/*
+	 * Black level correction: subtract the sensor black pedestal before
+	 * AWB gains are applied. The ISC pipeline is 12-bit; the sensor
+	 * black level (from the tuning file, in 10-bit units) is scaled by 4.
+	 * All four Bayer channels share the same pedestal for IMX219.
+	 */
+	context_.activeState.awb.rOffset =
+		-static_cast<int32_t>(context_.configuration.sensor.blackLevelR * 4);
+	context_.activeState.awb.bOffset =
+		-static_cast<int32_t>(context_.configuration.sensor.blackLevelB * 4);
+	context_.activeState.awb.grOffset =
+		-static_cast<int32_t>(context_.configuration.sensor.blackLevelGR * 4);
+	context_.activeState.awb.gbOffset =
+		-static_cast<int32_t>(context_.configuration.sensor.blackLevelGB * 4);
 
 	/* Initialize CCM to identity matrix */
 	context_.activeState.ccm.matrix = {

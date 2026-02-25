@@ -318,16 +318,23 @@ void Awb::process(IPAContext &context,
 				awb.bGain = bGain;
 				awb.grGain = grGain;
 				awb.gbGain = gbGain;
-				awb.rOffset = 0;
-				awb.bOffset = 0;
-				awb.grOffset = 0;
-				awb.gbOffset = 0;
+
+				LOG(ISC_AWB, Debug)
+					<< "AWB gains: R=" << rGain
+					<< " GR=" << grGain
+					<< " GB=" << gbGain
+					<< " B=" << bGain
+					<< " (means: R=" << meanR
+					<< " GR=" << meanGR
+					<< " GB=" << meanGB
+					<< " B=" << meanB << ")";
 			}
 		} else {
-			LOG(ISC_AWB, Debug)
-				<< "Scene too dark for AWB (lum=" << lumRaw
-				<< " < threshold=" << darkSceneThreshold_
-				<< "), CT frozen at " << awb.ct << " K";
+			/* First frame: set gains directly */
+			awb.rGain = rGain;
+			awb.bGain = bGain;
+			awb.grGain = grGain;
+			awb.gbGain = gbGain;
 		}
 	} else {
 		LOG(ISC_AWB, Debug)

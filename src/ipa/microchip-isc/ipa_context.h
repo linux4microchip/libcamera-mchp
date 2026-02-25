@@ -33,6 +33,12 @@ struct IPASessionConfiguration {
 	struct {
 		BayerFormat::Order bayerOrder;
 		utils::Duration lineDuration;
+		/*
+		 * Sensor black level in 10-bit units (e.g. 64 for IMX219).
+		 * Applied as a fixed WB offset subtraction before AWB gains.
+		 * Zero means no black level correction.
+		 */
+		uint32_t blackLevel;
 	} sensor;
 };
 

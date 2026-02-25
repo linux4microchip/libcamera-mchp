@@ -16,8 +16,8 @@ hardware:
     neutral: 512
 
   offsets:
-    min: -8191
-    max: 8191
+    min: -4095
+    max: 4095
     neutral: 0
 
 # Sensor information
@@ -28,6 +28,10 @@ sensor_info:
 
 # Algorithm configurations
 algorithms:
+  - BlackLevelCorrection:
+      # Sensor black pedestal in 10-bit units. Subtracted via WB offsets on
+      # SAMA5D2 (hasDpc=false); on SAMA7G5 DPC hardware handles it instead.
+      black_level: 64
   - Awb:
       convergence:
         speed: 0.1
