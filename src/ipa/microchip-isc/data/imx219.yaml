@@ -1,0 +1,93 @@
+---
+# SPDX-License-Identifier: CC0-1.0
+%YAML 1.1
+---
+version: 1
+# Hardware capabilities
+hardware:
+  histogram:
+    bins: 512
+    channels: 4
+    bit_depth: 10
+
+  gains:
+    min: 0
+    max: 8191
+    neutral: 512
+
+  offsets:
+    min: -8191
+    max: 8191
+    neutral: 0
+
+# Sensor information
+sensor_info:
+  model: "imx219"
+  black_level: 64
+  bit_depth: 10
+
+# Algorithm configurations
+algorithms:
+  - Awb:
+      convergence:
+        speed: 0.1
+        damping: 0.85
+        stability_threshold: 0.015
+        frames: 8
+        # Minimum scene luminance (histogram units 0-511) below which AWB
+        # updates are suppressed. Near-dark scenes produce unreliable
+        # channel means due to ISC 8-bit histogram quantization.
+        min_scene_luminance: 24
+
+      color_temperature:
+        min: 1800
+        max: 15000
+
+  - Agc:
+      target_brightness: 128
+      # Fraction of clipped pixels that triggers highlight anti-windup.
+      # When clipping exceeds this threshold the AGC is prevented from
+      # increasing exposure, guarding against oscillation in outdoor
+      # high-contrast scenes where shadows lower the luminance mean
+      # while highlights are already saturated.
+      clip_threshold: 0.02
+
+      convergence:
+        speed: 0.3
+        stability_threshold: 10.0
+        frames: 3
+
+  - Ccm:
+      matrices:
+        # Cloudy/overcast daylight (~7500 K). Sensor R channel is relatively
+        # strong under blue-sky/skylight illumination; reduce R correction
+        # slightly compared to D65. Values extrapolated from D65; calibrate
+        # against a Macbeth chart under overcast sky for accuracy.
+        cloudy_daylight:
+          ct: 7500
+          ccm: [1.8000, -0.5000, -0.3000, -0.4600, 1.7300, -0.2700, -0.0900, -0.5500, 1.6400]
+
+        daylight:
+          ct: 6500
+          ccm: [1.8500, -0.5500, -0.3000, -0.4500, 1.7500, -0.3000, -0.1000, -0.6000, 1.7000]
+
+        daylight_fluorescent:
+          ct: 5000
+          ccm: [1.8300, -0.5800, -0.2500, -0.3600, 1.7000, -0.3400, -0.0800, -0.6700, 1.7500]
+
+        fluorescent:
+          ct: 4000
+          ccm: [1.9500, -0.7000, -0.2500, -0.4000, 1.8000, -0.4000, -0.1000, -0.7500, 1.8500]
+
+        tungsten:
+          ct: 3000
+          ccm: [2.1000, -0.8500, -0.2500, -0.3500, 1.6500, -0.3000, -0.1500, -0.8500, 2.0000]
+
+        # Deep tungsten / candlelight (~2500 K). Strong blue correction and
+        # reduced R diagonal relative to 3000 K. Values extrapolated from the
+        # 3000 K tungsten entry; calibrate against a tungsten lamp or candle
+        # with a Macbeth chart for accuracy.
+        candlelight:
+          ct: 2500
+          ccm: [2.2500, -0.9500, -0.3000, -0.3000, 1.6000, -0.3000, -0.2000, -0.9500, 2.1500]
+...
