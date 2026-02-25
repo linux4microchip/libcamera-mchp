@@ -1,0 +1,138 @@
+---
+# SPDX-License-Identifier: CC0-1.0
+%YAML 1.1
+---
+version: 1
+# Tuning for IMX219 without IR cut filter (NoIR / bare sensor modules).
+#
+# Without the IR cut filter the sensor picks up near-infrared energy
+# (700 nm+) which contaminates the R and G channels, making scenes appear
+# warmer and washed-out compared to a filtered module. The CCM matrices
+# here are derived from Raspberry Pi's imx219_noir calibration data
+# (interpolated to our CT grid) and compensate for the spectral shift by
+# applying lower R-diagonal and stronger B-row corrections.
+#
+# Key differences from imx219.yaml (standard/filtered):
+#   - Lower R diagonal (IR already lifts R; no need to boost further)
+#   - Extended CT range down to 2700 K for IR-heavy candlelight/tungsten
+#   - AWB min_scene_luminance raised (IR gives false low-light readings)
+#   - AWB stability_threshold tightened (IR noise demands more stability)
+#   - CBC contrast_strength increased (IR washes out perceived contrast)
+#
+# Selection: the ISC pipeline handler picks the tuning file by sensor model
+# string. To use this file rename it to imx219.yaml on boards that always
+# carry the NoIR module, or add a device-tree 'model' property of
+# "imx219-noir" to the camera node so that sensor_->model() returns the
+# correct string.
+# Hardware capabilities (same as standard IMX219)
+hardware:
+  histogram:
+    bins: 512
+    channels: 4
+    bit_depth: 10
+
+  gains:
+    min: 0
+    max: 8191
+    neutral: 512
+
+  offsets:
+    min: -8191
+    max: 8191
+    neutral: 0
+
+# Sensor information
+sensor_info:
+  model: "imx219-noir"
+  black_level: 64
+  bit_depth: 10
+
+# Algorithm configurations
+algorithms:
+  - Awb:
+      convergence:
+        speed: 0.1
+        damping: 0.85
+        # Tightened vs standard: IR noise in warm scenes causes gain oscillation
+        # if the stability threshold is too loose.
+        stability_threshold: 0.012
+        frames: 10
+        # Raised vs standard: IR energy elevates all channels, causing the
+        # luminance estimator to overestimate brightness in near-dark scenes.
+        min_scene_luminance: 32
+
+      color_temperature:
+        # Lower minimum to 1800 K: IR-contaminated scenes often appear
+        # warmer than the actual visible-light CT suggests.
+        min: 1800
+        max: 12000
+
+  - Agc:
+      # Slightly lower target to avoid over-exposure; IR adds extra
+      # effective brightness not visible in the final image.
+      target_brightness: 120
+      # Raised clip threshold: IR causes highlight clipping more easily
+      # in outdoor scenes. Be less aggressive about suppressing gain.
+      clip_threshold: 0.03
+
+      convergence:
+        speed: 0.3
+        stability_threshold: 10.0
+        frames: 3
+
+  - Cbc:
+      target_luminance: 120.0
+      brightness_gain: 0.15
+      # Higher contrast strength: IR washes out perceived scene contrast,
+      # so more aggressive histogram stretching is beneficial.
+      contrast_strength: 0.55
+      target_spread: 0.60
+      smoothing_factor: 0.25
+
+  - Ccm:
+      # CCM matrices interpolated from Raspberry Pi imx219_noir calibration.
+      # All rows sum to 1.0 (energy-preserving constraint).
+      #
+      # Compared to standard IMX219:
+      #  - R diagonal is lower  (~1.63-1.83 vs ~1.85-2.10): IR already
+      #    boosts R; the matrix does not need to amplify it further.
+      #  - RB off-diagonal is less negative: less cross-talk to correct
+      #    because the spectral bands are wider without the cut filter.
+      #  - B row has stronger negative BG term at warm CTs: needed to pull
+      #    blue away from the IR-contaminated green signal.
+      matrices:
+        # Cloudy/overcast daylight (~7500 K) for NoIR sensor. IR energy
+        # under blue-heavy skylight illumination remains; R correction is
+        # slightly reduced compared to D65 NoIR. Extrapolated from 6500 K;
+        # calibrate against a Macbeth chart under overcast sky for accuracy.
+        cloudy_daylight:
+          ct: 7500
+          ccm: [1.8000, -0.7100, -0.0900, -0.3200, 1.9000, -0.5800, -0.0900, -0.5500, 1.6400]
+
+        daylight:
+          ct: 6500
+          ccm: [1.8288, -0.7445, -0.0844, -0.3369, 1.9218, -0.5848, -0.0938, -0.5965, 1.6903]
+
+        daylight_fluorescent:
+          ct: 5000
+          ccm: [1.7277, -0.6561, -0.0716, -0.3983, 1.9660, -0.5677, -0.0854, -0.6363, 1.7217]
+
+        fluorescent:
+          ct: 4000
+          ccm: [1.6966, -0.5871, -0.1095, -0.4553, 1.9291, -0.4738, -0.0791, -0.7693, 1.8484]
+
+        tungsten:
+          ct: 3000
+          ccm: [1.6354, -0.3997, -0.2358, -0.5197, 1.9418, -0.4221, -0.1046, -1.2895, 2.3941]
+
+        candlelight:
+          ct: 2700
+          ccm: [1.6058, -0.2779, -0.3279, -0.5703, 1.9978, -0.4275, -0.1473, -1.5219, 2.6692]
+
+        # Deep tungsten / candlelight (~2500 K) for NoIR sensor. IR energy
+        # at warm CTs is strongest; strong B row and low R diagonal required.
+        # Extrapolated from 2700 K; calibrate against a candle/tungsten source.
+        deep_tungsten:
+          ct: 2500
+          ccm: [1.5900, -0.2000, -0.3900, -0.6100, 2.0400, -0.4300, -0.1800, -1.7000, 2.8800]
+...
