@@ -42,161 +42,16 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		darkSceneThreshold_ = conv["min_scene_luminance"].get<float>(darkSceneThreshold_);
 	}
 
-	if (tuningData.contains("gain_limits")) {
-		const YamlObject &gl = tuningData["gain_limits"];
-		gainMin_ = gl["r_b_min"].get<float>(gainMin_);
-		gainMax_ = gl["r_b_max"].get<float>(gainMax_);
-		gbGainMin_ = gl["gb_min"].get<float>(gbGainMin_);
-		gbGainMax_ = gl["gb_max"].get<float>(gbGainMax_);
-	}
-
-	if (tuningData.contains("reference_gains")) {
-		const YamlObject &rg = tuningData["reference_gains"];
-		refRGain_ = rg["r"].get<float>(refRGain_);
-		refBGain_ = rg["b"].get<float>(refBGain_);
-		refGrGain_ = rg["gr"].get<float>(refGrGain_);
-		refGbGain_ = rg["gb"].get<float>(refGbGain_);
-	}
-
-	/*
-	 * Per-CT reference gain table: list of {ct, r, b} entries in the
-	 * tuning YAML. At configure() the IPA interpolates starting gains
-	 * from the last-known colour temperature so the first frame has
-	 * near-correct white balance without waiting for AWB to converge.
-	 * Entries must be in ascending CT order.
-	 */
-	defaultCt_ = tuningData["ct_fallback"].get<float>(defaultCt_);
-	if (tuningData.contains("reference_gains_table")) {
-		for (const auto &entry : tuningData["reference_gains_table"].asList()) {
-			float ct = entry["ct"].get<float>(0.0f);
-			float r = entry["r"].get<float>(refRGain_);
-			float b = entry["b"].get<float>(refBGain_);
-			if (ct > 0.0f)
-				refGainTable_.push_back({ ct, r, b });
-		}
-		/* Ensure ascending order so interpolation is correct */
-		std::sort(refGainTable_.begin(), refGainTable_.end(),
-			  [](const RefGainEntry &a, const RefGainEntry &b) {
-				  return a.ct < b.ct;
-			  });
-		LOG(ISC_AWB, Debug)
-			<< "Loaded " << refGainTable_.size()
-			<< " per-CT reference gain entries";
-	}
-
-	highlightWeight_ = tuningData["highlight_weight"].get<float>(highlightWeight_);
-	highlightWeight_ = std::clamp(highlightWeight_, 0.0f, 1.0f);
-
-	if (tuningData.contains("color_temperature")) {
-		const YamlObject &ct = tuningData["color_temperature"];
-		ctMin_ = ct["min"].get<float>(ctMin_);
-		ctMax_ = ct["max"].get<float>(ctMax_);
-	}
-
 	damping_ = std::clamp(damping_, 0.0f, 1.0f);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 255.0f);
-	gainMin_ = std::clamp(gainMin_, 0.1f, 1.0f);
-	gainMax_ = std::clamp(gainMax_, 1.0f, 32.0f);
-	gbGainMin_ = std::clamp(gbGainMin_, 0.5f, 1.0f);
-	gbGainMax_ = std::clamp(gbGainMax_, 1.0f, 2.0f);
-	ctMin_ = std::clamp(ctMin_, 1000.0f, 4000.0f);
-	ctMax_ = std::clamp(ctMax_, 5000.0f, 20000.0f);
-
-	/*
-	 * Load the sensor-to-XYZ colour matrix for Robertson (1968) CCT
-	 * estimation. Tunable via ct_color_matrix in the Awb tuning block.
-	 * Defaults to kDefaultCtMatrix when absent.
-	 */
-	context.configuration.sensor.ctColorMatrix = kDefaultCtMatrix;
-	if (tuningData.contains("ct_color_matrix")) {
-		auto matList = tuningData["ct_color_matrix"].getList<float>();
-		if (matList && matList->size() == 9) {
-			std::copy(matList->begin(), matList->end(),
-				  context.configuration.sensor.ctColorMatrix.begin());
-			LOG(ISC_AWB, Debug) << "Loaded ct_color_matrix from tuning";
-		}
-	}
-
-	/*
-	 * Advertise all controls emitted in metadata or accepted as input.
-	 * Without registration here the controls do not appear in the camera's
-	 * ControlInfoMap, so applications cannot query their ranges.
-	 */
-	context.ctrlMap[&controls::AwbEnable] =
-		ControlInfo(false, true, true);
-	context.ctrlMap[&controls::AwbLocked] =
-		ControlInfo(false, true, false);
-	/*
-	 * ColourGains: [R gain, B gain] float pair. Clamp range matches the
-	 * grey-world gain limits from the tuning file; default is neutral (1.0).
-	 */
-	context.ctrlMap[&controls::ColourGains] =
-		ControlInfo(Span<const float>({ gainMin_, gainMin_ }),
-			    Span<const float>({ gainMax_, gainMax_ }),
-			    Span<const float>({ 1.0f, 1.0f }));
-	context.ctrlMap[&controls::ColourTemperature] =
-		ControlInfo(static_cast<int32_t>(ctMin_),
-			    static_cast<int32_t>(ctMax_),
-			    5500);
 
 	LOG(ISC_AWB, Debug)
 		<< "AWB initialized: smoothing=" << smoothingFactor_
 		<< " damping=" << damping_
 		<< " threshold=" << stabilityThreshold_
 		<< " frames=" << convergenceFrames_
-		<< " darkThreshold=" << darkSceneThreshold_
-		<< " gainRange=[" << gainMin_ << "," << gainMax_ << "]"
-		<< " ref=[R=" << refRGain_ << " B=" << refBGain_ << "]"
-		<< " ctRange=[" << ctMin_ << "," << ctMax_ << "]";
-
-	return 0;
-}
-
-/**
- * \brief Set initial AWB gains from tuning reference on (re-)configure
- * \param[in] context The IPA context
- * \param[in] sensorInfo Camera sensor information (unused)
- * \return 0 on success
- *
- * Applies the YAML reference_gains as the starting white balance so the
- * first frames have correct colour before the AWB loop converges. Without
- * this, identity gains (1.0/1.0/1.0/1.0) are used for the first ~8 frames,
- * producing a visibly incorrect white balance during startup.
- */
-int Awb::configure(IPAContext &context,
-		   [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
-{
-	/*
-	 * Choose starting gains from the per-CT table when available.
-	 * Use the last-known CT (awb.ct) if valid, otherwise fall back to
-	 * defaultCt_ from the tuning file. This ensures the first captured
-	 * frame has approximately correct white balance whether the camera
-	 * is indoors (~3000 K) or outdoors (~6500 K) without waiting for
-	 * the AWB loop to converge across illuminants.
-	 */
-	float startCt = (context.activeState.awb.ct > 0)
-				? static_cast<float>(context.activeState.awb.ct)
-				: defaultCt_;
-
-	if (!refGainTable_.empty()) {
-		auto [r, b] = interpolateRefGains(startCt);
-		context.activeState.awb.rGain = r;
-		context.activeState.awb.bGain = b;
-	} else {
-		context.activeState.awb.rGain = refRGain_;
-		context.activeState.awb.bGain = refBGain_;
-	}
-	context.activeState.awb.grGain = refGrGain_;
-	context.activeState.awb.gbGain = refGbGain_;
-	awbStable_ = false;
-
-	LOG(ISC_AWB, Debug)
-		<< "AWB configured with reference gains: R="
-		<< context.activeState.awb.rGain
-		<< " GR=" << refGrGain_ << " GB=" << refGbGain_
-		<< " B=" << context.activeState.awb.bGain
-		<< " (CT=" << startCt << " K)";
+		<< " darkThreshold=" << darkSceneThreshold_;
 
 	return 0;
 }
@@ -320,7 +175,23 @@ void Awb::process(IPAContext &context,
 	float meanGRaw = (meanGR + meanGB) / 2.0f;
 	float lumRaw = 0.299f * meanR + 0.587f * meanGRaw + 0.114f * meanB;
 
-	if (lumRaw >= darkSceneThreshold_) {
+	/*
+	 * Use GR as the sole white-balance reference, consistent with
+	 * grGain = 1.0.  Using avgGreen would leave GR ~2–3 LSB above the
+	 * target after WB, producing a faint green cast.
+	 * avgGreen (meanG) is still computed for Robertson CT estimation,
+	 * which needs a single luminance-representative green value.
+	 */
+	float meanG = (meanGR + meanGB) / 2.0f;
+
+	/*
+	 * Guard against AWB updates in near-dark scenes. The ISC histogram
+	 * has ~8-bit effective precision after quantization; below the
+	 * configured threshold the per-channel means are dominated by
+	 * quantisation noise and produce erratic gain estimates.
+	 */
+	float lum = 0.299f * meanR + 0.587f * meanG + 0.114f * meanB;
+	if (lum >= darkSceneThreshold_) {
 		/*
 	 * The ISC histogram in GR/R/GB/B modes (ISC_HIS_CFG.MODE 0-3) taps
 	 * vp_data — the Bayer stream BEFORE the WB block (pre-WB, post-DPC).
@@ -458,12 +329,10 @@ void Awb::process(IPAContext &context,
 				<< " < threshold=" << darkSceneThreshold_
 				<< "), CT frozen at " << awb.ct << " K";
 		}
-
-		std::array<float, 2> gains = {
-			static_cast<float>(awb.rGain),
-			static_cast<float>(awb.bGain),
-		};
-		metadata.set(controls::ColourGains, gains);
+	} else {
+		LOG(ISC_AWB, Debug)
+			<< "Scene too dark for AWB (lum=" << lum
+			<< " < threshold=" << darkSceneThreshold_ << ")";
 	}
 
 	REGISTER_IPA_ALGORITHM(Awb, "Awb")
