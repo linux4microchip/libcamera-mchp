@@ -7,4 +7,5 @@ microchip_isc_ipa_algorithms = files([
     'agc.cpp',
     'cbc.cpp',
     'ccm.cpp',
+    'gamma.cpp',
 ])

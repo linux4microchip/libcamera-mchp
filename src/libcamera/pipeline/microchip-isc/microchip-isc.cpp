@@ -1462,8 +1462,11 @@ void PipelineHandlerMicrochipISC::statsBufferReady(FrameBuffer *buffer)
 		return;
 	}
 
+	static const std::array<uint32_t, 2> sensorCtrlIds = {
+		V4L2_CID_EXPOSURE, V4L2_CID_ANALOGUE_GAIN
+	};
 	ControlList sensorControls =
-		data->sensor_->getControls({ V4L2_CID_EXPOSURE, V4L2_CID_ANALOGUE_GAIN });
+		data->sensor_->getControls(sensorCtrlIds);
 	data->ipa_->processStats(info->request->sequence(), buffer->cookie(), sensorControls);
 }
 

@@ -12,7 +12,7 @@ microchip_isc_sources = files([
 microchip_isc_sources += microchip_isc_ipa_algorithms
 
 mod = shared_module(ipa_name,
-                    [microchip_isc_sources, libcamera_generated_ipa_headers],
+                    microchip_isc_sources,
                     name_prefix : '',
                     include_directories : [ipa_includes],
                     dependencies : [libcamera_private, libipa_dep],

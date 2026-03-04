@@ -16,6 +16,7 @@
 
 #include <libcamera/base/file.h>
 #include <libcamera/base/log.h>
+#include <libcamera/base/span.h>
 
 #include <libcamera/control_ids.h>
 
@@ -122,7 +123,7 @@ std::string IPAMicrochipISC::logPrefix() const
 }
 
 int IPAMicrochipISC::init(const IPASettings &settings,
-			  const IPAConfigInfo &ipaConfig,
+			  [[maybe_unused]] const IPAConfigInfo &ipaConfig,
 			  ControlInfoMap *ipaControls)
 {
 	camHelper_ = CameraSensorHelperFactoryBase::create(settings.sensorModel);
@@ -167,7 +168,7 @@ int IPAMicrochipISC::init(const IPASettings &settings,
 	}
 
 	/* Populate IPA controls from context */
-	*ipaControls = ControlInfoMap(context_.ctrlMap, controls::controls);
+	*ipaControls = ControlInfoMap(ControlInfoMap::Map(context_.ctrlMap), controls::controls);
 
 	LOG(ISC_IPA, Info) << "ISC IPA initialized with "
 			   << algorithms().size() << " algorithms";
@@ -297,7 +298,17 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.cbc.brightness = 0;
 	context_.activeState.cbc.contrast = 16;
 
-	*ipaControls = ControlInfoMap(context_.ctrlMap, controls::controls);
+	/*
+	 * Gamma is initialized by the Gamma algorithm's configure().
+	 * Zero-fill here so setIspControls() has valid data before the first
+	 * process() call.
+	 */
+	context_.activeState.gamma.gammaEff = 2.2f;
+	context_.activeState.gamma.lutB.fill(0);
+	context_.activeState.gamma.lutG.fill(0);
+	context_.activeState.gamma.lutR.fill(0);
+
+	*ipaControls = ControlInfoMap(ControlInfoMap::Map(context_.ctrlMap), controls::controls);
 
 	/*
 	 * Build a priority-sorted algorithm list for deterministic processing
@@ -533,12 +544,21 @@ void IPAMicrochipISC::setIspControls()
 	ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);
 	ctrls.set(V4L2_CID_CONTRAST, context_.activeState.cbc.contrast);
 
+	/* Gamma LUT: per-channel 64-entry 10-bit tone curves */
+	const auto &gamma = context_.activeState.gamma;
+	if (gamma.lutB[63] > 0) {
+		ctrls.set(V4L2_CID_ISC_GAMMA_B_LUT,
+			  ControlValue(Span<const uint32_t>(gamma.lutB.data(), 64)));
+		ctrls.set(V4L2_CID_ISC_GAMMA_G_LUT,
+			  ControlValue(Span<const uint32_t>(gamma.lutG.data(), 64)));
+		ctrls.set(V4L2_CID_ISC_GAMMA_R_LUT,
+			  ControlValue(Span<const uint32_t>(gamma.lutR.data(), 64)));
+	}
+
 	IPAMicrochipISCInterface::setIspControls.emit(ctrls);
 }
 
 } /* namespace ipa::microchip_isc */
-
-} /* namespace libcamera */
 
 /*
  * External IPA module interface
@@ -556,3 +576,5 @@ IPAInterface *ipaCreate()
 	return new ipa::microchip_isc::IPAMicrochipISC();
 }
 }
+
+} /* namespace libcamera */

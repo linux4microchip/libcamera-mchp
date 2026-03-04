@@ -8,10 +8,9 @@
 #include "common.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string.h>
-
-#include <libcamera/base/log.h>
 
 namespace libcamera {
 
@@ -28,7 +27,9 @@ namespace ipa::microchip_isc {
  */
 float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel)
 {
-	Histogram hist({ stats->hist[channel].hist_bins, kHistBins });
+	std::array<uint32_t, kHistBins> bins;
+	std::memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
+	Histogram hist(bins);
 	uint64_t totalPixels = hist.total();
 	if (totalPixels == 0)
 		return 0.0f;
@@ -353,7 +354,9 @@ float calculateClipping(const isc_stat_buffer *stats)
 	uint64_t clipped = 0;
 
 	for (unsigned int ch = 0; ch < 4; ch++) {
-		Histogram hist({ stats->hist[ch].hist_bins, kHistBins });
+		std::array<uint32_t, kHistBins> bins;
+		std::memcpy(bins.data(), stats->hist[ch].hist_bins, kHistBins * sizeof(uint32_t));
+		Histogram hist(bins);
 		Span<const uint64_t> cum = hist.data();
 		total += hist.total();
 		clipped += cum[kHistBins] - cum[kHistBins - kClipBins];

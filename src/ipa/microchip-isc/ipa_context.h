@@ -78,6 +78,43 @@ struct IPAActiveState {
 		 */
 		int32_t contrast;
 	} cbc;
+
+	struct {
+		/*
+		 * Per-channel histogram means from the most recent stats delivery.
+		 * The ISC cycles GR→R→GB→B, but isc_stats_isr() fires only after
+		 * the B channel completes, delivering all 4 channels together with
+		 * valid_channels = 0x0f.  All four means are therefore always fresh
+		 * at delivery time and updated together in processStats().
+		 * Indexed by kHistChannelGR/R/GB/B constants from common.h.
+		 */
+		std::array<float, 4> channelMeans;
+		/*
+		 * Frame sequence number at which each channel's histogram was
+		 * measured (snapshotted in the kernel at HISDONE IRQ time).
+		 * Because each Bayer channel is measured on a different frame
+		 * within the 4-frame cycle, the four capture_frame values differ
+		 * by 0–3.  AWB uses these to look up the exposure and gains that
+		 * were active when each channel was measured, enabling per-channel
+		 * exposure normalization before gain computation.
+		 */
+		std::array<uint32_t, 4> captureFrame;
+	} histogram;
+
+	struct {
+		/*
+		 * Effective gamma exponent used to generate the LUT each frame.
+		 * Temporally smoothed to avoid flickering.
+		 */
+		float gammaEff;
+		/*
+		 * 64-entry 10-bit LUT for each channel (B, G, R).
+		 * Element i is the output value for input range [i*16..(i+1)*16-1].
+		 */
+		std::array<uint32_t, 64> lutB;
+		std::array<uint32_t, 64> lutG;
+		std::array<uint32_t, 64> lutR;
+	} gamma;
 };
 
 struct IPAFrameContext : public FrameContext {
