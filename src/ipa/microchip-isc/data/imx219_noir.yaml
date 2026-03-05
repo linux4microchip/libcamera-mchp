@@ -137,6 +137,9 @@ algorithms:
       smoothing_factor: 0.3
       dark_scene_threshold: 0.01
       toe_input: 0.0313
+      # Lower rolloff threshold for NoIR: IR causes highlights to clip
+      # more aggressively, so start compressing earlier.
+      tone_rolloff_start: 0.80
 
   - Ccm:
       smoothing_factor: 0.7

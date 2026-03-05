@@ -44,6 +44,8 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.95f);
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 0.1f);
 	toeInput_ = std::clamp(toeInput_, 0.01f, 0.15f);
+	toneRolloffStart_ = tuningData["tone_rolloff_start"].get<float>(toneRolloffStart_);
+	toneRolloffStart_ = std::clamp(toneRolloffStart_, 0.5f, 1.0f);
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma initialized: gamma=" << gamma_
@@ -65,7 +67,8 @@ int Gamma::configure(IPAContext &context,
 {
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 	context.activeState.gamma.gammaEff = gamma_;
-	computeLut(gamma_, context.activeState.gamma.lutB, bipartite, toeInput_);
+	computeLut(gamma_, context.activeState.gamma.lutB, bipartite, toeInput_,
+		   toneRolloffStart_);
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutValid = true;
@@ -98,7 +101,7 @@ int Gamma::configure(IPAContext &context,
  * in rendered output.
  */
 void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
-		       bool bipartite, float toeInput)
+		       bool bipartite, float toeInput, float rolloffStart)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
@@ -120,11 +123,30 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 		if (x == 0.0f) {
 			y = 0.0f;
 		} else if (bipartite && x < toeInput) {
-			/* Linear toe: y = slope * x, matched to power at kToeInput */
+			/* Linear toe: y = slope * x, matched to power at toeInput */
 			y = toeSlope * x;
 		} else {
 			/* Standard power-law gamma */
 			y = std::pow(x, invGamma);
+		}
+
+		/*
+		 * Highlight roll-off: above rolloffStart, compress the tone
+		 * curve exponentially so near-saturated pixels never reach
+		 * pure white. This prevents burned-out highlights in bright
+		 * outdoor scenes without reducing overall scene brightness.
+		 *
+		 * Mapping: y_out = R + (1 - R) * (1 - exp(-3 * excess))
+		 * where R = rolloffStart and excess = (y - R) / (1 - R).
+		 *
+		 * At y = R:      y_out = R       (C0 continuous)
+		 * At y = R+0.1:  y_out ≈ R+0.073  (mild compression)
+		 * At y = 1.0:    y_out ≈ R+0.95*(1-R)  (never reaches 1.0)
+		 */
+		if (rolloffStart < 1.0f && y > rolloffStart) {
+			float excess = (y - rolloffStart) / (1.0f - rolloffStart);
+			y = rolloffStart +
+			    (1.0f - rolloffStart) * (1.0f - std::exp(-3.0f * excess));
 		}
 
 		lut[i] = static_cast<uint32_t>(
@@ -195,7 +217,7 @@ void Gamma::process(IPAContext &context,
 	gammaState.gammaEff = gammaEff;
 
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
-	computeLut(gammaEff, gammaState.lutB, bipartite, toeInput_);
+	computeLut(gammaEff, gammaState.lutB, bipartite, toeInput_, toneRolloffStart_);
 	gammaState.lutG = gammaState.lutB;
 	gammaState.lutR = gammaState.lutB;
 

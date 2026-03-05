@@ -142,6 +142,11 @@ algorithms:
       # entry boundary; misalignment produces a visible shadow step artefact.
       # 0.0313 = 32/1023 (entry-2 boundary) is the recommended value.
       toe_input: 0.0313
+      # Normalised output level above which highlight roll-off is applied.
+      # Above this point the curve compresses exponentially toward white,
+      # preventing burned-out highlights in outdoor scenes.
+      # 1.0 = disabled. 0.85 is a good starting point for outdoor shooting.
+      tone_rolloff_start: 0.85
 
   - Ccm:
       # Temporal smoothing factor [0-1]. Higher values give more stable

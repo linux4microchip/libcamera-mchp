@@ -47,7 +47,8 @@ public:
 
 private:
 	static void computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
-			       bool bipartite = false, float toeInput = 0.04f);
+			       bool bipartite = false, float toeInput = 0.04f,
+			       float rolloffStart = 1.0f);
 
 	/* Base gamma exponent (e.g. 2.2 for sRGB-like encoding). */
 	float gamma_ = 2.2f;
@@ -83,6 +84,15 @@ private:
 	 * 0.01–0.15, typical 0.04).
 	 */
 	float toeInput_ = 0.04f;
+
+	/*
+	 * Normalised output level above which highlight roll-off is applied.
+	 * Above this point the tone curve is compressed exponentially so
+	 * near-saturated values never reach pure white, preventing burned-out
+	 * highlights in bright outdoor scenes. 1.0 = disabled (no roll-off).
+	 * Tunable via YAML tone_rolloff_start (range 0.5–1.0, typical 0.85).
+	 */
+	float toneRolloffStart_ = 1.0f;
 };
 
 } /* namespace ipa::microchip_isc */
