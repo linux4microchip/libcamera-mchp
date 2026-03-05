@@ -160,8 +160,8 @@ void Cbc::queueRequest(IPAContext &context,
  */
 void Cbc::process(IPAContext &context,
 		  const uint32_t frame,
-		  [[maybe_unused]] IPAFrameContext &frameContext,
-		  const isc_stat_buffer *stats,
+		  IPAFrameContext &frameContext,
+		  [[maybe_unused]] const isc_stat_buffer *stats,
 		  [[maybe_unused]] ControlList &metadata)
 {
 	auto &cbc = context.activeState.cbc;
@@ -188,7 +188,7 @@ void Cbc::process(IPAContext &context,
 	 * The ISC histogram operates in the pre-gamma linear domain
 	 * (0–511). The luminance target is expressed in the same space.
 	 */
-	float lum = calculateLuminance(stats);
+	float lum = frameContext.scene.luminance;
 	float lumError = targetLuminance_ - lum;
 
 	/*
@@ -221,7 +221,7 @@ void Cbc::process(IPAContext &context,
 	 *
 	 * Hardware unity is 16 (output = (contrast/16) * input + brightness).
 	 */
-	float spread = calculateHistogramSpread(stats);
+	float spread = frameContext.scene.spread;
 	float contrastGain = 1.0f;
 
 	if (spread > 0.01f && spread < targetSpread_) {

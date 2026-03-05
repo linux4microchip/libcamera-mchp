@@ -222,6 +222,27 @@ struct IPAFrameContext : public FrameContext {
 		double gbGain;
 		bool autoEnabled;
 	} awb;
+
+	/*
+	 * Per-frame scene analysis: computed once in processStats() before
+	 * the algorithm loop and shared by all algorithms to avoid redundant
+	 * histogram passes. Algorithms must read these values rather than
+	 * calling calculateLuminance() / calculateHistogramSpread() /
+	 * calculateClipping() directly.
+	 *
+	 * luminance:     BT.601-weighted mean (histogram units 0–511).
+	 * spread:        P5–P95 inter-percentile range / 512 (0–1).
+	 * clipping:      fraction of pixels in the top 4 bins (0–1).
+	 * isDark:        luminance / 511 < darkSceneThreshold (approx 0.02).
+	 * isHighContrast: clipping exceeds the AGC clip threshold (~0.02).
+	 */
+	struct {
+		float luminance;
+		float spread;
+		float clipping;
+		bool  isDark;
+		bool  isHighContrast;
+	} scene;
 };
 
 struct IPAContext {

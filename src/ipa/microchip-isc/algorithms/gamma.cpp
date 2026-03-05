@@ -195,7 +195,7 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
  */
 void Gamma::process(IPAContext &context,
 		    const uint32_t frame,
-		    [[maybe_unused]] IPAFrameContext &frameContext,
+		    IPAFrameContext &frameContext,
 		    const isc_stat_buffer *stats,
 		    [[maybe_unused]] ControlList &metadata)
 {
@@ -210,10 +210,13 @@ void Gamma::process(IPAContext &context,
 		return;
 
 	/*
-	 * The ISC histogram is in the pre-gamma linear domain (0–511).
-	 * Normalise to [0, 1] for the exponent computation.
+	 * Use the raw scene luminance derived from the pre-WB histogram.
+	 * The ISC histogram taps vp_data (post-DPC, pre-WB), so channel
+	 * means are raw sensor values independent of the hardware WB gains.
+	 * This gives a stable luminance estimate that reflects true scene
+	 * brightness regardless of what AWB gains are currently applied.
 	 */
-	float lum = calculateLuminance(stats);
+	float lum = frameContext.scene.luminance;
 	float lumNorm = lum / kHistogramMax;
 
 	if (lumNorm < darkSceneThreshold_) {
