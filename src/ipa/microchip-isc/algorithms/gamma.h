@@ -46,7 +46,8 @@ public:
 		     ControlList &metadata) override;
 
 private:
-	static void computeLut(float gammaExp, std::array<uint32_t, 64> &lut);
+	static void computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
+			       bool bipartite = false);
 
 	/* Base gamma exponent (e.g. 2.2 for sRGB-like encoding). */
 	float gamma_ = 2.2f;

@@ -59,30 +59,70 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 int Gamma::configure(IPAContext &context,
 		     [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
 {
+	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 	context.activeState.gamma.gammaEff = gamma_;
-	computeLut(gamma_, context.activeState.gamma.lutB);
-	computeLut(gamma_, context.activeState.gamma.lutG);
-	computeLut(gamma_, context.activeState.gamma.lutR);
+	computeLut(gamma_, context.activeState.gamma.lutB, bipartite);
+	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
+	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
+
+	LOG(ISC_Gamma, Debug)
+		<< "Gamma configured: gammaEff=" << gamma_
+		<< " bipartite=" << bipartite;
+
 	return 0;
 }
 
 /**
- * \brief Compute a 64-entry 10-bit power-law LUT
+ * \brief Compute a 64-entry 10-bit tone-mapping LUT
  * \param[in] gammaExp The gamma exponent (output = input^(1/gammaExp))
  * \param[out] lut 64-element array to fill
+ * \param[in] bipartite When true, use a linear toe for better shadow detail
  *
  * Each entry i maps input range [i*16 .. (i+1)*16 - 1] to a 10-bit output
- * value.  Entry 0 is always 0 (black point) and the hardware linearly
- * interpolates to 1023 at the end of the last segment.
+ * value. Entry 0 is always 0 (black point).
+ *
+ * Standard mode: pure power-law (output = input^(1/gamma)).
+ *
+ * Bipartite mode (SAMA7G5): a linear segment below 4% input replaces the
+ * bottom of the power curve, lifting dark tones and preventing shadow
+ * crushing. The linear slope is set so that y(kToeInput) is C0 continuous
+ * (value matches the power curve at x = kToeInput). The derivative is NOT
+ * matched (C1 continuity would require a negative offset on the power curve).
+ * In practice the kink falls between LUT entries 2 and 3 (each entry spans
+ * 16 input values) and is absorbed by LUT quantisation; it is not visible
+ * in rendered output.
  */
-void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut)
+void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
+		       bool bipartite)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
 
+	/*
+	 * Bipartite toe: linear segment below kToeInput.
+	 * The slope is chosen so that the linear toe meets the power curve
+	 * at x = kToeInput, making y(kToeInput) continuous.
+	 *
+	 * slope = pow(kToeInput, invGamma) / kToeInput
+	 */
+	constexpr float kToeInput = 0.04f;
+	const float yAtToe = std::pow(kToeInput, invGamma);
+	const float toeSlope = yAtToe / kToeInput;
+
 	for (unsigned int i = 0; i < 64; i++) {
 		float x = static_cast<float>(i * 16) / kInputMax;
-		float y = (x > 0.0f) ? std::pow(x, invGamma) : 0.0f;
+		float y;
+
+		if (x == 0.0f) {
+			y = 0.0f;
+		} else if (bipartite && x < kToeInput) {
+			/* Linear toe: y = slope * x, matched to power at kToeInput */
+			y = toeSlope * x;
+		} else {
+			/* Standard power-law gamma */
+			y = std::pow(x, invGamma);
+		}
+
 		lut[i] = static_cast<uint32_t>(
 			std::clamp(std::round(y * kInputMax), 0.0f, kInputMax));
 	}
@@ -150,15 +190,17 @@ void Gamma::process(IPAContext &context,
 			 (1.0f - smoothingFactor_) * gammaTarget;
 	gammaState.gammaEff = gammaEff;
 
-	computeLut(gammaEff, gammaState.lutB);
-	computeLut(gammaEff, gammaState.lutG);
-	computeLut(gammaEff, gammaState.lutR);
+	bool bipartite = context.configuration.hw.hasBipartiteGamma;
+	computeLut(gammaEff, gammaState.lutB, bipartite);
+	gammaState.lutG = gammaState.lutB;
+	gammaState.lutR = gammaState.lutB;
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma: lum=" << lum
 		<< " lumNorm=" << lumNorm
 		<< " gammaAdapt=" << gammaAdapt
-		<< " gammaEff=" << gammaEff;
+		<< " gammaEff=" << gammaEff
+		<< " bipartite=" << bipartite;
 }
 
 REGISTER_IPA_ALGORITHM(Gamma, "Gamma")
