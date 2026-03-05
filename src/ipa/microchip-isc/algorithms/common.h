@@ -62,9 +62,9 @@ static constexpr float kContrastMax = 2047.0f;
 
 /*
  * Saturation scale factor: libcamera float (1.0 = normal) × kSaturationScale
- * = ISC CBHS hardware register value (50 = unity).
+ * = ISC CBHS hardware register value (16 = unity).
  */
-static constexpr float kSaturationScale = 50.0f;
+static constexpr float kSaturationScale = 16.0f;
 
 /*
  * Default sensor-to-XYZ colour matrix for Robertson (1968) CCT estimation.

@@ -22,6 +22,11 @@ public:
 	unsigned int priority() const override { return 30; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
+	int configure(IPAContext &context,
+		      const IPACameraSensorInfo &sensorInfo) override;
+	void queueRequest(IPAContext &context, const uint32_t frame,
+			  IPAFrameContext &frameContext,
+			  const ControlList &controls) override;
 	void process(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
 		     const isc_stat_buffer *stats,
@@ -57,6 +62,19 @@ private:
 
 	/* Temporal smoothing factor [0.0–1.0]: higher = more damping. */
 	float smoothingFactor_ = 0.25f;
+
+	/*
+	 * Default hardware saturation level (0–100, unity = 16 on SAMA7G5).
+	 * Applied via V4L2_CID_SATURATION on SAMA7G5 (hasCbhs = true).
+	 * Values above 16 boost colour vividness; below 16 reduce it.
+	 */
+	int32_t defaultSaturation_ = 16;
+
+	/*
+	 * Default hue rotation in degrees (-180 to +180, neutral = 0).
+	 * Applied via V4L2_CID_HUE on SAMA7G5 (hasCbhs = true).
+	 */
+	int32_t defaultHue_ = 0;
 };
 
 } /* namespace ipa::microchip_isc */

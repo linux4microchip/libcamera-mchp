@@ -103,9 +103,13 @@ algorithms:
       # so more aggressive histogram stretching is beneficial.
       contrast_strength: 0.55
       target_spread: 0.60
-      smoothing_factor: 0.25
-      # Slightly higher saturation for NoIR to compensate for IR desaturation
-      saturation: 65
+      # 0.65 prevents brightness register flicker under mixed lighting.
+      smoothing_factor: 0.65
+      # Default saturation (0-100, 16=unity on SAMA7G5 CBHS).
+      # Keep neutral here so RGB and YUV paths start from a known-good baseline.
+      saturation: 16
+      # Hue: no rotation needed for NoIR (IR affects saturation not hue angle)
+      hue: 0
 
   - Gamma:
       gamma: 2.2

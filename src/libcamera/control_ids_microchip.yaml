@@ -70,4 +70,19 @@ controls:
       min: -4095
       max: 4095
       default: 0
+
+  - Hue:
+      type: int32_t
+      direction: inout
+      description: |
+        Hue rotation in degrees. Only effective on SAMA7G5 with CBHS
+        hardware (has_cbhs = true in the tuning file). Applied via
+        V4L2_CID_HUE in the ISC CBHS block after gamma.
+
+        0 means no hue shift (neutral). Positive values rotate hue
+        clockwise on the colour wheel; negative values rotate
+        counter-clockwise.
+      min: -180
+      max: 180
+      default: 0
 ...

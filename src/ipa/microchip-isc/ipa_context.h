@@ -141,6 +141,16 @@ struct IPAActiveState {
 		 * Applied as: output = (contrast / 16) * input + brightness.
 		 */
 		int32_t contrast;
+		/*
+		 * Hardware saturation: 0–100, unity = 16 on SAMA7G5 CBHS.
+		 * Only applied on SAMA7G5 (hasCbhs = true) via V4L2_CID_SATURATION.
+		 */
+		int32_t saturation;
+		/*
+		 * Hardware hue rotation in degrees: -180 to +180, neutral = 0.
+		 * Only applied on SAMA7G5 (hasCbhs = true) via V4L2_CID_HUE.
+		 */
+		int32_t hue;
 	} cbc;
 
 	struct {

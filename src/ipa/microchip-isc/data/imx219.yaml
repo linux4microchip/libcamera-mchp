@@ -86,10 +86,17 @@ algorithms:
       # When the scene spread is below this, contrast is boosted.
       target_spread: 0.65
       # Temporal smoothing [0-1]. Higher values reduce flickering.
-      smoothing_factor: 0.25
-      # Default saturation (0-100, 50=unity). Applied via V4L2_CID_SATURATION
-      # on SAMA7G5 (has_cbhs=true). Slightly above unity (60) gives vivid output.
-      saturation: 60
+      # 0.65 is the minimum needed to prevent CBC brightness register flicker
+      # when AGC and CBC both react to the same scene changes on successive
+      # frames. At 0.25 the register could change by ~75% of the error each
+      # frame, producing visible brightness oscillation under mixed lighting.
+      smoothing_factor: 0.65
+      # Default saturation (0-100, 16=unity on SAMA7G5 CBHS).
+      # Keep neutral here so RGB and YUV paths start from a known-good baseline.
+      saturation: 16
+      # Default hue rotation in degrees (-180 to +180). 0 = no rotation.
+      # Applied via V4L2_CID_HUE on SAMA7G5 (has_cbhs=true).
+      hue: 0
 
   - Gamma:
       # Base gamma exponent for the power-law tone curve.

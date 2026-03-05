@@ -334,7 +334,10 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	 * multiplier from the first frame.
 	 */
 	context_.activeState.cbc.brightness = 0;
-	context_.activeState.cbc.contrast = context_.configuration.hw.hasCbhs ? 16 : 256;
+	context_.activeState.cbc.contrast =
+		static_cast<int32_t>(context_.configuration.hw.contrastUnityHw);
+	context_.activeState.cbc.saturation = 16;
+	context_.activeState.cbc.hue = 0;
 
 	/*
 	 * Gamma is initialized by the Gamma algorithm's configure().
@@ -470,7 +473,8 @@ void IPAMicrochipISC::setSensorControls()
  *
  * Converts AWB gains (float, 1.0 = unity) to hardware scale (512 = 1.0x),
  * CCM matrix (float, 1.0 = unity) to hardware scale (256 = 1.0x), gamma LUT
- * entries, and CBC brightness/contrast.
+ * entries, and CBC brightness/contrast/saturation/hue. Saturation and hue
+ * are only emitted on platforms with CBHS hardware (hasCbhs = true).
  */
 void IPAMicrochipISC::setIspControls()
 {
@@ -529,6 +533,15 @@ void IPAMicrochipISC::setIspControls()
 	/* CBC: adaptive brightness and contrast (ISC CBC/CBHS block, post-gamma) */
 	ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);
 	ctrls.set(V4L2_CID_CONTRAST, context_.activeState.cbc.contrast);
+
+	/*
+	 * Saturation and Hue are only available on SAMA7G5 CBHS hardware.
+	 * SAMA5D2 CBC exposes brightness and contrast only.
+	 */
+	if (context_.configuration.hw.hasCbhs) {
+		ctrls.set(V4L2_CID_SATURATION, context_.activeState.cbc.saturation);
+		ctrls.set(V4L2_CID_HUE, context_.activeState.cbc.hue);
+	}
 
 	/* Gamma LUT: per-channel 64-entry 10-bit tone curves */
 	const auto &gamma = context_.activeState.gamma;
