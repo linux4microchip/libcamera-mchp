@@ -190,7 +190,20 @@ void Cbc::process(IPAContext &context,
 	 */
 	float lum = calculateLuminance(stats);
 	float lumError = targetLuminance_ - lum;
-	float targetBrightnessHw = lumError * brightnessGain_;
+
+	/*
+	 * Inhibit CBC brightness correction while AGC is actively converging.
+	 * Both loops correct luminance error but at different pipeline stages
+	 * (AGC: pre-gamma exposure; CBC: post-gamma offset). If both run at
+	 * full strength simultaneously the combined step overshoots, causing
+	 * oscillation. Reduce CBC gain to 20% during AGC search; restore to
+	 * full once AGC has declared the exposure stable (aeConverged = true).
+	 */
+	float effectiveBrightnessGain = brightnessGain_;
+	if (!context.activeState.agc.aeConverged)
+		effectiveBrightnessGain *= 0.2f;
+
+	float targetBrightnessHw = lumError * effectiveBrightnessGain;
 
 	/* Clamp to a conservative sub-range to avoid overdriving */
 	targetBrightnessHw = std::clamp(targetBrightnessHw,
