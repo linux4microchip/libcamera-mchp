@@ -173,24 +173,14 @@ struct IPAActiveState {
 
 	struct {
 		/*
-		 * Per-channel histogram means from the most recent stats delivery.
-		 * The ISC cycles GR→R→GB→B, but isc_stats_isr() fires only after
-		 * the B channel completes, delivering all 4 channels together with
-		 * valid_channels = 0x0f.  All four means are therefore always fresh
-		 * at delivery time and updated together in processStats().
+		 * Rolling per-channel mean cache for the ISC 4-channel histogram.
+		 * The ISC updates one Bayer channel per frame (GR→R→GB→B cycle).
+		 * Reading all four channels from a single stats buffer mixes fresh
+		 * and stale data; this cache holds each channel's most recent
+		 * measured mean. Updated in processStats() using valid_channels.
 		 * Indexed by kHistChannelGR/R/GB/B constants from common.h.
 		 */
 		std::array<float, 4> channelMeans;
-		/*
-		 * Frame sequence number at which each channel's histogram was
-		 * measured (snapshotted in the kernel at HISDONE IRQ time).
-		 * Because each Bayer channel is measured on a different frame
-		 * within the 4-frame cycle, the four capture_frame values differ
-		 * by 0–3.  AWB uses these to look up the exposure and gains that
-		 * were active when each channel was measured, enabling per-channel
-		 * exposure normalization before gain computation.
-		 */
-		std::array<uint32_t, 4> captureFrame;
 	} histogram;
 
 	struct {

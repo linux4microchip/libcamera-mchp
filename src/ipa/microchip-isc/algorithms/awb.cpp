@@ -248,11 +248,18 @@ void Awb::process(IPAContext &context,
 		return;
 	}
 
-	/* Calculate per-channel means from hardware histograms (gain-applied) */
-	float meanGR = calculateChannelMean(stats, kHistChannelGR);
-	float meanR = calculateChannelMean(stats, kHistChannelR);
-	float meanGB = calculateChannelMean(stats, kHistChannelGB);
-	float meanB = calculateChannelMean(stats, kHistChannelB);
+	/*
+	 * Read per-channel means from the rolling cache in activeState.
+	 * The cache is updated in processStats() using the valid_channels
+	 * bitmask so each entry reflects the channel's most recent
+	 * measurement rather than stale data from a combined stats buffer
+	 * where three of four channels are always one to three frames old.
+	 */
+	const auto &cm = context.activeState.histogram.channelMeans;
+	float meanGR = cm[kHistChannelGR];
+	float meanR = cm[kHistChannelR];
+	float meanGB = cm[kHistChannelGB];
+	float meanB = cm[kHistChannelB];
 
 	/*
 	 * Guard against AWB updates in near-dark scenes. The check uses

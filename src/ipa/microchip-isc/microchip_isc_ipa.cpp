@@ -289,6 +289,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.awb.ct = 5500; /* Neutral daylight default */
 	context_.activeState.awb.awbConverged = false;
 
+	/* Channel mean cache: reset to zero so warmup guard is reliable */
+	context_.activeState.histogram.channelMeans.fill(0.0f);
+
 	/*
 	 * Black level correction:
 	 * On SAMA7G5 (hasDpc=true) the DPC hardware block subtracts the
@@ -441,15 +444,53 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	}
 
 	/*
+	 * Rolling per-channel mean cache update.
+	 *
+	 * The ISC histogram block captures one Bayer channel per frame
+	 * (GR→R→GB→B cycle). The valid_channels bitmask in the stats buffer
+	 * indicates which channel(s) were updated this frame. Only the fresh
+	 * channel's mean is updated in the cache; the other three channels
+	 * retain their most recently measured values from earlier frames.
+	 *
+	 * If valid_channels is zero (driver does not set it), fall back to
+	 * frame_number % 4 to identify the fresh channel. Either way, at most
+	 * one channel is updated per frame, preventing stale data from
+	 * overwriting a fresher cached value from an out-of-order delivery.
+	 */
+	if (context_.configuration.hw.statsAvailable &&
+	    stats->valid_channels == 0x0f) {
+		auto &hist = context_.activeState.histogram;
+		for (unsigned int ch = 0; ch < 4; ch++)
+			hist.channelMeans[ch] = calculateChannelMean(stats, ch);
+	}
+
+	/*
 	 * Pre-compute per-frame scene analysis before the algorithm loop so
 	 * that all algorithms share a single consistent histogram pass.
-	 * Algorithms must read frameContext.scene rather than calling
-	 * calculateLuminance() / calculateHistogramSpread() / calculateClipping()
-	 * directly. For frames 0-3 (warmup) or when stats are unavailable,
-	 * all fields are zero-initialised; algorithms have their own guards.
+	 * Luminance is derived from the rolling channel mean cache so that
+	 * each channel contributes its most recently measured value rather
+	 * than reading all four from a single stats buffer where three are
+	 * stale. Spread and clipping still read directly from the stats
+	 * buffer (full histogram shape required; per-entry caching is costly).
+	 * For frames 0-3 (warmup) or when stats are unavailable, all fields
+	 * are zero-initialised; algorithms have their own guards.
 	 */
-	if (context_.configuration.hw.statsAvailable && request >= 4) {
-		frameContext.scene.luminance = calculateLuminance(stats);
+	if (context_.configuration.hw.statsAvailable &&
+	    stats->valid_channels == 0x0f) {
+		/*
+		 * All four channel means were just updated above from the
+		 * current stats delivery (valid_channels = 0x0f, all fresh).
+		 * Gain-applied luminance is used by AGC and CBC; gain-undone
+		 * luminance is used by Gamma so the exponent adapts to the
+		 * true scene light level rather than the AWB-amplified signal.
+		 */
+		const auto &hist = context_.activeState.histogram;
+		const auto &m = hist.channelMeans;
+
+		float meanG = (m[kHistChannelGR] + m[kHistChannelGB]) / 2.0f;
+		frameContext.scene.luminance = 0.299f * m[kHistChannelR] +
+					      0.587f * meanG +
+					      0.114f * m[kHistChannelB];
 		frameContext.scene.spread    = calculateHistogramSpread(stats);
 		frameContext.scene.clipping  = calculateClipping(stats);
 		frameContext.scene.isDark    =
