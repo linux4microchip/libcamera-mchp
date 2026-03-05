@@ -29,6 +29,7 @@
 #include "libcamera/internal/yaml_parser.h"
 
 #include "algorithms/algorithm.h"
+#include "algorithms/common.h"
 #include "libipa/camera_sensor_helper.h"
 
 #include "ipa_context.h"
@@ -266,20 +267,21 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.configuration.hw.statsAvailable =
 		(bayerOrder != kBayerOrderInvalid) && ipaConfig.hwCaps.statsAvailable;
 
-	for (auto const &a : algorithms()) {
-		Algorithm *algo = static_cast<Algorithm *>(a.get());
+	/*
+	 * Initialize activeState defaults BEFORE calling algo->configure() so
+	 * that algorithms can safely read activeState during their configure()
+	 * and their writes are not overwritten afterwards.
+	 */
 
-		int ret = algo->configure(context_, info);
-		if (ret)
-			return ret;
-	}
-
-	/* Initialize AGC and AWB to auto mode */
+	/* AGC: start in full auto mode */
 	context_.activeState.agc.autoEnabled = true;
 	context_.activeState.agc.exposureTimeMode = controls::ExposureTimeModeAuto;
 	context_.activeState.agc.analogueGainMode = controls::AnalogueGainModeAuto;
 
-	/* Initialize AWB to identity gains */
+	/*
+	 * AWB: start with identity gains. Awb::configure() will replace these
+	 * with the YAML reference_gains once the algorithm runs.
+	 */
 	context_.activeState.awb.rGain = 1.0;
 	context_.activeState.awb.bGain = 1.0;
 	context_.activeState.awb.grGain = 1.0;
@@ -319,7 +321,7 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 			<< " B=" << context_.activeState.awb.bOffset;
 	}
 
-	/* Initialize CCM to identity matrix */
+	/* CCM: identity matrix until the first process() call */
 	context_.activeState.ccm.matrix = {
 		1.0f, 0.0f, 0.0f,
 		0.0f, 1.0f, 0.0f,
@@ -328,10 +330,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.ccm.offsets = { 0.0f, 0.0f, 0.0f };
 
 	/*
-	 * Initialize CBC to neutral. Contrast hardware unity differs by
-	 * platform: SAMA7G5 CBHS uses 16, SAMA5D2 CBC uses 256. Using the
-	 * wrong value would apply a permanent 16× or 1/16× contrast
-	 * multiplier from the first frame.
+	 * CBC: neutral defaults. Contrast hardware unity differs by platform:
+	 * SAMA7G5 CBHS uses 16, SAMA5D2 CBC uses 256. Using the wrong value
+	 * would apply a permanent 16× or 1/16× multiplier from the first frame.
 	 */
 	context_.activeState.cbc.brightness = 0;
 	context_.activeState.cbc.contrast =
@@ -340,14 +341,20 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.cbc.hue = 0;
 
 	/*
-	 * Gamma is initialized by the Gamma algorithm's configure().
-	 * Zero-fill here so setIspControls() has valid data before the first
-	 * process() call.
+	 * Gamma: Gamma::configure() computes and stores a valid LUT and sets
+	 * lutValid = true. Pre-mark as invalid so setIspControls() does not
+	 * emit a zero LUT before configure() runs.
 	 */
 	context_.activeState.gamma.gammaEff = 2.2f;
-	context_.activeState.gamma.lutB.fill(0);
-	context_.activeState.gamma.lutG.fill(0);
-	context_.activeState.gamma.lutR.fill(0);
+	context_.activeState.gamma.lutValid = false;
+
+	for (auto const &a : algorithms()) {
+		Algorithm *algo = static_cast<Algorithm *>(a.get());
+
+		int ret = algo->configure(context_, info);
+		if (ret)
+			return ret;
+	}
 
 	*ipaControls = ControlInfoMap(ControlInfoMap::Map(context_.ctrlMap), controls::controls);
 
@@ -491,16 +498,16 @@ void IPAMicrochipISC::setIspControls()
 	 */
 	ControlList ctrls(sensorControls_);
 
-	/* AWB gains: convert float (1.0=unity) to fixed-point (512=1.0x) */
+	/* AWB gains: convert float (1.0=unity) to fixed-point (kWbGainScale=1.0x) */
 	const auto &awb = context_.activeState.awb;
 	ctrls.set(V4L2_CID_ISC_WB_R_GAIN,
-		  static_cast<int32_t>(awb.rGain * 512.0));
+		  static_cast<int32_t>(std::round(awb.rGain * kWbGainScale)));
 	ctrls.set(V4L2_CID_ISC_WB_B_GAIN,
-		  static_cast<int32_t>(awb.bGain * 512.0));
+		  static_cast<int32_t>(std::round(awb.bGain * kWbGainScale)));
 	ctrls.set(V4L2_CID_ISC_WB_GR_GAIN,
-		  static_cast<int32_t>(awb.grGain * 512.0));
+		  static_cast<int32_t>(std::round(awb.grGain * kWbGainScale)));
 	ctrls.set(V4L2_CID_ISC_WB_GB_GAIN,
-		  static_cast<int32_t>(awb.gbGain * 512.0));
+		  static_cast<int32_t>(std::round(awb.gbGain * kWbGainScale)));
 
 	/* AWB offsets */
 	ctrls.set(V4L2_CID_ISC_WB_R_OFFSET, awb.rOffset);
@@ -545,7 +552,7 @@ void IPAMicrochipISC::setIspControls()
 
 	/* Gamma LUT: per-channel 64-entry 10-bit tone curves */
 	const auto &gamma = context_.activeState.gamma;
-	if (gamma.lutB[63] > 0) {
+	if (gamma.lutValid) {
 		ctrls.set(V4L2_CID_ISC_GAMMA_B_LUT,
 			  ControlValue(Span<const uint32_t>(gamma.lutB.data(), 64)));
 		ctrls.set(V4L2_CID_ISC_GAMMA_G_LUT,

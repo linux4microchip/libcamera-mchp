@@ -575,22 +575,7 @@ float estimateColorTemperature(float meanR, float meanG, float meanB,
 	if (total < 1.0f)
 		return 5500.0f;
 
-	/*
-	 * Default sensor-to-XYZ matrix: approximate values for a typical CMOS
-	 * Bayer sensor (reasonable for IMX219 without per-unit calibration).
-	 * Calibrate per-sensor by replacing with values from YAML
-	 * sensor_info.ct_color_matrix.
-	 *
-	 * Derived from approximate IMX219 spectral sensitivities normalised
-	 * to D65. Row-major: [X, Y, Z] per row.
-	 */
-	static constexpr std::array<float, 9> kDefaultMatrix = {
-		0.4900f, 0.3100f, 0.1200f, /* X = 0.49*R + 0.31*G + 0.12*B */
-		0.2200f, 0.6600f, 0.0700f, /* Y = 0.22*R + 0.66*G + 0.07*B */
-		0.0200f, 0.1000f, 0.8700f, /* Z = 0.02*R + 0.10*G + 0.87*B */
-	};
-
-	const std::array<float, 9> &m = ctColorMatrix ? *ctColorMatrix : kDefaultMatrix;
+	const std::array<float, 9> &m = ctColorMatrix ? *ctColorMatrix : kDefaultCtMatrix;
 
 	/* Convert sensor RGB → CIE XYZ */
 	float X = m[0] * meanR + m[1] * meanG + m[2] * meanB;

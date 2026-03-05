@@ -64,6 +64,7 @@ int Gamma::configure(IPAContext &context,
 	computeLut(gamma_, context.activeState.gamma.lutB, bipartite);
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
+	context.activeState.gamma.lutValid = true;
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma configured: gammaEff=" << gamma_
@@ -166,7 +167,7 @@ void Gamma::process(IPAContext &context,
 	 * Normalise to [0, 1] for the exponent computation.
 	 */
 	float lum = calculateLuminance(stats);
-	float lumNorm = lum / 511.0f;
+	float lumNorm = lum / kHistogramMax;
 
 	if (lumNorm < 0.01f) {
 		LOG(ISC_Gamma, Debug) << "Scene too dark, skipping gamma adapt";

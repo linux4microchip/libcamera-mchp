@@ -188,6 +188,12 @@ struct IPAActiveState {
 		std::array<uint32_t, 64> lutB;
 		std::array<uint32_t, 64> lutG;
 		std::array<uint32_t, 64> lutR;
+		/*
+		 * True once Gamma::configure() has computed a valid LUT.
+		 * setIspControls() skips LUT emission until this is set to
+		 * prevent sending an all-zero table on the first frame.
+		 */
+		bool lutValid;
 	} gamma;
 };
 
