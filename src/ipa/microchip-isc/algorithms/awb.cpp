@@ -47,8 +47,8 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 255.0f);
 
 	/*
-	 * Load the sensor-to-XYZ colour matrix for McCamy CCT estimation.
-	 * Tunable via ct_color_matrix in the Awb tuning block.
+	 * Load the sensor-to-XYZ colour matrix for Robertson (1968) CCT
+	 * estimation. Tunable via ct_color_matrix in the Awb tuning block.
 	 * Defaults to kDefaultCtMatrix when absent.
 	 */
 	context.configuration.sensor.ctColorMatrix = kDefaultCtMatrix;
@@ -142,13 +142,11 @@ void Awb::queueRequest(IPAContext &context,
  * neutral grey. Gains are computed to equalise the mean of each Bayer
  * channel to the green reference. Temporal smoothing prevents flickering.
  *
- * The ISC histogram in GR/R/GB/B modes taps vp_data — the Bayer stream
- * BEFORE the WB block (pre-WB, post-DPC). Channel means are therefore raw
- * sensor values unaffected by the current hardware WB gains. Grey-world
- * correction uses a direct ratio (gain = meanGR / channel_mean); no
- * multiplication by the current gain is needed or correct for pre-WB data.
+ * The ISC histogram is collected after white balance gains are applied by
+ * the hardware. The previously applied gains stored in frameContext are
+ * used to undo this effect and recover the true sensor illuminant signal.
  *
- * Colour temperature is estimated from the raw channel means and written to
+ * Color temperature is estimated from gain-undone R/B means and written to
  * activeState.awb.ct for use by CCM (single source of truth).
  */
 void Awb::process(IPAContext &context,
@@ -159,6 +157,19 @@ void Awb::process(IPAContext &context,
 {
 	auto &awb = context.activeState.awb;
 
+	/* Skip computation when histogram stats are not available (non-RAW input) */
+	if (!context.configuration.hw.statsAvailable) {
+		std::array<float, 2> gains = {
+			static_cast<float>(awb.rGain),
+			static_cast<float>(awb.bGain),
+		};
+		metadata.set(controls::ColourGains, gains);
+		if (awb.ct > 0)
+			metadata.set(controls::ColourTemperature,
+				     static_cast<int32_t>(awb.ct));
+		return;
+	}
+
 	/* In manual mode, report current gains and skip auto computation */
 	if (!frameContext.awb.autoEnabled) {
 		std::array<float, 2> gains = {
@@ -166,47 +177,60 @@ void Awb::process(IPAContext &context,
 			static_cast<float>(awb.bGain),
 		};
 		metadata.set(controls::ColourGains, gains);
+		if (awb.ct > 0)
+			metadata.set(controls::ColourTemperature,
+				     static_cast<int32_t>(awb.ct));
 		return;
 	}
 
-	/*
-	 * Read per-channel means from activeState. All four channels are
-	 * always fresh — the ISC stats buffer delivers all four together once
-	 * per 4-frame cycle (isc_stats_isr() fires only after B completes).
-	 */
-	const auto &hist = context.activeState.histogram;
-	float meanGR = hist.channelMeans[kHistChannelGR];
-	float meanR = hist.channelMeans[kHistChannelR];
-	float meanGB = hist.channelMeans[kHistChannelGB];
-	float meanB = hist.channelMeans[kHistChannelB];
+	/* Calculate per-channel means from hardware histograms (gain-applied) */
+	float meanGR = calculateChannelMean(stats, kHistChannelGR);
+	float meanR = calculateChannelMean(stats, kHistChannelR);
+	float meanGB = calculateChannelMean(stats, kHistChannelGB);
+	float meanB = calculateChannelMean(stats, kHistChannelB);
 
 	/*
-	 * Guard against AWB updates in near-dark scenes. The ISC histogram
-	 * taps pre-WB raw Bayer data (vp_data), so channel means are raw
-	 * sensor values independent of the hardware WB gains.
-	 * darkSceneThreshold_ is therefore calibrated directly in raw
-	 * histogram units (0–511) as documented in the YAML tuning file.
+	 * Guard against AWB updates in near-dark scenes. The check uses
+	 * gain-applied histogram values so that darkSceneThreshold_ is
+	 * calibrated directly in histogram units (0–511), matching the
+	 * YAML documentation. Using gain-undone values would make the
+	 * effective threshold dependent on the current AWB gains and would
+	 * produce premature freezing whenever rGain or bGain exceed ~1.0.
 	 */
-	float meanGRaw = (meanGR + meanGB) / 2.0f;
-	float lumRaw = 0.299f * meanR + 0.587f * meanGRaw + 0.114f * meanB;
+	float meanGApplied = (meanGR + meanGB) / 2.0f;
+	float lumApplied = 0.299f * meanR + 0.587f * meanGApplied + 0.114f * meanB;
 
-	/*
-	 * Use GR as the sole white-balance reference, consistent with
-	 * grGain = 1.0.  Using avgGreen would leave GR ~2–3 LSB above the
-	 * target after WB, producing a faint green cast.
-	 * avgGreen (meanG) is still computed for Robertson CT estimation,
-	 * which needs a single luminance-representative green value.
-	 */
-	float meanG = (meanGR + meanGB) / 2.0f;
+	if (lumApplied >= darkSceneThreshold_) {
+		/*
+		 * The ISC histogram is collected after white balance gains are
+		 * applied by the hardware. Undo the previously applied gains
+		 * stored in frameContext to recover the true sensor illuminant
+		 * signal for CT estimation and grey-world gain computation.
+		 */
+		if (frameContext.awb.rGain > 0.0 && frameContext.awb.bGain > 0.0 &&
+		    frameContext.awb.grGain > 0.0 && frameContext.awb.gbGain > 0.0) {
+			meanR /= frameContext.awb.rGain;
+			meanB /= frameContext.awb.bGain;
+			meanGR /= frameContext.awb.grGain;
+			meanGB /= frameContext.awb.gbGain;
+		}
 
-	/*
-	 * Guard against AWB updates in near-dark scenes. The ISC histogram
-	 * has ~8-bit effective precision after quantization; below the
-	 * configured threshold the per-channel means are dominated by
-	 * quantisation noise and produce erratic gain estimates.
-	 */
-	float lum = 0.299f * meanR + 0.587f * meanG + 0.114f * meanB;
-	if (lum >= darkSceneThreshold_) {
+		/*
+		 * avgGreen for Robertson CT estimation only (needs a single
+		 * luminance-representative green value).
+		 */
+		float meanG = (meanGR + meanGB) / 2.0f;
+
+		/*
+		 * Estimate colour temperature from gain-undone channel means
+		 * using Robertson's (1968) 31-point Planckian locus method
+		 * with the sensor-to-XYZ matrix from the tuning file. AWB is
+		 * the single authority for CT; CCM reads activeState.awb.ct.
+		 */
+		float rawCt = estimateColorTemperature(
+			meanR, meanG, meanB,
+			&context.configuration.sensor.ctColorMatrix);
+
 		/*
 	 * The ISC histogram in GR/R/GB/B modes (ISC_HIS_CFG.MODE 0-3) taps
 	 * vp_data — the Bayer stream BEFORE the WB block (pre-WB, post-DPC).
@@ -351,13 +375,44 @@ void Awb::process(IPAContext &context,
 			awb.grGain = grGain;
 			awb.gbGain = gbGain;
 		}
+
+		/*
+		 * Update colour temperature with temporal smoothing.
+		 * Apply damping_ in addition to smoothingFactor_ so CT and
+		 * gains converge at the same rate — without it CT leads ahead
+		 * of the gains, causing a transient CCM matrix mismatch during
+		 * scene transitions (wrong matrix applied with old AWB gains).
+		 */
+		float prevCt = (awb.ct > 0) ? static_cast<float>(awb.ct) : rawCt;
+		float update = 1.0f - smoothingFactor_;
+		if (convergenceFrames_ > 0)
+			update = std::max(update, 1.0f / convergenceFrames_);
+		update *= damping_;
+		update = std::clamp(update, 0.01f, 1.0f);
+		float smoothedCt = prevCt + update * (rawCt - prevCt);
+		awb.ct = static_cast<unsigned int>(
+			std::clamp(smoothedCt, 2000.0f, 10000.0f));
+
+		LOG(ISC_AWB, Debug) << "AWB CT: raw=" << rawCt
+				    << " K smoothed=" << awb.ct << " K";
 	} else {
 		LOG(ISC_AWB, Debug)
-			<< "Scene too dark for AWB (lum=" << lum
-			<< " < threshold=" << darkSceneThreshold_ << ")";
+			<< "Scene too dark for AWB (lum=" << lumApplied
+			<< " < threshold=" << darkSceneThreshold_
+			<< "), CT frozen at " << awb.ct << " K";
 	}
 
-	REGISTER_IPA_ALGORITHM(Awb, "Awb")
+	std::array<float, 2> gains = {
+		static_cast<float>(awb.rGain),
+		static_cast<float>(awb.bGain),
+	};
+	metadata.set(controls::ColourGains, gains);
+
+	if (awb.ct > 0)
+		metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
+}
+
+REGISTER_IPA_ALGORITHM(Awb, "Awb")
 
 } /* namespace ipa::microchip_isc */
 

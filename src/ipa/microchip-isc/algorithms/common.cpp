@@ -12,7 +12,11 @@
 #include <cmath>
 #include <string.h>
 
+#include <libcamera/base/log.h>
+
 namespace libcamera {
+
+LOG_DEFINE_CATEGORY(ISC_Common)
 
 namespace ipa::microchip_isc {
 
@@ -28,7 +32,7 @@ namespace ipa::microchip_isc {
 float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel)
 {
 	std::array<uint32_t, kHistBins> bins;
-	std::memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
+	memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
 	Histogram hist(bins);
 	uint64_t totalPixels = hist.total();
 	if (totalPixels == 0)
@@ -433,7 +437,6 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
 	std::array<float, kHistBins> combined;
 	float total;
 	buildCombinedLuminanceHistogram(stats, combined, total);
-
 	float weightedIntensitySum = 0.0f;
 	float weightedCountSum = 0.0f;
 
@@ -448,8 +451,7 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
 		 * No pixels fell in the metering zone (e.g. spot bins 192–320
 		 * when the scene is fully clipped or black). Fall back to the
 		 * full-frame average using the already-built combined histogram
-		 * rather than rebuilding it via calculateLuminance().
-		 */
+		 * rather than rebuilding it via calculateLuminance().		 */
 		LOG(ISC_Common, Debug)
 			<< "calculateWeightedLuminance: no pixels in metering "
 			   "zone, falling back to full-frame average";
@@ -469,8 +471,8 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
  * \param[in] stats Pointer to ISC statistics buffer
  * \return Estimated color temperature in Kelvin
  *
- * Uses the red/blue channel ratio to estimate correlated color temperature
- * via McCamy's approximation. Returns 5500K as default for neutral scenes.
+ * Uses full three-channel RGB means for CCT estimation via Robertson's
+ * method. Returns 5500 K as default for neutral or near-dark scenes.
  */
 float estimateColorTemperature(const isc_stat_buffer *stats)
 {
@@ -573,25 +575,64 @@ float estimateColorTemperature(float meanR, float meanG, float meanB,
 	if (total < 1.0f)
 		return 5500.0f;
 
-	float rbRatio = meanR / meanB;
+	/*
+	 * Default sensor-to-XYZ matrix: approximate values for a typical CMOS
+	 * Bayer sensor (reasonable for IMX219 without per-unit calibration).
+	 * Calibrate per-sensor by replacing with values from YAML
+	 * sensor_info.ct_color_matrix.
+	 *
+	 * Derived from approximate IMX219 spectral sensitivities normalised
+	 * to D65. Row-major: [X, Y, Z] per row.
+	 */
+	static constexpr std::array<float, 9> kDefaultMatrix = {
+		0.4900f, 0.3100f, 0.1200f, /* X = 0.49*R + 0.31*G + 0.12*B */
+		0.2200f, 0.6600f, 0.0700f, /* Y = 0.22*R + 0.66*G + 0.07*B */
+		0.0200f, 0.1000f, 0.8700f, /* Z = 0.02*R + 0.10*G + 0.87*B */
+	};
+
+	const std::array<float, 9> &m = ctColorMatrix ? *ctColorMatrix : kDefaultMatrix;
+
+	/* Convert sensor RGB → CIE XYZ */
+	float X = m[0] * meanR + m[1] * meanG + m[2] * meanB;
+	float Y = m[3] * meanR + m[4] * meanG + m[5] * meanB;
+	float Z = m[6] * meanR + m[7] * meanG + m[8] * meanB;
 
 	/*
-	 * Approximate CCT from R/B ratio. High R/B indicates warm (low CCT),
-	 * low R/B indicates cool (high CCT).
+	 * CIE 1960 UCS (u, v) chromaticity from XYZ.
+	 * This space has more uniform spacing along the Planckian locus than
+	 * CIE 1931 (x, y), which is why Robertson's method uses it.
 	 */
-	float cct;
-	if (rbRatio > 1.5f)
-		cct = 2800.0f;
-	else if (rbRatio > 1.2f)
-		cct = 2800.0f + (1.5f - rbRatio) / (1.5f - 1.2f) * (3500.0f - 2800.0f);
-	else if (rbRatio > 1.0f)
-		cct = 3500.0f + (1.2f - rbRatio) / (1.2f - 1.0f) * (5000.0f - 3500.0f);
-	else if (rbRatio > 0.8f)
-		cct = 5000.0f + (1.0f - rbRatio) / (1.0f - 0.8f) * (6500.0f - 5000.0f);
-	else
-		cct = 7500.0f;
+	float denom = X + 15.0f * Y + 3.0f * Z;
+	if (denom < 0.001f)
+		return 5500.0f;
 
-	return std::clamp(cct, 2000.0f, 10000.0f);
+	float u = 4.0f * X / denom;
+	float v = 6.0f * Y / denom;
+
+	/*
+	 * Robertson's sign-change algorithm: compute the signed distance
+	 * from (u,v) to the tangent line at each locus entry. The CCT lies
+	 * between the two entries where the sign changes.
+	 */
+	float lastD = 0.0f;
+	for (size_t i = 0; i < kRobertsonTable.size(); i++) {
+		const auto &e = kRobertsonTable[i];
+		float d = (v - e.v) - e.t * (u - e.u);
+
+		if (i > 0 && d * lastD <= 0.0f) {
+			/* Sign change: interpolate MRD between entries i-1 and i */
+			float f = lastD / (lastD - d);
+			float mrd = kRobertsonTable[i - 1].mrd +
+				    f * (e.mrd - kRobertsonTable[i - 1].mrd);
+			if (mrd < 1.0f)
+				return 25000.0f;
+			return std::clamp(1.0e6f / mrd, 1667.0f, 25000.0f);
+		}
+		lastD = d;
+	}
+
+	/* No sign change found: query point outside table range */
+	return 5500.0f;
 }
 
 } /* namespace ipa::microchip_isc */

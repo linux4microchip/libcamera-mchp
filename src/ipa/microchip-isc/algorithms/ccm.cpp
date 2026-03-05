@@ -12,8 +12,6 @@
 
 #include <libcamera/base/log.h>
 
-#include <libcamera/control_ids.h>
-
 #include "libcamera/internal/yaml_parser.h"
 
 #include "common.h"
@@ -206,10 +204,18 @@ void Ccm::interpolateMatrix(float ct,
 void Ccm::process(IPAContext &context,
 		  const uint32_t frame,
 		  [[maybe_unused]] IPAFrameContext &frameContext,
-		  const isc_stat_buffer *stats,
-		  ControlList &metadata)
+		  [[maybe_unused]] const isc_stat_buffer *stats,
+		  [[maybe_unused]] ControlList &metadata)
 {
-	float ct = estimateColorTemperature(stats);
+	/*
+	 * Use the colour temperature computed by AWB from gain-undone channel
+	 * means. AWB is the single authority for CT estimation; reading it
+	 * here ensures both AWB gains and the CCM matrix track the same
+	 * illuminant. Fall back to 5500 K (neutral daylight) on the first
+	 * frame before AWB has produced an estimate.
+	 */
+	unsigned int rawCt = context.activeState.awb.ct;
+	float ct = (rawCt > 0) ? static_cast<float>(rawCt) : 5500.0f;
 
 	std::array<float, 9> matrix;
 	std::array<float, 3> offsets;
@@ -244,8 +250,6 @@ void Ccm::process(IPAContext &context,
 	lastCt_ = ct;
 	ccm.matrix = matrix;
 	ccm.offsets = offsets;
-
-	metadata.set(controls::ColourTemperature, static_cast<int32_t>(ct));
 
 	LOG(ISC_CCM, Debug)
 		<< "CCM: ct=" << ct

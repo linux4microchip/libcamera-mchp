@@ -25,6 +25,8 @@ public:
 	unsigned int priority() const override { return 20; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
+	int configure(IPAContext &context,
+		      const IPACameraSensorInfo &sensorInfo) override;
 	void process(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
 		     const isc_stat_buffer *stats,

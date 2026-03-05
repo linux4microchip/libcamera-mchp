@@ -283,6 +283,7 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.awb.grGain = 1.0;
 	context_.activeState.awb.gbGain = 1.0;
 	context_.activeState.awb.autoEnabled = true;
+	context_.activeState.awb.ct = 5500; /* Neutral daylight default */
 
 	/*
 	 * Black level correction:

@@ -45,11 +45,11 @@ struct IPASessionConfiguration {
 		uint32_t blackLevelGB;
 		uint32_t blackLevelB;
 		/*
-		 * 3×3 row-major sensor-to-XYZ colour matrix used for McCamy
-		 * colour temperature estimation. Row 0 = [X from R, X from G,
-		 * X from B], row 1 = Y, row 2 = Z. Normalised to D65 white.
-		 * Loaded from YAML Awb.ct_color_matrix; falls back to
-		 * approximate IMX219 values when absent.
+		 * 3×3 row-major sensor-to-XYZ colour matrix used for
+		 * Robertson (1968) CCT estimation. Row 0 = [X from R,
+		 * X from G, X from B], row 1 = Y, row 2 = Z. Normalised
+		 * to D65 white. Loaded from YAML Awb.ct_color_matrix; falls
+		 * back to approximate IMX219 values when absent.
 		 */
 		std::array<float, 9> ctColorMatrix;
 	} sensor;
@@ -102,6 +102,12 @@ struct IPAActiveState {
 		int32_t grOffset;
 		int32_t gbOffset;
 		bool autoEnabled;
+		/*
+		 * Estimated scene colour temperature in Kelvin, computed by AWB
+		 * from gain-undone channel means. Single source of truth shared
+		 * with CCM so both modules track the same illuminant estimate.
+		 */
+		unsigned int ct;
 	} awb;
 
 	struct {

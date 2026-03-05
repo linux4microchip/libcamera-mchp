@@ -43,11 +43,59 @@ static constexpr int32_t kCcmScale = 256;
 static constexpr int32_t kCcmMaxValue = 2047;
 static constexpr int32_t kCcmMinValue = -2048;
 
-float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel);
-float calculateLuminance(const isc_stat_buffer *stats);
-float calculateClipping(const isc_stat_buffer *stats);
-float calculateHistogramSpread(const isc_stat_buffer *stats);
-float estimateColorTemperature(const isc_stat_buffer *stats);
+/* ISC histogram intensity range maximum */
+static constexpr float kHistogramMax = 511.0f;
+
+/* CBC/CBHS hardware brightness register limits */
+static constexpr float kBrightnessMin = -1024.0f;
+static constexpr float kBrightnessMax = 1023.0f;
+/*
+ * Conservative brightness drive limit: sub-range of the hardware register
+ * used to avoid overdriving the AGC control loop. Small enough that CBC
+ * brightness only corrects residual error rather than competing with AGC.
+ */
+static constexpr float kBrightnessDriveLimit = 256.0f;
+
+/* CBC/CBHS hardware contrast register limits */
+static constexpr float kContrastMin = -2048.0f;
+static constexpr float kContrastMax = 2047.0f;
+
+/*
+ * Saturation scale factor: libcamera float (1.0 = normal) × kSaturationScale
+ * = ISC CBHS hardware register value (50 = unity).
+ */
+static constexpr float kSaturationScale = 50.0f;
+
+/*
+ * Default sensor-to-XYZ colour matrix for Robertson (1968) CCT estimation.
+ * Approximate values for IMX219 derived from published spectral responsivity.
+ * Replace via YAML Awb.ct_color_matrix for better accuracy (±200 K vs ±500 K).
+ * Calibrate with a Macbeth ColorChecker under known illuminants.
+ * Row-major: row 0 = X, row 1 = Y, row 2 = Z.
+ */
+inline constexpr std::array<float, 9> kDefaultCtMatrix = {
+	0.4900f,
+	0.3100f,
+	0.1200f,
+	0.2200f,
+	0.6600f,
+	0.0700f,
+	0.0200f,
+	0.1000f,
+	0.8700f,
+};
+
+float calculateChannelMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
+float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
+void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
+			   std::array<float, 64> &lut_cdf);
+float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
+				 const std::array<float, kHistBins> &weights);
+float calculateClipping(const mchp_isc_stat_buffer *stats);
+float calculateHistogramSpread(const mchp_isc_stat_buffer *stats);
+float estimateColorTemperature(const mchp_isc_stat_buffer *stats);
+float estimateColorTemperature(float meanR, float meanG, float meanB,
+			       const std::array<float, 9> *ctColorMatrix = nullptr);
 } /* namespace ipa::microchip_isc */
 
 } /* namespace libcamera */
