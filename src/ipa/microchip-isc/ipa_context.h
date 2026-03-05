@@ -82,6 +82,15 @@ struct IPASessionConfiguration {
 		 * YUYV or RGB directly.
 		 */
 		bool statsAvailable;
+
+		/*
+		 * contrastUnityHw: hardware register value that represents
+		 * unity contrast (output = input, no gain applied).
+		 * SAMA7G5 CBHS: 16  (output = (contrast/16) * input)
+		 * SAMA5D2 CBC:  256 (output = (contrast/256) * input)
+		 * Set from hasCbhs at configure() time.
+		 */
+		float contrastUnityHw;
 	} hw;
 };
 

@@ -21,6 +21,8 @@ public:
 	unsigned int priority() const override { return 10; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
+	int configure(IPAContext &context,
+		      const IPACameraSensorInfo &sensorInfo) override;
 	void queueRequest(IPAContext &context, const uint32_t frame,
 			  IPAFrameContext &frameContext,
 			  const ControlList &controls) override;
@@ -42,6 +44,47 @@ private:
 	 * due to ISC 8-bit quantization and causes erratic gain swings.
 	 */
 	float darkSceneThreshold_ = 16.0f;
+
+	/*
+	 * Per-channel gain clamp limits. Wider limits allow faster adaptation
+	 * but risk oscillation in extreme scenes (snow, candlelight). Set via
+	 * YAML gain_limits; defaults match the grey-world practical range.
+	 */
+	float gainMin_ = 0.2f;
+	float gainMax_ = 3.0f;
+	float gbGainMin_ = 0.9f;
+	float gbGainMax_ = 1.1f;
+
+	/*
+	 * Colour temperature limits in Kelvin. Values outside this range
+	 * indicate histogram artefacts or extremely unusual illuminants and
+	 * are clamped to prevent nonsensical CCM matrix lookups.
+	 */
+	float ctMin_ = 2000.0f;
+	float ctMax_ = 10000.0f;
+
+	/*
+	 * Reference (neutral) gains applied on configure() so the first
+	 * frames have sensible colour before the AWB loop converges.
+	 * Set to the D65 grey-card gains measured on the production sensor.
+	 */
+	double refRGain_ = 1.0;
+	double refBGain_ = 1.0;
+	double refGrGain_ = 1.0;
+	double refGbGain_ = 1.0;
+
+	/*
+	 * Set true when the maximum per-channel delta is below
+	 * stabilityThreshold_ for the current frame. Written to
+	 * controls::AwbLocked in metadata.
+	 */
+	bool awbStable_ = false;
+	/*
+	 * AWB re-enters converging state only when the per-channel delta
+	 * exceeds this threshold. Set to 2x stabilityThreshold_ in init()
+	 * to provide hysteresis against colour flicker near the boundary.
+	 */
+	float resumeThreshold_ = 0.030f;
 };
 
 } /* namespace ipa::microchip_isc */

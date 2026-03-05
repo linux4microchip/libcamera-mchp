@@ -57,11 +57,27 @@ algorithms:
         min: 1800
         max: 12000
 
+      # Tighter R/B limits than standard: IR contamination in R can cause
+      # grey-world to over-boost R when the scene has strong IR content.
+      gain_limits:
+        r_b_min: 0.15
+        r_b_max: 2.5
+        gb_min: 0.9
+        gb_max: 1.1
+
+      # Reference gains for NoIR (D65, no IR cut filter).
+      # R is lower because IR lifts the R channel; B is slightly higher
+      # to compensate for the red-shifted spectral response.
+      reference_gains:
+        r: 1.30
+        b: 1.60
+        gr: 1.0
+        gb: 1.02
+
       # Sensor-to-XYZ matrix for NoIR IMX219. IR energy shifts the effective
       # spectral response; the X row gets extra R contribution, Z row extra B.
       # Calibrated relative to standard IMX219 to account for the spectral shift.
       ct_color_matrix: [0.5200, 0.2800, 0.1000, 0.2400, 0.6400, 0.0800, 0.0300, 0.1200, 0.8500]
-
 
   - Agc:
       # Slightly lower target to avoid over-exposure; IR adds extra
@@ -110,14 +126,26 @@ algorithms:
       saturation: 16
       # Hue: no rotation needed for NoIR (IR affects saturation not hue angle)
       hue: 0
+      # Maximum contrast gain from histogram stretch.
+      # Slightly higher than standard: IR washes out contrast more aggressively.
+      contrast_max_gain: 3.5
 
   - Gamma:
       gamma: 2.2
       strength: 0.3
       target_output: 0.45
       smoothing_factor: 0.3
+      dark_scene_threshold: 0.01
+      toe_input: 0.0313
 
   - Ccm:
+      smoothing_factor: 0.7
+      # Fallback CT for NoIR: slightly warmer than standard due to IR shift.
+      ct_fallback: 5000
+      ct_snap:
+        snap_threshold: 1500
+        fast_threshold: 500
+        fast_factor: 0.5
       # CCM matrices interpolated from Raspberry Pi imx219_noir calibration.
       # All rows sum to 1.0 (energy-preserving constraint).
       #

@@ -38,13 +38,42 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		smoothingFactor_ = conv["speed"].get<float>(smoothingFactor_);
 		damping_ = conv["damping"].get<float>(damping_);
 		stabilityThreshold_ = conv["stability_threshold"].get<float>(stabilityThreshold_);
+		resumeThreshold_ = stabilityThreshold_ * 2.0f;
 		convergenceFrames_ = conv["frames"].get<unsigned int>(convergenceFrames_);
 		darkSceneThreshold_ = conv["min_scene_luminance"].get<float>(darkSceneThreshold_);
+	}
+
+	if (tuningData.contains("gain_limits")) {
+		const YamlObject &gl = tuningData["gain_limits"];
+		gainMin_ = gl["r_b_min"].get<float>(gainMin_);
+		gainMax_ = gl["r_b_max"].get<float>(gainMax_);
+		gbGainMin_ = gl["gb_min"].get<float>(gbGainMin_);
+		gbGainMax_ = gl["gb_max"].get<float>(gbGainMax_);
+	}
+
+	if (tuningData.contains("reference_gains")) {
+		const YamlObject &rg = tuningData["reference_gains"];
+		refRGain_ = rg["r"].get<double>(refRGain_);
+		refBGain_ = rg["b"].get<double>(refBGain_);
+		refGrGain_ = rg["gr"].get<double>(refGrGain_);
+		refGbGain_ = rg["gb"].get<double>(refGbGain_);
+	}
+
+	if (tuningData.contains("color_temperature")) {
+		const YamlObject &ct = tuningData["color_temperature"];
+		ctMin_ = ct["min"].get<float>(ctMin_);
+		ctMax_ = ct["max"].get<float>(ctMax_);
 	}
 
 	damping_ = std::clamp(damping_, 0.0f, 1.0f);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 255.0f);
+	gainMin_ = std::clamp(gainMin_, 0.1f, 1.0f);
+	gainMax_ = std::clamp(gainMax_, 1.0f, 8.0f);
+	gbGainMin_ = std::clamp(gbGainMin_, 0.5f, 1.0f);
+	gbGainMax_ = std::clamp(gbGainMax_, 1.0f, 2.0f);
+	ctMin_ = std::clamp(ctMin_, 1000.0f, 4000.0f);
+	ctMax_ = std::clamp(ctMax_, 5000.0f, 20000.0f);
 
 	/*
 	 * Load the sensor-to-XYZ colour matrix for Robertson (1968) CCT
@@ -66,7 +95,38 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		<< " damping=" << damping_
 		<< " threshold=" << stabilityThreshold_
 		<< " frames=" << convergenceFrames_
-		<< " darkThreshold=" << darkSceneThreshold_;
+		<< " darkThreshold=" << darkSceneThreshold_
+		<< " gainRange=[" << gainMin_ << "," << gainMax_ << "]"
+		<< " ref=[R=" << refRGain_ << " B=" << refBGain_ << "]"
+		<< " ctRange=[" << ctMin_ << "," << ctMax_ << "]";
+
+	return 0;
+}
+
+/**
+ * \brief Set initial AWB gains from tuning reference on (re-)configure
+ * \param[in] context The IPA context
+ * \param[in] sensorInfo Camera sensor information (unused)
+ * \return 0 on success
+ *
+ * Applies the YAML reference_gains as the starting white balance so the
+ * first frames have correct colour before the AWB loop converges. Without
+ * this, identity gains (1.0/1.0/1.0/1.0) are used for the first ~8 frames,
+ * producing a visibly incorrect white balance during startup.
+ */
+int Awb::configure(IPAContext &context,
+		   [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
+{
+	context.activeState.awb.rGain = refRGain_;
+	context.activeState.awb.bGain = refBGain_;
+	context.activeState.awb.grGain = refGrGain_;
+	context.activeState.awb.gbGain = refGbGain_;
+	awbStable_ = false;
+
+	LOG(ISC_AWB, Debug)
+		<< "AWB configured with reference gains: R=" << refRGain_
+		<< " GR=" << refGrGain_ << " GB=" << refGbGain_
+		<< " B=" << refBGain_;
 
 	return 0;
 }
@@ -164,6 +224,7 @@ void Awb::process(IPAContext &context,
 			static_cast<float>(awb.bGain),
 		};
 		metadata.set(controls::ColourGains, gains);
+		metadata.set(controls::AwbLocked, awbStable_);
 		if (awb.ct > 0)
 			metadata.set(controls::ColourTemperature,
 				     static_cast<int32_t>(awb.ct));
@@ -177,6 +238,7 @@ void Awb::process(IPAContext &context,
 			static_cast<float>(awb.bGain),
 		};
 		metadata.set(controls::ColourGains, gains);
+		metadata.set(controls::AwbLocked, awbStable_);
 		if (awb.ct > 0)
 			metadata.set(controls::ColourTemperature,
 				     static_cast<int32_t>(awb.ct));
@@ -232,131 +294,60 @@ void Awb::process(IPAContext &context,
 			&context.configuration.sensor.ctColorMatrix);
 
 		/*
-	 * The ISC histogram in GR/R/GB/B modes (ISC_HIS_CFG.MODE 0-3) taps
-	 * vp_data — the Bayer stream BEFORE the WB block (pre-WB, post-DPC).
-	 * Confirmed from SAMA7G5 datasheet section 43.6.20 (Figure 43-38):
-	 * the histogram timing diagram shows it operates on vp_data, and the
-	 * WB module (section 43.6.10) outputs wb_data which feeds CFA — a
-	 * separate signal. Channel means are therefore raw sensor values,
-	 * unaffected by the current hardware WB gains.
-	 *
-	 * Grey-world correction is a direct ratio:
-	 *   gain = meanGR / channel_mean
-	 * No multiplication by the current gain is needed or correct.
-	 *
-	 * Color temperature is estimated from the raw channel means directly
-	 * and written to activeState.awb.ct for use by CCM (single source of
-	 * truth).
-	 */
-		if (highlightWeight_ > 0.0f) {
-			float hlGR = calculateHighlightMean(stats, kHistChannelGR);
-			float hlR = calculateHighlightMean(stats, kHistChannelR);
-			float hlGB = calculateHighlightMean(stats, kHistChannelGB);
-			float hlB = calculateHighlightMean(stats, kHistChannelB);
+		 * Grey world: normalise R and B to GR (not avgGreen).
+		 * grGain = 1.0 (GR is the reference); rGain and bGain must
+		 * use the same reference so all four channels equalise to GR.
+		 */
+		double rGain = std::clamp(static_cast<double>(meanGR / meanR),
+					  static_cast<double>(gainMin_),
+					  static_cast<double>(gainMax_));
+		double bGain = std::clamp(static_cast<double>(meanGR / meanB),
+					  static_cast<double>(gainMin_),
+					  static_cast<double>(gainMax_));
+		double grGain = 1.0;
+		double gbGain = std::clamp(static_cast<double>(meanGR / meanGB),
+					   static_cast<double>(gbGainMin_),
+					   static_cast<double>(gbGainMax_));
 
-			if (frame > 0 && awb.rGain > 0.0) {
-				double rDelta = std::abs(rGain - awb.rGain) / awb.rGain;
-				double bDelta = std::abs(bGain - awb.bGain) / awb.bGain;
-				double gbDelta = std::abs(gbGain - awb.gbGain) / awb.gbGain;
-
-				meanGR = (1.0f - effectiveWeight) * meanGR + effectiveWeight * hlGR;
-				meanR = (1.0f - effectiveWeight) * meanR + effectiveWeight * hlR;
-				meanGB = (1.0f - effectiveWeight) * meanGB + effectiveWeight * hlGB;
-				meanB = (1.0f - effectiveWeight) * meanB + effectiveWeight * hlB;
-
-				LOG(ISC_AWB, Debug)
-					<< "AWB highlight blend: divergence=" << divergence
-					<< " effectiveWeight=" << effectiveWeight;
-			}
-
-			/* avgGreen for Robertson CT estimation only */
-			float meanG = (meanGR + meanGB) / 2.0f;
+		if (frame > 0 && awb.rGain > 0.0) {
+			double rDelta = std::abs(rGain - awb.rGain) / awb.rGain;
+			double bDelta = std::abs(bGain - awb.bGain) / awb.bGain;
+			double gbDelta = std::abs(gbGain - awb.gbGain) / awb.gbGain;
 
 			/*
-		 * Estimate colour temperature from gain-undone channel means
-		 * using Robertson's (1968) 31-point Planckian locus method
-		 * with the sensor-to-XYZ matrix from the tuning file. AWB is
-		 * the single authority for CT; CCM reads activeState.awb.ct.
-		 */
-			float rawCt = estimateColorTemperature(
-				meanR, meanG, meanB,
-				&context.configuration.sensor.ctColorMatrix);
-
-			/*
-		 * Direct grey-world correction for pre-WB histogram.
-		 * The histogram taps vp_data (pre-WB raw sensor values), so
-		 * channel means are independent of the current hardware gains.
-		 * The required WB gain is simply the ratio of the green reference
-		 * to each channel mean:
-		 *   rGain = meanGR / meanR
-		 *   bGain = meanGR / meanB
-		 * No multiplication by the current gain — that would be a
-		 * post-WB correction formula and produces sqrt-convergence here.
-		 */
-			float rGain = std::clamp(meanGR / std::max(meanR, 1.0f),
-						 gainMin_, gainMax_);
-			float bGain = std::clamp(meanGR / std::max(meanB, 1.0f),
-						 gainMin_, gainMax_);
-			float grGain = 1.0f;
-			float gbGain = std::clamp(awb.gbGain * (meanGR / std::max(meanGB, 1.0f)),
-						  gbGainMin_, gbGainMax_);
-
-			if (frame > 0 && awb.rGain > 0.0f) {
-				float rDelta = std::abs(rGain - awb.rGain) / awb.rGain;
-				float bDelta = std::abs(bGain - awb.bGain) / awb.bGain;
-				float gbDelta = std::abs(gbGain - awb.gbGain) / awb.gbGain;
-
-				/*
 			 * Hysteresis: enter stable below stabilityThreshold_;
 			 * only exit when delta exceeds resumeThreshold_ (2x).
 			 * Prevents colour flicker near the stability boundary.
 			 */
-				float maxDelta = std::max({ rDelta, bDelta, gbDelta });
-				if (!awbStable_)
-					awbStable_ = maxDelta < stabilityThreshold_;
-				else if (maxDelta > resumeThreshold_)
-					awbStable_ = false;
+			double maxDelta = std::max({ rDelta, bDelta, gbDelta });
+			if (!awbStable_)
+				awbStable_ = maxDelta < stabilityThreshold_;
+			else if (maxDelta > resumeThreshold_)
+				awbStable_ = false;
 
-				if (awbStable_) {
-					/* Within stability threshold: skip update */
-					LOG(ISC_AWB, Debug) << "AWB stable, keeping gains";
-				} else {
-					float update = 1.0f - smoothingFactor_;
-					if (convergenceFrames_ > 0)
-						update = std::max(update,
-								  1.0f / convergenceFrames_);
-					update *= damping_;
-					update = std::clamp(update, 0.01f, 1.0f);
-
-					rGain = awb.rGain + update * (rGain - awb.rGain);
-					bGain = awb.bGain + update * (bGain - awb.bGain);
-					gbGain = awb.gbGain + update * (gbGain - awb.gbGain);
-
-					awb.rGain = rGain;
-					awb.bGain = bGain;
-					awb.grGain = grGain;
-					awb.gbGain = gbGain;
-					awb.rOffset = 0;
-					awb.bOffset = 0;
-					awb.grOffset = 0;
-					awb.gbOffset = 0;
-
-					LOG(ISC_AWB, Debug)
-						<< "AWB gains: R=" << rGain
-						<< " GR=" << grGain
-						<< " GB=" << gbGain
-						<< " B=" << bGain
-						<< " (means: R=" << meanR
-						<< " GR=" << meanGR
-						<< " GB=" << meanGB
-						<< " B=" << meanB << ")";
-				}
+			if (awbStable_) {
+				/* Within stability threshold: skip update */
+				LOG(ISC_AWB, Debug) << "AWB stable, keeping gains";
 			} else {
-				/* First frame: set gains directly */
+				float update = 1.0f - smoothingFactor_;
+				if (convergenceFrames_ > 0)
+					update = std::max(update,
+							  1.0f / convergenceFrames_);
+				update *= damping_;
+				update = std::clamp(update, 0.01f, 1.0f);
+
+				rGain = awb.rGain + update * (rGain - awb.rGain);
+				bGain = awb.bGain + update * (bGain - awb.bGain);
+				gbGain = awb.gbGain + update * (gbGain - awb.gbGain);
+
 				awb.rGain = rGain;
 				awb.bGain = bGain;
 				awb.grGain = grGain;
 				awb.gbGain = gbGain;
+				awb.rOffset = 0;
+				awb.bOffset = 0;
+				awb.grOffset = 0;
+				awb.gbOffset = 0;
 
 				LOG(ISC_AWB, Debug)
 					<< "AWB gains: R=" << rGain
@@ -374,42 +365,62 @@ void Awb::process(IPAContext &context,
 			awb.bGain = bGain;
 			awb.grGain = grGain;
 			awb.gbGain = gbGain;
-		}
 
-		/*
+			LOG(ISC_AWB, Debug)
+				<< "AWB gains: R=" << rGain
+				<< " GR=" << grGain
+				<< " GB=" << gbGain
+				<< " B=" << bGain
+				<< " (means: R=" << meanR
+				<< " GR=" << meanGR
+				<< " GB=" << meanGB
+				<< " B=" << meanB << ")";
+		}
+	} else {
+		/* First frame: set gains directly */
+		awb.rGain = rGain;
+		awb.bGain = bGain;
+		awb.grGain = grGain;
+		awb.gbGain = gbGain;
+	}
+
+	/*
 		 * Update colour temperature with temporal smoothing.
 		 * Apply damping_ in addition to smoothingFactor_ so CT and
 		 * gains converge at the same rate — without it CT leads ahead
 		 * of the gains, causing a transient CCM matrix mismatch during
 		 * scene transitions (wrong matrix applied with old AWB gains).
 		 */
-		float prevCt = (awb.ct > 0) ? static_cast<float>(awb.ct) : rawCt;
-		float update = 1.0f - smoothingFactor_;
-		if (convergenceFrames_ > 0)
-			update = std::max(update, 1.0f / convergenceFrames_);
-		update *= damping_;
-		update = std::clamp(update, 0.01f, 1.0f);
-		float smoothedCt = prevCt + update * (rawCt - prevCt);
-		awb.ct = static_cast<unsigned int>(
-			std::clamp(smoothedCt, 2000.0f, 10000.0f));
+	float prevCt = (awb.ct > 0) ? static_cast<float>(awb.ct) : rawCt;
+	float update = 1.0f - smoothingFactor_;
+	if (convergenceFrames_ > 0)
+		update = std::max(update, 1.0f / convergenceFrames_);
+	update *= damping_;
+	update = std::clamp(update, 0.01f, 1.0f);
+	float smoothedCt = prevCt + update * (rawCt - prevCt);
+	awb.ct = static_cast<unsigned int>(
+		std::clamp(smoothedCt, ctMin_, ctMax_));
 
-		LOG(ISC_AWB, Debug) << "AWB CT: raw=" << rawCt
-				    << " K smoothed=" << awb.ct << " K";
-	} else {
-		LOG(ISC_AWB, Debug)
-			<< "Scene too dark for AWB (lum=" << lumApplied
-			<< " < threshold=" << darkSceneThreshold_
-			<< "), CT frozen at " << awb.ct << " K";
-	}
+	LOG(ISC_AWB, Debug) << "AWB CT: raw=" << rawCt
+			    << " K smoothed=" << awb.ct << " K";
+}
+else
+{
+	LOG(ISC_AWB, Debug)
+		<< "Scene too dark for AWB (lum=" << lumApplied
+		<< " < threshold=" << darkSceneThreshold_
+		<< "), CT frozen at " << awb.ct << " K";
+}
 
-	std::array<float, 2> gains = {
-		static_cast<float>(awb.rGain),
-		static_cast<float>(awb.bGain),
-	};
-	metadata.set(controls::ColourGains, gains);
+std::array<float, 2> gains = {
+	static_cast<float>(awb.rGain),
+	static_cast<float>(awb.bGain),
+};
+metadata.set(controls::ColourGains, gains);
+metadata.set(controls::AwbLocked, awbStable_);
 
-	if (awb.ct > 0)
-		metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
+if (awb.ct > 0)
+	metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
 }
 
 REGISTER_IPA_ALGORITHM(Awb, "Awb")

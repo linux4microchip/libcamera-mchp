@@ -39,12 +39,27 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 {
 	targetBrightness_ = tuningData["target_brightness"].get<float>(targetBrightness_);
 	clipThreshold_ = tuningData["clip_threshold"].get<float>(clipThreshold_);
+	aeLuminanceFloor_ = tuningData["ae_luminance_floor"].get<float>(aeLuminanceFloor_);
+	aeLuminanceFloor_ = std::clamp(aeLuminanceFloor_, 0.0f, 50.0f);
 
 	if (tuningData.contains("convergence")) {
 		const YamlObject &conv = tuningData["convergence"];
 		convergenceSpeed_ = conv["speed"].get<float>(convergenceSpeed_);
 		stabilityThreshold_ = conv["stability_threshold"].get<float>(stabilityThreshold_);
 		convergenceFrames_ = conv["frames"].get<unsigned int>(convergenceFrames_);
+	}
+
+	if (tuningData.contains("ratio_clamp")) {
+		const YamlObject &rc = tuningData["ratio_clamp"];
+		ratioMin_ = rc["min"].get<float>(ratioMin_);
+		ratioMax_ = rc["max"].get<float>(ratioMax_);
+		clipRatioCap_ = rc["clip_cap"].get<float>(clipRatioCap_);
+	}
+
+	if (tuningData.contains("gain_thresholds")) {
+		const YamlObject &gt = tuningData["gain_thresholds"];
+		gainBoostThreshold_ = gt["boost"].get<float>(gainBoostThreshold_);
+		gainReductionThreshold_ = gt["reduction"].get<float>(gainReductionThreshold_);
 	}
 
 	if (convergenceFrames_ > 0) {
@@ -54,6 +69,11 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 
 	convergenceSpeed_ = std::clamp(convergenceSpeed_, 0.01f, 1.0f);
 	clipThreshold_ = std::clamp(clipThreshold_, 0.001f, 0.5f);
+	ratioMin_ = std::clamp(ratioMin_, 0.1f, 0.9f);
+	ratioMax_ = std::clamp(ratioMax_, 1.1f, 8.0f);
+	clipRatioCap_ = std::clamp(clipRatioCap_, 0.1f, 1.0f);
+	gainBoostThreshold_ = std::clamp(gainBoostThreshold_, 1.0f, 2.0f);
+	gainReductionThreshold_ = std::clamp(gainReductionThreshold_, 0.5f, 1.0f);
 
 	/* Advertise ExposureValue: ±2 EV in 0.1-stop steps */
 	context.ctrlMap[&controls::ExposureValue] =
@@ -99,7 +119,11 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		<< " speed=" << convergenceSpeed_
 		<< " threshold=" << stabilityThreshold_
 		<< " frames=" << convergenceFrames_
-		<< " clipThreshold=" << clipThreshold_;
+		<< " clipThreshold=" << clipThreshold_
+		<< " ratioRange=[" << ratioMin_ << "," << ratioMax_ << "]"
+		<< " clipCap=" << clipRatioCap_
+		<< " gainThresholds=[" << gainReductionThreshold_
+		<< "," << gainBoostThreshold_ << "]";
 
 	return 0;
 }
@@ -257,6 +281,8 @@ void Agc::process(IPAContext &context,
 		metadata.set(controls::ExposureTime, exposureUs);
 		metadata.set(controls::AnalogueGain,
 			     static_cast<float>(frameContext.agc.analogueGain));
+		metadata.set(controls::AeState,
+			     static_cast<int32_t>(controls::AeStateIdle));
 		return;
 	}
 
@@ -268,6 +294,8 @@ void Agc::process(IPAContext &context,
 		metadata.set(controls::ExposureTime, exposureUs);
 		metadata.set(controls::AnalogueGain,
 			     static_cast<float>(agcState.analogueGain));
+		metadata.set(controls::AeState,
+			     static_cast<int32_t>(controls::AeStateIdle));
 		return;
 	}
 
@@ -284,6 +312,8 @@ void Agc::process(IPAContext &context,
 		metadata.set(controls::ExposureTime, exposureUs);
 		metadata.set(controls::AnalogueGain,
 			     static_cast<float>(agcState.analogueGain));
+		metadata.set(controls::AeState,
+			     static_cast<int32_t>(controls::AeStateSearching));
 		return;
 	}
 
@@ -295,10 +325,12 @@ void Agc::process(IPAContext &context,
 	 */
 	float currentLuminance = frameContext.scene.luminance;
 
-	if (currentLuminance >= 0.5f &&
-	    std::abs(targetBrightness_ - currentLuminance) >= stabilityThreshold_) {
+	bool aeStable = currentLuminance >= aeLuminanceFloor_ &&
+			std::abs(targetBrightness_ - currentLuminance) < stabilityThreshold_;
+
+	if (!aeStable) {
 		float ratio = targetBrightness_ / currentLuminance;
-		ratio = std::clamp(ratio, 0.25f, 4.0f);
+		ratio = std::clamp(ratio, ratioMin_, ratioMax_);
 
 		/*
 		 * Anti-windup for highlight clipping: in high-contrast outdoor
@@ -310,7 +342,7 @@ void Agc::process(IPAContext &context,
 		 */
 		float clipping = calculateClipping(stats);
 		if (clipping > clipThreshold_) {
-			ratio = std::min(ratio, 0.85f);
+			ratio = std::min(ratio, clipRatioCap_);
 			LOG(ISC_AGC, Debug)
 				<< "Clipping " << clipping * 100.0f
 				<< "% > " << clipThreshold_ * 100.0f
@@ -371,7 +403,7 @@ void Agc::process(IPAContext &context,
 				 * current gain so the loop converges.
 				 */
 				analogueGain = agcState.analogueGain * ratio;
-			} else if (agcState.exposure >= maxExposure && ratio > 1.05f) {
+			} else if (agcState.exposure >= maxExposure && ratio > gainBoostThreshold_) {
 				/*
 				 * Exposure is maxed and the scene is still
 				 * underexposed: boost gain proportionally to
@@ -382,7 +414,7 @@ void Agc::process(IPAContext &context,
 					 ratio) /
 					maxExposure;
 				analogueGain = agcConfig.minAnalogueGain * remaining;
-			} else if (ratio < 0.95f) {
+			} else if (ratio < gainReductionThreshold_) {
 				/*
 				 * Scene overexposed: step gain toward minimum
 				 * to reduce noise before exposure converges
@@ -425,7 +457,30 @@ void Agc::process(IPAContext &context,
 			<< "AGC stable (luminance=" << currentLuminance << ")";
 	}
 
-	REGISTER_IPA_ALGORITHM(Agc, "Agc")
+	int32_t exposureUs = static_cast<int32_t>(
+		agcState.exposure *
+		context.configuration.sensor.lineDuration.get<std::micro>());
+	metadata.set(controls::ExposureTime, exposureUs);
+	metadata.set(controls::AnalogueGain, static_cast<float>(agcState.analogueGain));
+
+	/*
+	 * Report AeState. Both exposure and gain are considered when deciding
+	 * if the AEGC loop has converged, so convergence is declared only when
+	 * both are within the stability band. Manual-only modes are reported
+	 * as Idle since the algorithm is not actively computing values.
+	 */
+	int32_t aeState;
+	if (exposureManual && gainManual) {
+		aeState = controls::AeStateIdle;
+	} else if (aeStable) {
+		aeState = controls::AeStateConverged;
+	} else {
+		aeState = controls::AeStateSearching;
+	}
+	metadata.set(controls::AeState, aeState);
+}
+
+REGISTER_IPA_ALGORITHM(Agc, "Agc")
 
 } /* namespace ipa::microchip_isc */
 

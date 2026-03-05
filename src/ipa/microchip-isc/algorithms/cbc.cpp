@@ -40,14 +40,16 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
 	defaultSaturation_ = tuningData["saturation"].get<int32_t>(defaultSaturation_);
 	defaultHue_ = tuningData["hue"].get<int32_t>(defaultHue_);
+	contrastMaxGain_ = tuningData["contrast_max_gain"].get<float>(contrastMaxGain_);
 
-	targetLuminance_ = std::clamp(targetLuminance_, 0.0f, 511.0f);
+	targetLuminance_ = std::clamp(targetLuminance_, 0.0f, kHistogramMax);
 	brightnessGain_ = std::clamp(brightnessGain_, 0.0f, 0.5f);
 	contrastStrength_ = std::clamp(contrastStrength_, 0.0f, 1.0f);
 	targetSpread_ = std::clamp(targetSpread_, 0.1f, 1.0f);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.95f);
 	defaultSaturation_ = std::clamp(defaultSaturation_, 0, 100);
 	defaultHue_ = std::clamp(defaultHue_, -180, 180);
+	contrastMaxGain_ = std::clamp(contrastMaxGain_, 1.0f, 8.0f);
 
 	/*
 	 * The standard Saturation control and the Microchip Hue vendor
@@ -114,7 +116,8 @@ void Cbc::queueRequest(IPAContext &context,
 	if (saturation.has_value()) {
 		/* Convert libcamera scale (1.0=normal) to hardware (16=unity). */
 		int32_t sat = static_cast<int32_t>(
-			std::clamp(saturation.value() * 50.0f, 0.0f, 100.0f));
+			std::clamp(saturation.value() * kSaturationScale,
+				   0.0f, kSaturationScale * 2.0f));
 		context.activeState.cbc.saturation = sat;
 	}
 
@@ -190,7 +193,8 @@ void Cbc::process(IPAContext &context,
 	float targetBrightnessHw = lumError * brightnessGain_;
 
 	/* Clamp to a conservative sub-range to avoid overdriving */
-	targetBrightnessHw = std::clamp(targetBrightnessHw, -256.0f, 256.0f);
+	targetBrightnessHw = std::clamp(targetBrightnessHw,
+					-kBrightnessDriveLimit, kBrightnessDriveLimit);
 
 	/* Temporal smoothing */
 	float brightness = smoothingFactor_ * static_cast<float>(cbc.brightness) +
@@ -213,7 +217,7 @@ void Cbc::process(IPAContext &context,
 		 * Clamp to avoid extreme corrections in near-zero spread
 		 * scenes (e.g. lens cap on).
 		 */
-		contrastGain = std::clamp(targetSpread_ / spread, 1.0f, 3.0f);
+		contrastGain = std::clamp(targetSpread_ / spread, 1.0f, contrastMaxGain_);
 	}
 
 	/*
@@ -223,17 +227,17 @@ void Cbc::process(IPAContext &context,
 	 */
 	float blendedGain = 1.0f + (contrastGain - 1.0f) * contrastStrength_;
 
-	/* Convert to hardware units: unity = 16 */
-	float targetContrastHw = blendedGain * 16.0f;
+	/* Convert to hardware units: unity = contrastUnityHw (16 on SAMA7G5, 256 on SAMA5D2) */
+	float targetContrastHw = blendedGain * context.configuration.hw.contrastUnityHw;
 
 	/* Temporal smoothing */
 	float contrast = smoothingFactor_ * static_cast<float>(cbc.contrast) +
 			 (1.0f - smoothingFactor_) * targetContrastHw;
 
 	cbc.brightness = static_cast<int32_t>(
-		std::clamp(brightness, -1024.0f, 1023.0f));
+		std::clamp(brightness, kBrightnessMin, kBrightnessMax));
 	cbc.contrast = static_cast<int32_t>(
-		std::clamp(contrast, -2048.0f, 2047.0f));
+		std::clamp(contrast, kContrastMin, kContrastMax));
 
 	LOG(ISC_CBC, Debug)
 		<< "CBC: lum=" << lum

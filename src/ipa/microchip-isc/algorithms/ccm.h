@@ -46,11 +46,29 @@ private:
 
 	std::vector<CcmProfile> profiles_;
 
-	/* Temporal smoothing factor */
+	/* Temporal smoothing factor (YAML: smoothing_factor) */
 	float smoothingFactor_ = 0.7f;
 
+	/*
+	 * Adaptive smoothing thresholds for CT-change-based snap.
+	 * When |ctDelta| > ctSnapThreshold_ the matrix snaps immediately
+	 * (sf=0); when > ctFastThreshold_ the speed is multiplied by
+	 * ctFastFactor_ for a faster-than-normal transition.
+	 * Tunable via YAML ct_snap section.
+	 */
+	float ctSnapThreshold_ = 1500.0f;
+	float ctFastThreshold_ = 500.0f;
+	float ctFastFactor_ = 0.5f;
+
+	/*
+	 * Fallback colour temperature (Kelvin) used on the first frame before
+	 * AWB has produced a CT estimate (activeState.awb.ct == 0).
+	 * Tunable via YAML ct_fallback (range 2500–10000, typical 5500 K).
+	 */
+	float ctFallback_ = 5500.0f;
+
 	/* Previous CT for adaptive smoothing */
-	float lastCt_ = 5500.0f;
+	float lastCt_ = 0.0f;
 };
 
 } /* namespace ipa::microchip_isc */

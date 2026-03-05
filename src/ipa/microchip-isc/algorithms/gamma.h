@@ -47,7 +47,7 @@ public:
 
 private:
 	static void computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
-			       bool bipartite = false);
+			       bool bipartite = false, float toeInput = 0.04f);
 
 	/* Base gamma exponent (e.g. 2.2 for sRGB-like encoding). */
 	float gamma_ = 2.2f;
@@ -66,6 +66,23 @@ private:
 
 	/* Temporal smoothing of the effective gamma [0.0–1.0]. */
 	float smoothingFactor_ = 0.3f;
+
+	/*
+	 * Normalised input luminance floor below which adaptive gamma update
+	 * is skipped. Near-black scenes produce unreliable luminance means
+	 * that would cause runaway gamma adaptation. Tunable via YAML
+	 * dark_scene_threshold (range 0.0–0.1, typical 0.01).
+	 */
+	float darkSceneThreshold_ = 0.01f;
+
+	/*
+	 * Normalised input breakpoint for the bipartite (linear toe) segment.
+	 * Below this fraction of full-scale the LUT uses a linear slope
+	 * matched to the power curve, lifting dark tones. Only active when
+	 * hasBipartiteGamma is true. Tunable via YAML toe_input (range
+	 * 0.01–0.15, typical 0.04).
+	 */
+	float toeInput_ = 0.04f;
 };
 
 } /* namespace ipa::microchip_isc */

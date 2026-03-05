@@ -75,6 +75,13 @@ private:
 	 * Applied via V4L2_CID_HUE on SAMA7G5 (hasCbhs = true).
 	 */
 	int32_t defaultHue_ = 0;
+
+	/*
+	 * Maximum contrast gain applied by the histogram stretch algorithm.
+	 * Limits extreme corrections in near-zero spread scenes (e.g. lens cap).
+	 * Tunable via YAML contrast_max_gain (range 1.0–8.0, typical 3.0).
+	 */
+	float contrastMaxGain_ = 3.0f;
 };
 
 } /* namespace ipa::microchip_isc */

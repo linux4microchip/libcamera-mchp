@@ -82,8 +82,27 @@ int Ccm::init([[maybe_unused]] IPAContext &context,
 			  return a.ct > b.ct; /* descending CT = ascending MRD */
 		  });
 
+	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
+	ctFallback_ = tuningData["ct_fallback"].get<float>(ctFallback_);
+	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
+	ctFallback_ = std::clamp(ctFallback_, 2500.0f, 10000.0f);
+
+	if (tuningData.contains("ct_snap")) {
+		const YamlObject &snap = tuningData["ct_snap"];
+		ctSnapThreshold_ = snap["snap_threshold"].get<float>(ctSnapThreshold_);
+		ctFastThreshold_ = snap["fast_threshold"].get<float>(ctFastThreshold_);
+		ctFastFactor_ = snap["fast_factor"].get<float>(ctFastFactor_);
+	}
+
+	ctSnapThreshold_ = std::clamp(ctSnapThreshold_, 100.0f, 5000.0f);
+	ctFastThreshold_ = std::clamp(ctFastThreshold_, 50.0f, ctSnapThreshold_);
+	ctFastFactor_ = std::clamp(ctFastFactor_, 0.0f, 1.0f);
+
 	LOG(ISC_CCM, Debug)
-		<< "CCM initialized with " << profiles_.size() << " profiles";
+		<< "CCM initialized with " << profiles_.size() << " profiles"
+		<< " smoothing=" << smoothingFactor_
+		<< " snapThreshold=" << ctSnapThreshold_
+		<< " fastThreshold=" << ctFastThreshold_;
 
 	return 0;
 }
@@ -215,7 +234,7 @@ void Ccm::process(IPAContext &context,
 	 * frame before AWB has produced an estimate.
 	 */
 	unsigned int rawCt = context.activeState.awb.ct;
-	float ct = (rawCt > 0) ? static_cast<float>(rawCt) : 5500.0f;
+	float ct = (rawCt > 0) ? static_cast<float>(rawCt) : ctFallback_;
 
 	std::array<float, 9> matrix;
 	std::array<float, 3> offsets;
@@ -236,10 +255,10 @@ void Ccm::process(IPAContext &context,
 	if (frame > 0) {
 		float ctDelta = std::abs(ct - lastCt_);
 		float sf = smoothingFactor_;
-		if (ctDelta > 1500.0f)
-			sf = 0.0f;         /* Snap immediately on scene change */
-		else if (ctDelta > 500.0f)
-			sf = smoothingFactor_ * 0.5f;  /* Faster for moderate change */
+		if (ctDelta > ctSnapThreshold_)
+			sf = 0.0f;   /* Snap immediately on large scene change */
+		else if (ctDelta > ctFastThreshold_)
+			sf = smoothingFactor_ * ctFastFactor_;  /* Faster for moderate change */
 
 		for (size_t i = 0; i < 9; i++)
 			matrix[i] = sf * ccm.matrix[i] + (1.0f - sf) * matrix[i];

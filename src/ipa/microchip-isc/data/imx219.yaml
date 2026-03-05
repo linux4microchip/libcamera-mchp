@@ -32,12 +32,29 @@ algorithms:
         min: 1800
         max: 15000
 
+      # Per-channel gain clamp limits for the grey-world AWB engine.
+      # r_b_min/max bound R and B gains; gb_min/max bound the GR/GB
+      # green-balance ratio. Tighten for more stable but slower adaptation.
+      gain_limits:
+        r_b_min: 0.2
+        r_b_max: 3.0
+        gb_min: 0.9
+        gb_max: 1.1
+
+      # Reference (neutral daylight D65) gains applied at configure() time
+      # so the first frames have correct colour before AWB converges.
+      # Measure under D65 illumination with a grey card at 18% reflectance.
+      reference_gains:
+        r: 1.65
+        b: 1.45
+        gr: 1.0
+        gb: 1.02
+
       # Sensor-to-XYZ colour matrix for McCamy CCT estimation.
       # Approximate values for IMX219 derived from published spectral responsivity.
       # Row-major: row 0 = X, row 1 = Y, row 2 = Z. All rows should sum ~1.0.
       # Calibrate with a Macbeth ColorChecker under known illuminants for ±200 K accuracy.
       ct_color_matrix: [0.4900, 0.3100, 0.1200, 0.2200, 0.6600, 0.0700, 0.0200, 0.1000, 0.8700]
-
 
   - Agc:
       target_brightness: 128
@@ -47,6 +64,9 @@ algorithms:
       # high-contrast scenes where shadows lower the luminance mean
       # while highlights are already saturated.
       clip_threshold: 0.02
+      # Minimum luminance (histogram units 0-511) for AE stability check.
+      # Below this floor the loop is treated as unstable regardless of error.
+      ae_luminance_floor: 0.5
 
       convergence:
         speed: 0.3
@@ -97,6 +117,8 @@ algorithms:
       # Default hue rotation in degrees (-180 to +180). 0 = no rotation.
       # Applied via V4L2_CID_HUE on SAMA7G5 (has_cbhs=true).
       hue: 0
+      # Maximum contrast gain from histogram stretch (1.0=no stretch, 3.0=3x max).
+      contrast_max_gain: 3.0
 
   - Gamma:
       # Base gamma exponent for the power-law tone curve.
@@ -110,8 +132,27 @@ algorithms:
       target_output: 0.45
       # Temporal smoothing [0.0-1.0]. Higher values reduce flicker.
       smoothing_factor: 0.3
+      # Normalised luminance floor below which adaptive gamma update is skipped.
+      dark_scene_threshold: 0.01
+      # Normalised input breakpoint for bipartite linear toe (SAMA7G5 only).
+      # Must be an integer multiple of 16/1023 ≈ 0.01565 to align with a LUT
+      # entry boundary; misalignment produces a visible shadow step artefact.
+      # 0.0313 = 32/1023 (entry-2 boundary) is the recommended value.
+      toe_input: 0.0313
 
   - Ccm:
+      # Temporal smoothing factor [0-1]. Higher values give more stable
+      # but slower colour transitions between illuminants.
+      smoothing_factor: 0.7
+      # Fallback colour temperature (K) used before AWB produces an estimate.
+      ct_fallback: 5500
+      # Adaptive snap thresholds for CT-change-based matrix transitions.
+      # When |ct_delta| > snap_threshold the matrix snaps immediately;
+      # when > fast_threshold the transition speed is multiplied by fast_factor.
+      ct_snap:
+        snap_threshold: 1500
+        fast_threshold: 500
+        fast_factor: 0.5
       matrices:
         # Cloudy/overcast daylight (~7500 K). Sensor R channel is relatively
         # strong under blue-sky/skylight illumination; reduce R correction

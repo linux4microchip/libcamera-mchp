@@ -35,11 +35,15 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 	strength_ = tuningData["strength"].get<float>(strength_);
 	targetOutput_ = tuningData["target_output"].get<float>(targetOutput_);
 	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
+	darkSceneThreshold_ = tuningData["dark_scene_threshold"].get<float>(darkSceneThreshold_);
+	toeInput_ = tuningData["toe_input"].get<float>(toeInput_);
 
 	gamma_ = std::clamp(gamma_, 0.5f, 5.0f);
 	strength_ = std::clamp(strength_, 0.0f, 1.0f);
 	targetOutput_ = std::clamp(targetOutput_, 0.1f, 0.9f);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.95f);
+	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 0.1f);
+	toeInput_ = std::clamp(toeInput_, 0.01f, 0.15f);
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma initialized: gamma=" << gamma_
@@ -61,7 +65,7 @@ int Gamma::configure(IPAContext &context,
 {
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 	context.activeState.gamma.gammaEff = gamma_;
-	computeLut(gamma_, context.activeState.gamma.lutB, bipartite);
+	computeLut(gamma_, context.activeState.gamma.lutB, bipartite, toeInput_);
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutValid = true;
@@ -94,21 +98,20 @@ int Gamma::configure(IPAContext &context,
  * in rendered output.
  */
 void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
-		       bool bipartite)
+		       bool bipartite, float toeInput)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
 
 	/*
-	 * Bipartite toe: linear segment below kToeInput.
+	 * Bipartite toe: linear segment below toeInput.
 	 * The slope is chosen so that the linear toe meets the power curve
-	 * at x = kToeInput, making y(kToeInput) continuous.
+	 * at x = toeInput, making y(toeInput) continuous.
 	 *
-	 * slope = pow(kToeInput, invGamma) / kToeInput
+	 * slope = pow(toeInput, invGamma) / toeInput
 	 */
-	constexpr float kToeInput = 0.04f;
-	const float yAtToe = std::pow(kToeInput, invGamma);
-	const float toeSlope = yAtToe / kToeInput;
+	const float yAtToe = std::pow(toeInput, invGamma);
+	const float toeSlope = yAtToe / toeInput;
 
 	for (unsigned int i = 0; i < 64; i++) {
 		float x = static_cast<float>(i * 16) / kInputMax;
@@ -116,7 +119,7 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 
 		if (x == 0.0f) {
 			y = 0.0f;
-		} else if (bipartite && x < kToeInput) {
+		} else if (bipartite && x < toeInput) {
 			/* Linear toe: y = slope * x, matched to power at kToeInput */
 			y = toeSlope * x;
 		} else {
@@ -169,7 +172,7 @@ void Gamma::process(IPAContext &context,
 	float lum = calculateLuminance(stats);
 	float lumNorm = lum / kHistogramMax;
 
-	if (lumNorm < 0.01f) {
+	if (lumNorm < darkSceneThreshold_) {
 		LOG(ISC_Gamma, Debug) << "Scene too dark, skipping gamma adapt";
 		return;
 	}
@@ -192,7 +195,7 @@ void Gamma::process(IPAContext &context,
 	gammaState.gammaEff = gammaEff;
 
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
-	computeLut(gammaEff, gammaState.lutB, bipartite);
+	computeLut(gammaEff, gammaState.lutB, bipartite, toeInput_);
 	gammaState.lutG = gammaState.lutB;
 	gammaState.lutR = gammaState.lutB;
 

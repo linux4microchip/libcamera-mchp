@@ -334,10 +334,12 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	 * SAMA7G5 CBHS uses 16, SAMA5D2 CBC uses 256. Using the wrong value
 	 * would apply a permanent 16× or 1/16× multiplier from the first frame.
 	 */
+	context_.configuration.hw.contrastUnityHw =
+		context_.configuration.hw.hasCbhs ? 16.0f : 256.0f;
 	context_.activeState.cbc.brightness = 0;
 	context_.activeState.cbc.contrast =
 		static_cast<int32_t>(context_.configuration.hw.contrastUnityHw);
-	context_.activeState.cbc.saturation = 16;
+	context_.activeState.cbc.saturation = 50;
 	context_.activeState.cbc.hue = 0;
 
 	/*
@@ -518,8 +520,8 @@ void IPAMicrochipISC::setIspControls()
 	/* CCM: convert float (1.0=unity) to hardware scale (256=1.0x) */
 	const auto &ccm = context_.activeState.ccm;
 	auto clampCcm = [](float v) -> int32_t {
-		int32_t hw = static_cast<int32_t>(std::round(v * 256.0f));
-		return std::clamp(hw, -2048, 2047);
+		int32_t hw = static_cast<int32_t>(std::round(v * kCcmScale));
+		return std::clamp(hw, kCcmMinValue, kCcmMaxValue);
 	};
 
 	ctrls.set(V4L2_CID_ISC_CC_RR, clampCcm(ccm.matrix[0]));
