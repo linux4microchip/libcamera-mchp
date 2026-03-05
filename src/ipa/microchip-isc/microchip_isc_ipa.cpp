@@ -276,6 +276,8 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 
 	/* Initialize AGC and AWB to auto mode */
 	context_.activeState.agc.autoEnabled = true;
+	context_.activeState.agc.exposureTimeMode = controls::ExposureTimeModeAuto;
+	context_.activeState.agc.analogueGainMode = controls::AnalogueGainModeAuto;
 
 	/* Initialize AWB to identity gains */
 	context_.activeState.awb.rGain = 1.0;

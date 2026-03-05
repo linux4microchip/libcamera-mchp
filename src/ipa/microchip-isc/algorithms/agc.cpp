@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+
 /*
  * Copyright (C) 2024 Microchip Technology Inc. All rights reserved.
  *
@@ -29,9 +30,12 @@ namespace ipa::microchip_isc {
  * \param[in] context The IPA context
  * \param[in] tuningData YAML tuning parameters for AGC
  * \return 0 on success
+ *
+ * Parses convergence parameters and gain/exposure limits from the tuning
+ * file. Only MeteringMatrix is supported; the ISC histogram has no spatial
+ * information so centre-weighted and spot modes are not implementable.
  */
-int Agc::init([[maybe_unused]] IPAContext &context,
-	      const YamlObject &tuningData)
+int Agc::init(IPAContext &context, const YamlObject &tuningData)
 {
 	targetBrightness_ = tuningData["target_brightness"].get<float>(targetBrightness_);
 	clipThreshold_ = tuningData["clip_threshold"].get<float>(clipThreshold_);
@@ -50,6 +54,45 @@ int Agc::init([[maybe_unused]] IPAContext &context,
 
 	convergenceSpeed_ = std::clamp(convergenceSpeed_, 0.01f, 1.0f);
 	clipThreshold_ = std::clamp(clipThreshold_, 0.001f, 0.5f);
+
+	/* Advertise ExposureValue: ±2 EV in 0.1-stop steps */
+	context.ctrlMap[&controls::ExposureValue] =
+		ControlInfo(-2.0f, 2.0f, 0.0f);
+
+	/*
+	 * FrameDuration: per-frame read-only metadata reporting actual frame
+	 * duration in µs. Range is placeholder; configure() overwrites it with
+	 * sensor-mode-specific limits derived from HBLANK/VBLANK.
+	 */
+	context.ctrlMap[&controls::FrameDuration] =
+		ControlInfo(static_cast<int64_t>(0),
+			    static_cast<int64_t>(1000000),
+			    static_cast<int64_t>(33333));
+
+	/* Advertise AeLocked: true once exposure has stabilised */
+	context.ctrlMap[&controls::AeLocked] =
+		ControlInfo(false, true, false);
+
+	/* Advertise ExposureTimeMode, AnalogueGainMode, AeMeteringMode, AeState */
+	context.ctrlMap[&controls::AeState] =
+		ControlInfo(controls::AeStateIdle, controls::AeStateConverged,
+			    controls::AeStateIdle);
+	context.ctrlMap[&controls::ExposureTimeMode] =
+		ControlInfo({ { ControlValue(controls::ExposureTimeModeAuto),
+				ControlValue(controls::ExposureTimeModeManual) } },
+			    ControlValue(controls::ExposureTimeModeAuto));
+	context.ctrlMap[&controls::AnalogueGainMode] =
+		ControlInfo({ { ControlValue(controls::AnalogueGainModeAuto),
+				ControlValue(controls::AnalogueGainModeManual) } },
+			    ControlValue(controls::AnalogueGainModeAuto));
+	/*
+	 * Only MeteringMatrix is supported. The ISC hardware histogram does
+	 * not carry spatial information; centre-weighted and spot metering
+	 * are not implementable without a separate statistics block.
+	 */
+	context.ctrlMap[&controls::AeMeteringMode] =
+		ControlInfo({ { ControlValue(controls::MeteringMatrix) } },
+			    ControlValue(controls::MeteringMatrix));
 
 	LOG(ISC_AGC, Debug)
 		<< "AGC initialized: target=" << targetBrightness_
@@ -76,12 +119,14 @@ int Agc::configure(IPAContext &context,
 	auto &agc = context.configuration.agc;
 
 	/*
-	 * Set initial exposure to the midpoint of the sensor range.
-	 * The sensor driver will clamp to its actual limits.
+	 * Initialise sensor-limit-derived exposure and gain defaults.
+	 * Mode fields (autoEnabled, exposureTimeMode, analogueGainMode) are
+	 * owned by IPAMicrochipISC::configure() which runs after all algorithm
+	 * configure() calls and is the single authority for shared active state
+	 * initialisation.
 	 */
 	context.activeState.agc.exposure = agc.defaultExposure;
 	context.activeState.agc.analogueGain = agc.minAnalogueGain;
-	context.activeState.agc.autoEnabled = true;
 
 	LOG(ISC_AGC, Debug)
 		<< "AGC configured: exposure=" << context.activeState.agc.exposure
@@ -97,9 +142,10 @@ int Agc::configure(IPAContext &context,
  * \param[out] frameContext The frame context to populate
  * \param[in] controls Application-supplied controls for this frame
  *
- * Handles AeEnable to toggle auto/manual mode, and ExposureTime /
- * AnalogueGain for manual override. Records the current active state
- * so process() can use it as the feedback operating point.
+ * Handles AeEnable to toggle auto/manual mode, ExposureTimeMode and
+ * AnalogueGainMode for independent control of exposure and gain, and
+ * AeMeteringMode for metering strategy selection. Manual override values
+ * are read from ExposureTime and AnalogueGain controls.
  */
 void Agc::queueRequest(IPAContext &context,
 		       [[maybe_unused]] const uint32_t frame,
@@ -116,7 +162,36 @@ void Agc::queueRequest(IPAContext &context,
 		agc.autoEnabled = context.activeState.agc.autoEnabled;
 	}
 
-	if (!agc.autoEnabled) {
+	/* Independent exposure time mode (overrides AeEnable for exposure) */
+	const auto &expMode = controls.get(controls::ExposureTimeMode);
+	if (expMode.has_value()) {
+		agc.exposureTimeMode = expMode.value();
+		context.activeState.agc.exposureTimeMode = expMode.value();
+	} else {
+		agc.exposureTimeMode = context.activeState.agc.exposureTimeMode;
+	}
+
+	/* Independent analogue gain mode (overrides AeEnable for gain) */
+	const auto &gainMode = controls.get(controls::AnalogueGainMode);
+	if (gainMode.has_value()) {
+		agc.analogueGainMode = gainMode.value();
+		context.activeState.agc.analogueGainMode = gainMode.value();
+	} else {
+		agc.analogueGainMode = context.activeState.agc.analogueGainMode;
+	}
+
+	/* EV compensation: scale target brightness up/down by 2^ev stops */
+	const auto &evControl = controls.get(controls::ExposureValue);
+	if (evControl.has_value())
+		context.activeState.agc.exposureValue =
+			std::clamp(evControl.value(), -2.0f, 2.0f);
+
+	bool exposureManual = !agc.autoEnabled ||
+			      agc.exposureTimeMode == controls::ExposureTimeModeManual;
+	bool gainManual = !agc.autoEnabled ||
+			  agc.analogueGainMode == controls::AnalogueGainModeManual;
+
+	if (exposureManual) {
 		const auto &exposureTime = controls.get(controls::ExposureTime);
 		if (exposureTime.has_value()) {
 			uint32_t lines = static_cast<uint32_t>(std::round(
@@ -127,7 +202,11 @@ void Agc::queueRequest(IPAContext &context,
 		} else {
 			agc.exposure = context.activeState.agc.exposure;
 		}
+	} else {
+		agc.exposure = context.activeState.agc.exposure;
+	}
 
+	if (gainManual) {
 		const auto &gain = controls.get(controls::AnalogueGain);
 		if (gain.has_value()) {
 			agc.analogueGain = gain.value();
@@ -136,8 +215,6 @@ void Agc::queueRequest(IPAContext &context,
 			agc.analogueGain = context.activeState.agc.analogueGain;
 		}
 	} else {
-		/* Record current active state for feedback in process() */
-		agc.exposure = context.activeState.agc.exposure;
 		agc.analogueGain = context.activeState.agc.analogueGain;
 	}
 }
@@ -151,12 +228,12 @@ void Agc::queueRequest(IPAContext &context,
  * \param[out] metadata Control list for frame metadata
  *
  * Computes scene luminance from the ISC 4-channel 512-bin histogram and
- * adjusts exposure time and analogue gain to reach the target brightness.
- * Exposure is preferred over gain to minimize noise; gain is only increased
- * when exposure is at its maximum.
+ * adjusts exposure time and analogue gain independently based on
+ * ExposureTimeMode and AnalogueGainMode.
  *
- * Uses the actual applied sensor values from frameContext as the feedback
- * operating point for accurate closed-loop control.
+ * Exposure is preferred over gain to minimize noise; gain is only increased
+ * when exposure is at its maximum. ExposureTimeMode=Manual locks the
+ * shutter while allowing gain to auto-adjust, and vice versa.
  */
 void Agc::process(IPAContext &context,
 		  const uint32_t frame,
@@ -167,14 +244,30 @@ void Agc::process(IPAContext &context,
 	auto &agcState = context.activeState.agc;
 	const auto &agcConfig = context.configuration.agc;
 
-	/* In manual mode, report current values and skip auto computation */
-	if (!frameContext.agc.autoEnabled) {
+	bool exposureManual = !frameContext.agc.autoEnabled ||
+			      frameContext.agc.exposureTimeMode == controls::ExposureTimeModeManual;
+	bool gainManual = !frameContext.agc.autoEnabled ||
+			  frameContext.agc.analogueGainMode == controls::AnalogueGainModeManual;
+
+	/* In fully manual mode, report current values and skip auto computation */
+	if (exposureManual && gainManual) {
 		int32_t exposureUs = static_cast<int32_t>(
 			frameContext.agc.exposure *
 			context.configuration.sensor.lineDuration.get<std::micro>());
 		metadata.set(controls::ExposureTime, exposureUs);
 		metadata.set(controls::AnalogueGain,
 			     static_cast<float>(frameContext.agc.analogueGain));
+		return;
+	}
+
+	/* Skip computation when histogram stats are not available (non-RAW input) */
+	if (!context.configuration.hw.statsAvailable) {
+		int32_t exposureUs = static_cast<int32_t>(
+			agcState.exposure *
+			context.configuration.sensor.lineDuration.get<std::micro>());
+		metadata.set(controls::ExposureTime, exposureUs);
+		metadata.set(controls::AnalogueGain,
+			     static_cast<float>(agcState.analogueGain));
 		return;
 	}
 
@@ -194,7 +287,13 @@ void Agc::process(IPAContext &context,
 		return;
 	}
 
-	float currentLuminance = calculateLuminance(stats);
+	/*
+	 * Use the shared scene luminance pre-computed in processStats() from
+	 * the BT.601-weighted histogram means.  Only MeteringMatrix is
+	 * supported; the ISC histogram has no spatial information so
+	 * centre-weighted and spot modes read the same full-frame value.
+	 */
+	float currentLuminance = frameContext.scene.luminance;
 
 	if (currentLuminance >= 0.5f &&
 	    std::abs(targetBrightness_ - currentLuminance) >= stabilityThreshold_) {
@@ -217,15 +316,6 @@ void Agc::process(IPAContext &context,
 				<< "% > " << clipThreshold_ * 100.0f
 				<< "%, capping ratio=" << ratio;
 		}
-
-		/*
-		 * Use the actual applied exposure (read back from sensor
-		 * controls in processStats) as the feedback operating point.
-		 */
-		float currentExposure = static_cast<float>(frameContext.agc.exposure);
-		float targetExposure = currentExposure * ratio;
-		float newExposure = convergenceSpeed_ * targetExposure +
-				    (1.0f - convergenceSpeed_) * currentExposure;
 
 		uint32_t maxExposure = static_cast<uint32_t>(
 			agcConfig.maxShutterSpeed / context.configuration.sensor.lineDuration);
@@ -271,7 +361,7 @@ void Agc::process(IPAContext &context,
 
 		/* Update gain if not in manual mode */
 		if (!gainManual) {
-			float analogueGain;
+			double analogueGain;
 
 			if (exposureManual) {
 				/*
@@ -281,7 +371,7 @@ void Agc::process(IPAContext &context,
 				 * current gain so the loop converges.
 				 */
 				analogueGain = agcState.analogueGain * ratio;
-			} else if (agcState.exposure >= maxExposure && ratio > gainBoostThreshold_) {
+			} else if (agcState.exposure >= maxExposure && ratio > 1.05f) {
 				/*
 				 * Exposure is maxed and the scene is still
 				 * underexposed: boost gain proportionally to
@@ -292,74 +382,47 @@ void Agc::process(IPAContext &context,
 					 ratio) /
 					maxExposure;
 				analogueGain = agcConfig.minAnalogueGain * remaining;
-			} else if (ratio < gainReductionThreshold_ &&
-				   agcState.exposure <= minExposure) {
+			} else if (ratio < 0.95f) {
 				/*
-				 * Scene overexposed AND exposure is already at
-				 * minimum: exposure cannot go lower, so reduce
-				 * gain toward minimum to correct overexposure.
-				 * Exposure is always preferred over gain to
-				 * minimise noise; gain is only reduced once
-				 * the exposure knob is exhausted.
+				 * Scene overexposed: step gain toward minimum
+				 * to reduce noise before exposure converges
+				 * downward. Temporal smoothing prevents a
+				 * sudden jump.
 				 */
 				analogueGain = agcConfig.minAnalogueGain;
 			} else {
 				/*
-				 * Exposure is still converging or can be
-				 * reduced further: hold the current gain.
-				 * Let the exposure loop handle the correction;
-				 * adjusting gain simultaneously causes
-				 * oscillation and prevents stable convergence.
+				 * Exposure is still converging toward target:
+				 * hold the current gain. Resetting to minGain
+				 * here would continuously fight the exposure
+				 * loop and prevent stable convergence.
 				 */
 				analogueGain = agcState.analogueGain;
 			}
 
-			/*
-		 * Split into exposure time and analogue gain.
-		 * Prefer exposure over gain: only use gain when exposure is maxed.
-		 */
-			double analogueGain = agcConfig.minAnalogueGain;
-			if (exposure >= maxExposure && ratio > 1.05f) {
-				float remaining = newExposure / maxExposure;
-				analogueGain = agcConfig.minAnalogueGain * remaining;
-				analogueGain = std::clamp(analogueGain,
-							  agcConfig.minAnalogueGain,
-							  agcConfig.maxAnalogueGain);
+			analogueGain = std::clamp(analogueGain,
+						  agcConfig.minAnalogueGain,
+						  agcConfig.maxAnalogueGain);
 
-				/* Temporal smoothing prevents sudden gain jumps */
-				analogueGain = convergenceSpeed_ * analogueGain +
-					       (1.0f - convergenceSpeed_) *
-						       frameContext.agc.analogueGain;
+			/* Temporal smoothing prevents sudden gain jumps */
+			analogueGain = convergenceSpeed_ * analogueGain +
+				       (1.0f - convergenceSpeed_) *
+					       frameContext.agc.analogueGain;
 
-				agcState.analogueGain = analogueGain;
-			}
-
-			/* Temporal smoothing for gain using actual applied gain */
-			if (frame > 0) {
-				analogueGain = convergenceSpeed_ * analogueGain +
-					       (1.0 - convergenceSpeed_) *
-						       frameContext.agc.analogueGain;
-			}
-
-			agcState.exposure = exposure;
 			agcState.analogueGain = analogueGain;
-
-			LOG(ISC_AGC, Debug)
-				<< "AGC: luminance=" << currentLuminance
-				<< " target=" << targetBrightness_
-				<< " ratio=" << ratio
-				<< " -> exposure=" << exposure
-				<< " gain=" << analogueGain;
-		} else {
-			LOG(ISC_AGC, Debug)
-				<< "AGC stable (luminance=" << currentLuminance << ")";
 		}
 
-		int32_t exposureUs = static_cast<int32_t>(
-			agcState.exposure *
-			context.configuration.sensor.lineDuration.get<std::micro>());
-		metadata.set(controls::ExposureTime, exposureUs);
-		metadata.set(controls::AnalogueGain, static_cast<float>(agcState.analogueGain));
+		LOG(ISC_AGC, Debug)
+			<< "AGC: luminance=" << currentLuminance
+			<< " target=" << targetBrightness_
+			<< " ratio=" << ratio
+			<< " -> exposure=" << agcState.exposure
+			<< " gain=" << agcState.analogueGain
+			<< (exposureManual ? " (exposure locked)" : "")
+			<< (gainManual ? " (gain locked)" : "");
+	} else {
+		LOG(ISC_AGC, Debug)
+			<< "AGC stable (luminance=" << currentLuminance << ")";
 	}
 
 	REGISTER_IPA_ALGORITHM(Agc, "Agc")

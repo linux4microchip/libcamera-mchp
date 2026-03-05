@@ -90,6 +90,21 @@ struct IPAActiveState {
 		uint32_t exposure;
 		float analogueGain;
 		bool autoEnabled;
+		int32_t exposureTimeMode; /* 0=auto, 1=manual (independent of gain) */
+		int32_t analogueGainMode; /* 0=auto, 1=manual (independent of exposure) */
+		/*
+		 * EV compensation in stops [-2, +2]. Positive values increase
+		 * target brightness; negative values decrease it. Applied as a
+		 * multiplier (2^ev) to the YAML target_brightness each frame.
+		 */
+		float exposureValue;
+		/*
+		 * True once AGC has declared the exposure stable (luminance
+		 * within stabilityThreshold_ of the EV-adjusted target).
+		 * Read by CBC to inhibit its brightness correction while AGC
+		 * is actively converging, preventing the two loops from fighting.
+		 */
+		bool aeConverged;
 	} agc;
 
 	struct {
@@ -171,6 +186,8 @@ struct IPAFrameContext : public FrameContext {
 		uint32_t exposure;
 		float analogueGain;
 		bool autoEnabled;
+		int32_t exposureTimeMode; /* 0=auto, 1=manual */
+		int32_t analogueGainMode; /* 0=auto, 1=manual */
 	} agc;
 
 	struct {

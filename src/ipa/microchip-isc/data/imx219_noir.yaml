@@ -76,6 +76,26 @@ algorithms:
         stability_threshold: 10.0
         frames: 3
 
+      # Slightly wider clip_cap than standard: IR causes highlight clipping
+      # more easily, so be less aggressive about forcing gain reduction.
+      ratio_clamp:
+        min: 0.25
+        # 2.5× per-frame limit prevents AGC oscillation on scene cuts.
+        # NoIR scenes can change faster due to IR transients, but 4.0
+        # was too aggressive and caused multi-frame hunting.
+        max: 2.5
+        clip_cap: 0.80
+
+      gain_thresholds:
+        boost: 1.05
+        reduction: 0.95
+
+      # Minimum luminance for AE stability check.
+      # 5.0 avoids false stability declarations in near-dark scenes.
+      ae_luminance_floor: 5.0
+      # Mains flicker avoidance. 0 = disabled.
+      flicker_hz: 0
+      # CentreWeighted metering Gaussian parameters (histogram bin units, 0-511).
   - Cbc:
       target_luminance: 120.0
       brightness_gain: 0.15

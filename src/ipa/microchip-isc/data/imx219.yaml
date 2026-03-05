@@ -53,6 +53,25 @@ algorithms:
         stability_threshold: 10.0
         frames: 3
 
+      # Exposure ratio clamp limits and highlight anti-windup cap.
+      # ratioMin/Max limit the per-frame step to prevent large oscillations.
+      # clip_cap is applied when clipping fraction > clip_threshold.
+      ratio_clamp:
+        min: 0.25
+        # 2.5× per-frame limit prevents large luminance steps on scene cuts
+        # that otherwise drive AGC into multi-frame oscillation. 4.0 was too
+        # aggressive: a single dark-to-bright cut could apply 4× gain in one
+        # step, overshooting and triggering a hunt cycle.
+        max: 2.5
+        clip_cap: 0.85
+
+      # Gain update thresholds relative to the current exposure ratio.
+      # Gain is boosted when exposure is maxed and ratio > boost; it is
+      # pushed toward minimum when ratio < reduction.
+      gain_thresholds:
+        boost: 1.05
+        reduction: 0.95
+
   - Cbc:
       # Target scene luminance in histogram units (0-511).
       # The brightness register corrects residual error after AGC.

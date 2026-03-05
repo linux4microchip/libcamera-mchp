@@ -70,8 +70,7 @@ static constexpr float kSaturationScale = 50.0f;
  * Default sensor-to-XYZ colour matrix for Robertson (1968) CCT estimation.
  * Approximate values for IMX219 derived from published spectral responsivity.
  * Replace via YAML Awb.ct_color_matrix for better accuracy (±200 K vs ±500 K).
- * Calibrate with a Macbeth ColorChecker under known illuminants.
- * Row-major: row 0 = X, row 1 = Y, row 2 = Z.
+ * Calibrate with a Macbeth ColorChecker under known illuminants. * Row-major: row 0 = X, row 1 = Y, row 2 = Z.
  */
 inline constexpr std::array<float, 9> kDefaultCtMatrix = {
 	0.4900f,
@@ -87,13 +86,12 @@ inline constexpr std::array<float, 9> kDefaultCtMatrix = {
 
 float calculateChannelMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
 float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
-void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			   std::array<float, 64> &lut_cdf);
+void  calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
+			    std::array<float, 64> &lut_cdf);
 float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
-				 const std::array<float, kHistBins> &weights);
-float calculateClipping(const mchp_isc_stat_buffer *stats);
-float calculateHistogramSpread(const mchp_isc_stat_buffer *stats);
-float estimateColorTemperature(const mchp_isc_stat_buffer *stats);
+				 const std::array<float, kHistBins> &weights);float calculateClipping(const isc_stat_buffer *stats);
+float calculateHistogramSpread(const isc_stat_buffer *stats);
+float estimateColorTemperature(const isc_stat_buffer *stats);
 float estimateColorTemperature(float meanR, float meanG, float meanB,
 			       const std::array<float, 9> *ctColorMatrix = nullptr);
 } /* namespace ipa::microchip_isc */

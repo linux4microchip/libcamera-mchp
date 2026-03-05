@@ -7,7 +7,10 @@
 
 #pragma once
 
+#include <array>
+
 #include "algorithm.h"
+#include "common.h"
 
 namespace libcamera {
 
@@ -54,7 +57,7 @@ private:
 	 * All three are tunable via YAML ratio_clamp section.
 	 */
 	float ratioMin_ = 0.25f;
-	float ratioMax_ = 2.5f;
+	float ratioMax_ = 4.0f;
 	float clipRatioCap_ = 0.85f;
 
 	/*
