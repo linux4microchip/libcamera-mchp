@@ -34,17 +34,13 @@ public:
 
 private:
 	/*
-	 * Target scene luminance in histogram units (0–511).
-	 * Brightness offset is computed as a fraction of the deviation
-	 * from this target after AGC has already corrected the main level.
+	 * Static hardware brightness offset applied after gamma.
+	 * Range: [-1024, 1023] in hardware units (0 = no offset).
+	 * This is a one-time tuning offset, not a dynamic feedback loop:
+	 * AGC owns the luminance control loop; CBC brightness is a static
+	 * trim to correct residual sensor or pipeline offsets.
 	 */
-	float targetLuminance_ = 128.0f;
-
-	/*
-	 * Fraction of the residual luminance error applied as a brightness
-	 * offset. Kept small (< 0.25) to avoid fighting AGC.
-	 */
-	float brightnessGain_ = 0.15f;
+	int32_t defaultBrightness_ = 0;
 
 	/*
 	 * Contrast enhancement strength [0.0–1.0]. At 0.0 the contrast

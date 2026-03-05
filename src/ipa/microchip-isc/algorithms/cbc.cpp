@@ -9,7 +9,6 @@
 #include "cbc.h"
 
 #include <algorithm>
-#include <cmath>
 
 #include <libcamera/base/log.h>
 
@@ -33,8 +32,7 @@ namespace ipa::microchip_isc {
  */
 int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 {
-	targetLuminance_ = tuningData["target_luminance"].get<float>(targetLuminance_);
-	brightnessGain_ = tuningData["brightness_gain"].get<float>(brightnessGain_);
+	defaultBrightness_ = tuningData["default_brightness"].get<int32_t>(defaultBrightness_);
 	contrastStrength_ = tuningData["contrast_strength"].get<float>(contrastStrength_);
 	targetSpread_ = tuningData["target_spread"].get<float>(targetSpread_);
 	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
@@ -42,8 +40,9 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 	defaultHue_ = tuningData["hue"].get<int32_t>(defaultHue_);
 	contrastMaxGain_ = tuningData["contrast_max_gain"].get<float>(contrastMaxGain_);
 
-	targetLuminance_ = std::clamp(targetLuminance_, 0.0f, kHistogramMax);
-	brightnessGain_ = std::clamp(brightnessGain_, 0.0f, 0.5f);
+	defaultBrightness_ = std::clamp(defaultBrightness_,
+					static_cast<int32_t>(kBrightnessMin),
+					static_cast<int32_t>(kBrightnessMax));
 	contrastStrength_ = std::clamp(contrastStrength_, 0.0f, 1.0f);
 	targetSpread_ = std::clamp(targetSpread_, 0.1f, 1.0f);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.95f);
@@ -66,8 +65,7 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 	}
 
 	LOG(ISC_CBC, Debug)
-		<< "CBC initialized: targetLum=" << targetLuminance_
-		<< " brightnessGain=" << brightnessGain_
+		<< "CBC initialized: defaultBrightness=" << defaultBrightness_
 		<< " contrastStrength=" << contrastStrength_
 		<< " targetSpread=" << targetSpread_
 		<< " smoothing=" << smoothingFactor_
@@ -89,6 +87,7 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 int Cbc::configure(IPAContext &context,
 		   [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
 {
+	context.activeState.cbc.brightness = defaultBrightness_;
 	if (context.configuration.hw.hasCbhs) {
 		context.activeState.cbc.saturation = defaultSaturation_;
 		context.activeState.cbc.hue = defaultHue_;
@@ -132,31 +131,27 @@ void Cbc::queueRequest(IPAContext &context,
 }
 
 /**
- * \brief Process statistics and compute adaptive brightness and contrast
+ * \brief Process statistics and compute contrast adjustment
  * \param[in] context The IPA context
  * \param[in] frame The frame number
  * \param[in] frameContext The frame context
  * \param[in] stats Pointer to ISC statistics buffer
  * \param[out] metadata Control list for frame metadata
  *
- * Computes two complementary adjustments applied by the ISC CBC hardware
- * block (which sits after gamma in the pipeline):
+ * Applies a static hardware brightness offset (from tuning) and an adaptive
+ * contrast adjustment based on the scene histogram spread.
  *
- * Brightness: a signed offset [-1024, 1023] applied as a fine trim on top
- * of AGC. Only a small fraction of the residual luminance error is corrected
- * here to avoid fighting the AGC control loop.
+ * Brightness: a fixed signed offset [-1024, 1023] from the tuning file.
+ * AGC is the sole owner of the luminance control loop; CBC brightness is a
+ * static pipeline trim only. A dynamic feedback loop here would create two
+ * competing PI controllers on the same output variable, causing oscillation.
  *
- * Contrast: a multiplier with hardware unity at 16, range [-2048, 2047] on
- * SAMA7G5. The P5–P95 histogram spread is used to detect flat scenes (fog,
- * overcast) where expanding contrast improves perceived detail. The gain is
- * blended with unity by the contrast_strength parameter so that the effect
- * can be tuned between subtle and aggressive.
+ * Contrast: a multiplier (hardware unity = 16) derived from the P5–P95
+ * histogram spread. Flat scenes (fog, overcast) get contrast boosted to
+ * fill the target spread fraction. The gain is blended with unity by
+ * contrast_strength to tune between subtle and aggressive enhancement.
  *
- * Both values are temporally smoothed to avoid visible flickering.
- *
- * The ISC histogram collects one Bayer channel per frame; a complete
- * 4-channel set requires 4 frames. CBC computation is skipped during the
- * initial warmup period.
+ * Contrast is temporally smoothed to avoid visible flickering.
  */
 void Cbc::process(IPAContext &context,
 		  const uint32_t frame,
@@ -172,46 +167,19 @@ void Cbc::process(IPAContext &context,
 
 	/*
 	 * Wait for the first complete 4-channel histogram cycle before
-	 * adjusting brightness or contrast.
+	 * adjusting contrast.
 	 */
-	if (frame < 4) {
+	if (frame < 3) {
 		LOG(ISC_CBC, Debug) << "CBC warmup frame " << frame << ", skipping";
 		return;
 	}
 
-	/* --- Brightness ---
-	 *
-	 * Compute a small correction for residual brightness error not
-	 * fully handled by AGC. The hardware brightness register adds a
-	 * signed offset to the pixel value after gamma.
-	 *
-	 * The ISC histogram operates in the pre-gamma linear domain
-	 * (0–511). The luminance target is expressed in the same space.
-	 */
-	float lum = frameContext.scene.luminance;
-	float lumError = targetLuminance_ - lum;
-
 	/*
-	 * Inhibit CBC brightness correction while AGC is actively converging.
-	 * Both loops correct luminance error but at different pipeline stages
-	 * (AGC: pre-gamma exposure; CBC: post-gamma offset). If both run at
-	 * full strength simultaneously the combined step overshoots, causing
-	 * oscillation. Reduce CBC gain to 20% during AGC search; restore to
-	 * full once AGC has declared the exposure stable (aeConverged = true).
+	 * Brightness is a static tuning offset, not a feedback loop.
+	 * AGC owns luminance; CBC brightness only corrects static pipeline
+	 * offsets (e.g. sensor pedestal not fully removed by BLC).
 	 */
-	float effectiveBrightnessGain = brightnessGain_;
-	if (!context.activeState.agc.aeConverged)
-		effectiveBrightnessGain *= 0.2f;
-
-	float targetBrightnessHw = lumError * effectiveBrightnessGain;
-
-	/* Clamp to a conservative sub-range to avoid overdriving */
-	targetBrightnessHw = std::clamp(targetBrightnessHw,
-					-kBrightnessDriveLimit, kBrightnessDriveLimit);
-
-	/* Temporal smoothing */
-	float brightness = smoothingFactor_ * static_cast<float>(cbc.brightness) +
-			   (1.0f - smoothingFactor_) * targetBrightnessHw;
+	float brightness = static_cast<float>(defaultBrightness_);
 
 	/* --- Contrast ---
 	 *
@@ -253,9 +221,7 @@ void Cbc::process(IPAContext &context,
 		std::clamp(contrast, kContrastMin, kContrastMax));
 
 	LOG(ISC_CBC, Debug)
-		<< "CBC: lum=" << lum
-		<< " lumError=" << lumError
-		<< " brightness=" << cbc.brightness
+		<< "CBC: brightness=" << cbc.brightness
 		<< " spread=" << spread
 		<< " contrastGain=" << contrastGain
 		<< " contrast=" << cbc.contrast
