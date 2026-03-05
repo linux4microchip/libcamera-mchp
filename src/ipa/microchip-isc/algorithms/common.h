@@ -89,8 +89,7 @@ float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int cha
 void  calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 			    std::array<float, 64> &lut_cdf);
 float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
-				 const std::array<float, kHistBins> &weights);float calculateClipping(const isc_stat_buffer *stats);
-float calculateHistogramSpread(const isc_stat_buffer *stats);
+				 const std::array<float, kHistBins> &weights);float calculateClipping(const isc_stat_buffer *stats);float calculateHistogramSpread(const isc_stat_buffer *stats);
 float estimateColorTemperature(const isc_stat_buffer *stats);
 float estimateColorTemperature(float meanR, float meanG, float meanB,
 			       const std::array<float, 9> *ctColorMatrix = nullptr);

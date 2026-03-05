@@ -57,6 +57,43 @@ float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel)
 }
 
 /**
+ * \brief Calculate the mean intensity of the top 20% brightest pixels
+ * \param[in] stats Pointer to ISC statistics buffer
+ * \param[in] channel Bayer channel index (kHistChannelGR/R/GB/B)
+ * \return Mean intensity of the top 20% pixels (0.0–511.0 range)
+ *
+ * Near-saturated pixels in a scene are most likely reflecting or emitting
+ * near-white light and therefore provide a better estimate of the scene
+ * illuminant colour than the full-frame mean, which is biased by scene
+ * content. This is used by the AWB algorithm to blend a highlight-based
+ * illuminant estimate with the grey-world estimate, improving accuracy in
+ * high-saturation scenes (sky, foliage, skin tones).
+ *
+ * Returns 0 if the histogram is empty or has fewer than 10% of pixels in
+ * the top quantile (indicating a very dark or uniform scene where the
+ * highlight estimate would be unreliable).
+ */
+float calculateHighlightMean(const isc_stat_buffer *stats, unsigned int channel)
+{
+	std::array<uint32_t, kHistBins> bins;
+	std::memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
+	Histogram hist(bins);
+
+	if (hist.total() == 0)
+		return 0.0f;
+
+	if (hist.total() > kMaxHistPixels) {
+		LOG(ISC_Common, Warning)
+			<< "Histogram channel " << channel
+			<< " total " << hist.total()
+			<< " exceeds limit; stats buffer may be corrupt";
+		return 0.0f;
+	}
+
+	return static_cast<float>(hist.interQuantileMean(0.8, 1.0));
+}
+
+/**
  * \brief Calculate overall scene luminance from all histogram channels
  * \param[in] stats Pointer to ISC statistics buffer
  * \return Estimated luminance (0.0-511.0 range)

@@ -59,6 +59,9 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		refGbGain_ = rg["gb"].get<double>(refGbGain_);
 	}
 
+	highlightWeight_ = tuningData["highlight_weight"].get<float>(highlightWeight_);
+	highlightWeight_ = std::clamp(highlightWeight_, 0.0f, 1.0f);
+
 	if (tuningData.contains("color_temperature")) {
 		const YamlObject &ct = tuningData["color_temperature"];
 		ctMin_ = ct["min"].get<float>(ctMin_);
@@ -278,9 +281,37 @@ void Awb::process(IPAContext &context,
 		}
 
 		/*
-		 * avgGreen for Robertson CT estimation only (needs a single
-		 * luminance-representative green value).
+		 * Blend full-frame grey-world means with highlight-based means.
+		 * Near-saturated pixels (top 20% intensity, gain-undone) better
+		 * approximate the illuminant colour than the full-frame mean in
+		 * scenes with strong dominant colours (sky, foliage, skin tones).
+		 * highlightWeight_ = 0 gives pure grey-world.
 		 */
+		if (highlightWeight_ > 0.0f) {
+			float hlGR = calculateHighlightMean(stats, kHistChannelGR);
+			float hlR  = calculateHighlightMean(stats, kHistChannelR);
+			float hlGB = calculateHighlightMean(stats, kHistChannelGB);
+			float hlB  = calculateHighlightMean(stats, kHistChannelB);
+
+			/* Gain-undo highlight means with the same applied gains */
+			if (frameContext.awb.rGain > 0.0 &&
+			    frameContext.awb.bGain > 0.0 &&
+			    frameContext.awb.grGain > 0.0 &&
+			    frameContext.awb.gbGain > 0.0) {
+				hlR  /= frameContext.awb.rGain;
+				hlB  /= frameContext.awb.bGain;
+				hlGR /= frameContext.awb.grGain;
+				hlGB /= frameContext.awb.gbGain;
+			}
+
+			float w = highlightWeight_;
+			meanGR = (1.0f - w) * meanGR + w * hlGR;
+			meanR  = (1.0f - w) * meanR  + w * hlR;
+			meanGB = (1.0f - w) * meanGB + w * hlGB;
+			meanB  = (1.0f - w) * meanB  + w * hlB;
+		}
+
+		/* avgGreen for Robertson CT estimation only */
 		float meanG = (meanGR + meanGB) / 2.0f;
 
 		/*

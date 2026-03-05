@@ -41,6 +41,11 @@ algorithms:
         gb_min: 0.9
         gb_max: 1.1
 
+      # Fraction of highlight-based illuminant estimate blended into grey-world.
+      # Top-20% pixels better approximate the illuminant than the scene mean.
+      # 0.0 = pure grey-world; 0.3 balances accuracy with stability.
+      highlight_weight: 0.3
+
       # Reference (neutral daylight D65) gains applied at configure() time
       # so the first frames have correct colour before AWB converges.
       # Measure under D65 illumination with a grey card at 18% reflectance.

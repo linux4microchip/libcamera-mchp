@@ -74,6 +74,16 @@ private:
 	double refGbGain_ = 1.0;
 
 	/*
+	 * Blend fraction [0.0–1.0] of the highlight-based illuminant estimate
+	 * mixed into the grey-world gain computation. Near-saturated pixels
+	 * (top 20% intensity) are closer to the true illuminant colour than
+	 * the full-frame mean, improving AWB accuracy in high-saturation scenes.
+	 * 0.0 = pure grey-world; 0.3 gives a good balance for outdoor shooting.
+	 * Tunable via YAML highlight_weight.
+	 */
+	float highlightWeight_ = 0.3f;
+
+	/*
 	 * Set true when the maximum per-channel delta is below
 	 * stabilityThreshold_ for the current frame. Written to
 	 * controls::AwbLocked in metadata.

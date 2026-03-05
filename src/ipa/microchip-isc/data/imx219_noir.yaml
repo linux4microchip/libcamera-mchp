@@ -65,6 +65,10 @@ algorithms:
         gb_min: 0.9
         gb_max: 1.1
 
+      # Slightly higher highlight weight for NoIR: IR contamination saturates
+      # highlights more, making them a better proxy for the illuminant colour.
+      highlight_weight: 0.4
+
       # Reference gains for NoIR (D65, no IR cut filter).
       # R is lower because IR lifts the R channel; B is slightly higher
       # to compensate for the red-shifted spectral response.
