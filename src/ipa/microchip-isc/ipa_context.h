@@ -35,11 +35,54 @@ struct IPASessionConfiguration {
 		utils::Duration lineDuration;
 		/*
 		 * Sensor black level in 10-bit units (e.g. 64 for IMX219).
-		 * Applied as a fixed WB offset subtraction before AWB gains.
-		 * Zero means no black level correction.
+		 * Per-channel values fall back to blackLevel when absent in YAML.
+		 * On SAMA7G5 (hasDpc=true) these are not applied to WB offsets
+		 * because the DPC hardware block subtracts BL before the WB block.
 		 */
 		uint32_t blackLevel;
+		uint32_t blackLevelR;
+		uint32_t blackLevelGR;
+		uint32_t blackLevelGB;
+		uint32_t blackLevelB;
+		/*
+		 * 3×3 row-major sensor-to-XYZ colour matrix used for McCamy
+		 * colour temperature estimation. Row 0 = [X from R, X from G,
+		 * X from B], row 1 = Y, row 2 = Z. Normalised to D65 white.
+		 * Loaded from YAML Awb.ct_color_matrix; falls back to
+		 * approximate IMX219 values when absent.
+		 */
+		std::array<float, 9> ctColorMatrix;
 	} sensor;
+
+	struct {
+		/*
+		 * hasDpc: SAMA7G5 DPC subtracts black level before the WB
+		 * block. Setting WB offsets for BL correction on top would
+		 * double-apply the subtraction and corrupt colours.
+		 */
+		bool hasDpc;
+
+		/*
+		 * hasBipartiteGamma: SAMA7G5 GAM block supports a linear toe
+		 * segment for better shadow gradation. When true, computeLut()
+		 * uses a piecewise linear-toe + power-law curve.
+		 */
+		bool hasBipartiteGamma;
+
+		/*
+		 * hasCbhs: SAMA7G5 CBHS block adds Saturation control
+		 * (V4L2_CID_SATURATION) beyond the basic brightness/contrast
+		 * available on SAMA5D2 CBC.
+		 */
+		bool hasCbhs;
+
+		/*
+		 * statsAvailable: ISC histogram statistics are only valid for
+		 * RAW (Bayer) sensor input. False for sensors that output
+		 * YUYV or RGB directly.
+		 */
+		bool statsAvailable;
+	} hw;
 };
 
 struct IPAActiveState {

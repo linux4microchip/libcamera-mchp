@@ -4,9 +4,28 @@ module ipa.microchip_isc;
 
 import "include/libcamera/ipa/core.mojom";
 
+/*
+ * Hardware capability flags detected by the pipeline handler and forwarded
+ * to the IPA at init()/configure() time. These reflect silicon-level features
+ * of the ISC variant (SAMA5D2 ISC vs. SAMA7G5/SAM9X7 XISC) and must not be
+ * duplicated in sensor-specific YAML tuning files.
+ */
+struct IPAHwCapabilities {
+	/* SAMA7G5/SAM9X7 only: DPC block subtracts black level before WB. */
+	bool hasDpc;
+	/* SAMA7G5/SAM9X7 only: GAM block supports linear-toe bipartite mode. */
+	bool hasBipartiteGamma;
+	/* SAMA7G5/SAM9X7 only: CBHS block adds Saturation and Hue controls. */
+	bool hasCbhs;
+	/* True when the ISC stats node was opened and histogram data is valid. */
+	bool statsAvailable;
+};
+
 struct IPAConfigInfo {
 	libcamera.IPACameraSensorInfo sensorInfo;
 	libcamera.ControlInfoMap sensorControls;
+	libcamera.ControlInfoMap ispControls;
+	IPAHwCapabilities hwCaps;
 };
 
 interface IPAMicrochipISCInterface {

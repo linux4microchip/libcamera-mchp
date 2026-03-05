@@ -681,6 +681,20 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 		ipaConfig.hwCaps.hasCbhs = isXisc;
 		ipaConfig.hwCaps.statsAvailable = foundStatsVideo;
 
+		/*
+		 * Detect ISC hardware variant from the ISP control set.
+		 * V4L2_CID_HUE is only registered by the SAMA7G5/SAM9X7 CBHS
+		 * block; its presence uniquely identifies the XISC variant which
+		 * also carries DPC and bipartite gamma. The SAMA5D2 ISC registers
+		 * none of these three controls.
+		 */
+		bool isXisc = (data->iscVideo_ &&
+			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
+		ipaConfig.hwCaps.hasDpc            = isXisc;
+		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
+		ipaConfig.hwCaps.hasCbhs           = isXisc;
+		ipaConfig.hwCaps.statsAvailable    = foundStatsVideo;
+
 		ControlInfoMap ipaControls;
 		ret = data->ipa_->init({ ipaTuningFile, sensorModel }, ipaConfig,
 				       &ipaControls);
@@ -802,6 +816,13 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
 		ipaConfig.hwCaps.hasCbhs = isXisc;
 		ipaConfig.hwCaps.statsAvailable = data->statsEnabled_;
+
+		bool isXisc = (data->iscVideo_ &&
+			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
+		ipaConfig.hwCaps.hasDpc            = isXisc;
+		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
+		ipaConfig.hwCaps.hasCbhs           = isXisc;
+		ipaConfig.hwCaps.statsAvailable    = data->statsEnabled_;
 
 		uint8_t bayerOrder = static_cast<uint8_t>(
 			data->sensor_->bayerOrder(Transform::Identity));

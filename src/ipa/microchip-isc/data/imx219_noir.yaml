@@ -24,35 +24,21 @@ version: 1
 # carry the NoIR module, or add a device-tree 'model' property of
 # "imx219-noir" to the camera node so that sensor_->model() returns the
 # correct string.
-# Hardware capabilities (same as standard IMX219)
-hardware:
-  histogram:
-    bins: 512
-    channels: 4
-    bit_depth: 10
-
-  gains:
-    min: 0
-    max: 8191
-    neutral: 512
-
-  offsets:
-    min: -4095
-    max: 4095
-    neutral: 0
-
-# Sensor information
-sensor_info:
-  model: "imx219-noir"
-  black_level: 64
-  bit_depth: 10
 
 # Algorithm configurations
+# Hardware capabilities (hasDpc, hasBipartiteGamma, hasCbhs, statsAvailable)
+# are detected at runtime by the pipeline handler and passed to the IPA via
+# IPAConfigInfo::hwCaps. They must not be duplicated here.
 algorithms:
   - BlackLevelCorrection:
       # Sensor black pedestal in 10-bit units. Subtracted via WB offsets on
       # SAMA5D2 (hasDpc=false); on SAMA7G5 DPC hardware handles it instead.
+      # Per-channel values fall back to black_level when absent.
       black_level: 64
+      black_level_r: 64
+      black_level_gr: 64
+      black_level_gb: 64
+      black_level_b: 64
   - Awb:
       convergence:
         speed: 0.1
@@ -70,6 +56,12 @@ algorithms:
         # warmer than the actual visible-light CT suggests.
         min: 1800
         max: 12000
+
+      # Sensor-to-XYZ matrix for NoIR IMX219. IR energy shifts the effective
+      # spectral response; the X row gets extra R contribution, Z row extra B.
+      # Calibrated relative to standard IMX219 to account for the spectral shift.
+      ct_color_matrix: [0.5200, 0.2800, 0.1000, 0.2400, 0.6400, 0.0800, 0.0300, 0.1200, 0.8500]
+
 
   - Agc:
       # Slightly lower target to avoid over-exposure; IR adds extra
@@ -92,6 +84,14 @@ algorithms:
       contrast_strength: 0.55
       target_spread: 0.60
       smoothing_factor: 0.25
+      # Slightly higher saturation for NoIR to compensate for IR desaturation
+      saturation: 65
+
+  - Gamma:
+      gamma: 2.2
+      strength: 0.3
+      target_output: 0.45
+      smoothing_factor: 0.3
 
   - Ccm:
       # CCM matrices interpolated from Raspberry Pi imx219_noir calibration.

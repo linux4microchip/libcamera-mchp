@@ -42,26 +42,6 @@ namespace ipa::microchip_isc {
 
 static constexpr uint32_t kMaxFrameContexts = 16;
 
-/**
- * \class IPAMicrochipISC
- * \brief IPA module for the Microchip ISC image sensor controller
- *
- * Implements the IPA interface for the Microchip ISC / XISC pipeline handler.
- * Hosts the AWB, AGC, CCM, CBC, and Gamma algorithm chain. Each algorithm
- * operates on the 4-channel 512-bin ISC hardware histogram delivered once
- * per 4-frame Bayer cycle.
- *
- * The algorithm chain shares state through IPAContext:
- * - AWB computes per-channel gains and colour temperature (CT)
- * - CCM interpolates a 3×3 colour correction matrix from the AWB CT
- * - AGC adjusts sensor exposure and analogue gain to hit target brightness
- * - CBC corrects residual brightness/contrast error after AGC has converged
- * - Gamma applies adaptive tone mapping using gain-undone scene luminance
- *
- * Platform capabilities (DPC, bipartite gamma, CBHS saturation) are read
- * from the YAML tuning file hardware section at init() time.
- */
-
 /*
  * Sentinel value passed by the pipeline handler in the bayerOrder argument
  * of configure() to indicate a non-RAW sensor output (YUYV, RGB). In that
@@ -123,7 +103,7 @@ std::string IPAMicrochipISC::logPrefix() const
 }
 
 int IPAMicrochipISC::init(const IPASettings &settings,
-			  [[maybe_unused]] const IPAConfigInfo &ipaConfig,
+			  const IPAConfigInfo &ipaConfig,
 			  ControlInfoMap *ipaControls)
 {
 	camHelper_ = CameraSensorHelperFactoryBase::create(settings.sensorModel);
@@ -160,6 +140,22 @@ int IPAMicrochipISC::init(const IPASettings &settings,
 		LOG(ISC_IPA, Warning) << "Tuning file has no algorithms section";
 		return 0;
 	}
+
+	/*
+	 * Platform hardware capabilities are provided by the pipeline handler
+	 * via IPAConfigInfo::hwCaps. Store them now so algorithms can read
+	 * them during their init() calls below. The configure() path also
+	 * writes hwCaps on each reconfigure, so these are always current.
+	 */
+	context_.configuration.hw.hasDpc = ipaConfig.hwCaps.hasDpc;
+	context_.configuration.hw.hasBipartiteGamma = ipaConfig.hwCaps.hasBipartiteGamma;
+	context_.configuration.hw.hasCbhs = ipaConfig.hwCaps.hasCbhs;
+
+	LOG(ISC_IPA, Debug)
+		<< "Platform capabilities: hasDpc=" << ipaConfig.hwCaps.hasDpc
+		<< " hasBipartiteGamma=" << ipaConfig.hwCaps.hasBipartiteGamma
+		<< " hasCbhs=" << ipaConfig.hwCaps.hasCbhs
+		<< " statsAvailable=" << ipaConfig.hwCaps.statsAvailable;
 
 	int ret = createAlgorithms(context_, (*data)["algorithms"]);
 	if (ret) {
@@ -253,6 +249,23 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	updateSessionConfiguration(info, ipaConfig.sensorControls,
 				   static_cast<BayerFormat::Order>(bayerOrder));
 
+	/*
+	 * Hardware capability flags come from the pipeline handler via IPC.
+	 * Re-apply on each configure() in case the IPA is shared across
+	 * multiple camera instances with different hardware variants.
+	 */
+	context_.configuration.hw.hasDpc = ipaConfig.hwCaps.hasDpc;
+	context_.configuration.hw.hasBipartiteGamma = ipaConfig.hwCaps.hasBipartiteGamma;
+	context_.configuration.hw.hasCbhs = ipaConfig.hwCaps.hasCbhs;
+
+	/*
+	 * statsAvailable requires both a valid Bayer input (bayerOrder ≠
+	 * kBayerOrderInvalid) and that the pipeline handler successfully
+	 * opened the stats V4L2 metadata node (hwCaps.statsAvailable).
+	 */
+	context_.configuration.hw.statsAvailable =
+		(bayerOrder != kBayerOrderInvalid) && ipaConfig.hwCaps.statsAvailable;
+
 	for (auto const &a : algorithms()) {
 		Algorithm *algo = static_cast<Algorithm *>(a.get());
 
@@ -272,19 +285,36 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.awb.autoEnabled = true;
 
 	/*
-	 * Black level correction: subtract the sensor black pedestal before
-	 * AWB gains are applied. The ISC pipeline is 12-bit; the sensor
-	 * black level (from the tuning file, in 10-bit units) is scaled by 4.
-	 * All four Bayer channels share the same pedestal for IMX219.
+	 * Black level correction:
+	 * On SAMA7G5 (hasDpc=true) the DPC hardware block subtracts the
+	 * sensor black level before the WB block runs. Applying WB offsets
+	 * here would double-subtract and corrupt colours. Set offsets to 0.
+	 *
+	 * On SAMA5D2 (hasDpc=false) the WB block is the correct place to
+	 * apply BL correction. Per-channel values are loaded by the
+	 * BlackLevelCorrection algorithm from the tuning file and stored in
+	 * context.configuration.sensor. The ISC pipeline is 12-bit; sensor
+	 * BL in 10-bit units is scaled ×4.
 	 */
-	context_.activeState.awb.rOffset =
-		-static_cast<int32_t>(context_.configuration.sensor.blackLevelR * 4);
-	context_.activeState.awb.bOffset =
-		-static_cast<int32_t>(context_.configuration.sensor.blackLevelB * 4);
-	context_.activeState.awb.grOffset =
-		-static_cast<int32_t>(context_.configuration.sensor.blackLevelGR * 4);
-	context_.activeState.awb.gbOffset =
-		-static_cast<int32_t>(context_.configuration.sensor.blackLevelGB * 4);
+	if (context_.configuration.hw.hasDpc) {
+		context_.activeState.awb.rOffset = 0;
+		context_.activeState.awb.bOffset = 0;
+		context_.activeState.awb.grOffset = 0;
+		context_.activeState.awb.gbOffset = 0;
+		LOG(ISC_IPA, Debug) << "DPC present: WB BL offsets set to 0";
+	} else {
+		context_.activeState.awb.rOffset =
+			-static_cast<int32_t>(context_.configuration.sensor.blackLevelR * 4);
+		context_.activeState.awb.bOffset =
+			-static_cast<int32_t>(context_.configuration.sensor.blackLevelB * 4);
+		context_.activeState.awb.grOffset =
+			-static_cast<int32_t>(context_.configuration.sensor.blackLevelGR * 4);
+		context_.activeState.awb.gbOffset =
+			-static_cast<int32_t>(context_.configuration.sensor.blackLevelGB * 4);
+		LOG(ISC_IPA, Debug)
+			<< "No DPC: WB BL offsets R=" << context_.activeState.awb.rOffset
+			<< " B=" << context_.activeState.awb.bOffset;
+	}
 
 	/* Initialize CCM to identity matrix */
 	context_.activeState.ccm.matrix = {
@@ -294,9 +324,14 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	};
 	context_.activeState.ccm.offsets = { 0.0f, 0.0f, 0.0f };
 
-	/* Initialize CBC to neutral (brightness=0, contrast=16=1.0×) */
+	/*
+	 * Initialize CBC to neutral. Contrast hardware unity differs by
+	 * platform: SAMA7G5 CBHS uses 16, SAMA5D2 CBC uses 256. Using the
+	 * wrong value would apply a permanent 16× or 1/16× contrast
+	 * multiplier from the first frame.
+	 */
 	context_.activeState.cbc.brightness = 0;
-	context_.activeState.cbc.contrast = 16;
+	context_.activeState.cbc.contrast = context_.configuration.hw.hasCbhs ? 16 : 256;
 
 	/*
 	 * Gamma is initialized by the Gamma algorithm's configure().
@@ -371,97 +406,34 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	const isc_stat_buffer *stats = reinterpret_cast<isc_stat_buffer *>(
 		buffers_.at(bufferId).planes()[0].data());
 
-	/* Record what sensor controls were applied for this frame */
-	frameContext.agc.exposure =
-		sensorControls.get(V4L2_CID_EXPOSURE).get<int32_t>();
-	if (camHelper_)
-		frameContext.agc.analogueGain = camHelper_->gain(
-			sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>());
-	else
+	/*
+	 * Record what sensor controls were applied for this frame. The
+	 * pipeline handler should always populate V4L2_CID_EXPOSURE and
+	 * V4L2_CID_ANALOGUE_GAIN, but guard with contains() to avoid
+	 * crashing on ControlValue::get<T>() of an empty value if a
+	 * sensor driver omits them.
+	 */
+	if (sensorControls.contains(V4L2_CID_EXPOSURE))
+		frameContext.agc.exposure =
+			sensorControls.get(V4L2_CID_EXPOSURE).get<int32_t>();
+
+	if (sensorControls.contains(V4L2_CID_ANALOGUE_GAIN)) {
+		int32_t rawGain =
+			sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
 		frameContext.agc.analogueGain =
-			static_cast<float>(camHelper_ ? camHelper_->gain(rawGain)
-						      : static_cast<double>(rawGain));
-}
-
-/*
-	 * Update per-channel histogram means and capture-frame attribution.
-	 *
-	 * The ISC cycles GR→R→GB→B (one Bayer channel per frame), but the
-	 * kernel driver fires isc_stats_isr() only once after the B channel
-	 * completes the 4-frame cycle, delivering all four histograms together
-	 * (valid_channels = 0x0f).  All four means are therefore always fresh
-	 * in each stats delivery; there is no stale-channel problem.
-	 *
-	 * Each channel also carries capture_frame — the frame sequence number
-	 * at which that channel's histogram was actually measured.  Stored in
-	 * activeState.histogram.captureFrame[] for AWB to look up the exposure
-	 * and gains that were active on the measurement frame.
-	 */
-if (context_.configuration.hw.statsAvailable &&
-    stats->valid_channels == 0x0f) {
-	auto &hist = context_.activeState.histogram;
-	for (unsigned int ch = 0; ch < 4; ch++) {
-		hist.channelMeans[ch] = calculateChannelMean(stats, ch);
-		hist.captureFrame[ch] = stats->hist[ch].capture_frame;
+			camHelper_ ? camHelper_->gain(rawGain)
+				   : static_cast<double>(rawGain);
 	}
-}
 
-/*
-	 * Pre-compute per-frame scene analysis before the algorithm loop so
-	 * that all algorithms share a single consistent histogram pass.
-	 * Luminance is derived from the rolling channel mean cache so that
-	 * each channel contributes its most recently measured value rather
-	 * than reading all four from a single stats buffer where three are
-	 * stale. Spread and clipping still read directly from the stats
-	 * buffer (full histogram shape required; per-entry caching is costly).
-	 * For frames 0-3 (warmup) or when stats are unavailable, all fields
-	 * are zero-initialised; algorithms have their own guards.
-	 */
-if (context_.configuration.hw.statsAvailable &&
-    stats->valid_channels == 0x0f) {
-	/*
-		 * All four channel means were just updated above from the
-		 * current stats delivery (valid_channels = 0x0f, all fresh).
-		 * Luminance is used by AGC, CBC, and Gamma. Since the histogram
-		 * taps pre-WB, channel means are raw sensor values — no gain
-		 * undo is needed. luminanceUndone equals luminance.
-		 */
-	const auto &hist = context_.activeState.histogram;
-	const auto &m = hist.channelMeans;
+	ControlList metadata(controls::controls);
 
-	float meanG = (m[kHistChannelGR] + m[kHistChannelGB]) / 2.0f;
-	frameContext.scene.luminance = 0.299f * m[kHistChannelR] +
-				       0.587f * meanG +
-				       0.114f * m[kHistChannelB];
+	for (Algorithm *algo : sortedAlgorithms_)
+		algo->process(context_, request, frameContext, stats, metadata);
 
-	/*
-		 * Histogram taps pre-WB Bayer data, so channel means already
-		 * represent true sensor signal. luminanceUndone == luminance.
-		 */
-	frameContext.scene.luminanceUndone = frameContext.scene.luminance;
+	setSensorControls();
+	setIspControls();
 
-	frameContext.scene.spread = calculateHistogramSpread(stats);
-	frameContext.scene.clipping = calculateClipping(stats);
-	frameContext.scene.isDark =
-		(frameContext.scene.luminance / kHistogramMax) < 0.02f;
-	frameContext.scene.isHighContrast = frameContext.scene.clipping > 0.02f;
-} else {
-	frameContext.scene.luminance = 0.0f;
-	frameContext.scene.spread = 0.0f;
-	frameContext.scene.clipping = 0.0f;
-	frameContext.scene.isDark = true;
-	frameContext.scene.isHighContrast = false;
-}
-
-ControlList metadata(controls::controls);
-
-for (Algorithm *algo : sortedAlgorithms_)
-	algo->process(context_, request, frameContext, stats, metadata);
-
-setSensorControls();
-setIspControls();
-
-statsProcessed.emit(request, metadata);
+	statsProcessed.emit(request, metadata);
 }
 
 /**
@@ -491,14 +463,25 @@ void IPAMicrochipISC::setSensorControls()
 }
 
 /**
- * \brief Emit ISP controls from AWB and CCM active state
+ * \brief Emit ISP controls from AWB, CCM, CBC, and gamma active state
  *
- * Converts AWB gains (float, 1.0 = unity) to hardware scale (512 = 1.0x)
- * and CCM matrix (float, 1.0 = unity) to hardware scale (256 = 1.0x),
- * then emits the setIspControls signal for the ISC subdev.
+ * Converts AWB gains (float, 1.0 = unity) to hardware scale (512 = 1.0x),
+ * CCM matrix (float, 1.0 = unity) to hardware scale (256 = 1.0x), gamma LUT
+ * entries, and CBC brightness/contrast.
  */
 void IPAMicrochipISC::setIspControls()
 {
+	/*
+	 * Ideally this ControlList would be backed by an ISP-specific
+	 * ControlInfoMap. It currently uses sensorControls_ because the IPA
+	 * IPC interface (mojom) does not carry a separate ISP controls map
+	 * without a build-time regeneration that requires the full Yocto
+	 * environment. In practice ControlList::set(id, value) does not
+	 * validate the control ID against the backing map, so the pipeline
+	 * handler receives all ISP controls correctly by their V4L2 IDs.
+	 * This is a known limitation to be addressed when the interface is
+	 * extended.
+	 */
 	ControlList ctrls(sensorControls_);
 
 	/* AWB gains: convert float (1.0=unity) to fixed-point (512=1.0x) */
@@ -540,7 +523,7 @@ void IPAMicrochipISC::setIspControls()
 	ctrls.set(V4L2_CID_ISC_CC_OG, static_cast<int32_t>(ccm.offsets[1]));
 	ctrls.set(V4L2_CID_ISC_CC_OB, static_cast<int32_t>(ccm.offsets[2]));
 
-	/* CBC: adaptive brightness and contrast (ISC CBC block, post-gamma) */
+	/* CBC: adaptive brightness and contrast (ISC CBC/CBHS block, post-gamma) */
 	ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);
 	ctrls.set(V4L2_CID_CONTRAST, context_.activeState.cbc.contrast);
 

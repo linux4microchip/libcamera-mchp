@@ -46,6 +46,21 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 255.0f);
 
+	/*
+	 * Load the sensor-to-XYZ colour matrix for McCamy CCT estimation.
+	 * Tunable via ct_color_matrix in the Awb tuning block.
+	 * Defaults to kDefaultCtMatrix when absent.
+	 */
+	context.configuration.sensor.ctColorMatrix = kDefaultCtMatrix;
+	if (tuningData.contains("ct_color_matrix")) {
+		auto matList = tuningData["ct_color_matrix"].getList<float>();
+		if (matList && matList->size() == 9) {
+			std::copy(matList->begin(), matList->end(),
+				  context.configuration.sensor.ctColorMatrix.begin());
+			LOG(ISC_AWB, Debug) << "Loaded ct_color_matrix from tuning";
+		}
+	}
+
 	LOG(ISC_AWB, Debug)
 		<< "AWB initialized: smoothing=" << smoothingFactor_
 		<< " damping=" << damping_

@@ -42,7 +42,10 @@ int BlackLevelCorrection::init(IPAContext &context,
 	context.configuration.sensor.blackLevelB = tuningData["black_level_b"].get<uint32_t>(bl);
 
 	LOG(ISC_BLC, Debug)
-		<< "Black level: " << bl << " (10-bit units)";
+		<< "Black levels: R=" << context.configuration.sensor.blackLevelR
+		<< " GR=" << context.configuration.sensor.blackLevelGR
+		<< " GB=" << context.configuration.sensor.blackLevelGB
+		<< " B=" << context.configuration.sensor.blackLevelB;
 
 	return 0;
 }
