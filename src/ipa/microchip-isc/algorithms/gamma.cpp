@@ -46,6 +46,8 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 	toeInput_ = std::clamp(toeInput_, 0.01f, 0.15f);
 	toneRolloffStart_ = tuningData["tone_rolloff_start"].get<float>(toneRolloffStart_);
 	toneRolloffStart_ = std::clamp(toneRolloffStart_, 0.5f, 1.0f);
+	cdfStrength_ = tuningData["cdf_strength"].get<float>(cdfStrength_);
+	cdfStrength_ = std::clamp(cdfStrength_, 0.0f, 1.0f);
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma initialized: gamma=" << gamma_
@@ -67,8 +69,9 @@ int Gamma::configure(IPAContext &context,
 {
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 	context.activeState.gamma.gammaEff = gamma_;
+	/* No histogram available at configure time — pure power-law only */
 	computeLut(gamma_, context.activeState.gamma.lutB, bipartite, toeInput_,
-		   toneRolloffStart_);
+		   toneRolloffStart_, nullptr, 0.0f);
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutValid = true;
@@ -91,17 +94,23 @@ int Gamma::configure(IPAContext &context,
  *
  * Standard mode: pure power-law (output = input^(1/gamma)).
  *
- * Bipartite mode (SAMA7G5): a linear segment below 4% input replaces the
+ * Bipartite mode (SAMA7G5): a linear segment below toeInput replaces the
  * bottom of the power curve, lifting dark tones and preventing shadow
- * crushing. The linear slope is set so that y(kToeInput) is C0 continuous
- * (value matches the power curve at x = kToeInput). The derivative is NOT
+ * crushing. The linear slope is set so that y(toeInput) is C0 continuous
+ * (value matches the power curve at x = toeInput). The derivative is NOT
  * matched (C1 continuity would require a negative offset on the power curve).
- * In practice the kink falls between LUT entries 2 and 3 (each entry spans
- * 16 input values) and is absorbed by LUT quantisation; it is not visible
- * in rendered output.
+ *
+ * Each LUT entry spans 16/1023 ≈ 0.01565 normalised input units.  To avoid
+ * a visible step at the toe kink, toeInput must be aligned to a LUT entry
+ * boundary (i.e. an integer multiple of 16/1023).  At the recommended
+ * toeInput = 0.0313 (= 32/1023) the kink falls exactly at entry-2 boundary,
+ * the transition is absorbed by quantisation, and no step artefact appears.
+ * Misaligned values such as 0.04 (mid-entry 2–3) produce a 34-level step
+ * that is visible as a faint shadow gradient discontinuity.
  */
 void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
-		       bool bipartite, float toeInput, float rolloffStart)
+		       bool bipartite, float toeInput, float rolloffStart,
+		       const std::array<float, 64> *cdf, float cdfStrength)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
@@ -129,6 +138,19 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 			/* Standard power-law gamma */
 			y = std::pow(x, invGamma);
 		}
+
+		/*
+		 * CDF blend: mix the power-law output with the histogram CDF
+		 * value at this LUT entry.  cdf[i] is the fraction of pixels
+		 * with luminance below the midpoint of entry i's input range,
+		 * so mapping input → cdf[input] produces histogram equalisation.
+		 * Blending at cdfStrength < 1 gives partial local adaptation.
+		 *
+		 * This is applied BEFORE highlight roll-off so the roll-off
+		 * acts on the final (blended) output, not the raw CDF value.
+		 */
+		if (cdf != nullptr && cdfStrength > 0.0f)
+			y = (1.0f - cdfStrength) * y + cdfStrength * (*cdf)[i];
 
 		/*
 		 * Highlight roll-off: above rolloffStart, compress the tone
@@ -217,7 +239,51 @@ void Gamma::process(IPAContext &context,
 	gammaState.gammaEff = gammaEff;
 
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
-	computeLut(gammaEff, gammaState.lutB, bipartite, toeInput_, toneRolloffStart_);
+
+	/*
+	 * Compute the 64-point normalised CDF of the scene luminance histogram.
+	 * Used by computeLut() to blend the power-law tone curve with histogram
+	 * equalisation, providing locally-adaptive contrast enhancement.
+	 * Only computed when cdfStrength_ > 0 to avoid unnecessary work.
+	 */
+	std::array<float, 64> lut_cdf;
+	const std::array<float, 64> *cdfPtr = nullptr;
+	if (cdfStrength_ > 0.0f) {
+		calculateLuminanceCdf(stats, lut_cdf);
+		cdfPtr = &lut_cdf;
+	}
+
+	/*
+	 * Compute the new LUT from the smoothed gamma exponent and CDF.
+	 * Apply temporal smoothing directly on the 64 LUT entries rather
+	 * than only on the scalar gammaEff: this is essential when CDF
+	 * blending is active because the CDF itself varies frame-to-frame
+	 * and scalar smoothing cannot suppress per-entry flicker.
+	 *
+	 * The previous LUT (gammaState.lutB) is used as the "old" value;
+	 * the new LUT is written into a temporary and blended in-place.
+	 */
+	std::array<uint32_t, 64> newLut;
+	computeLut(gammaEff, newLut, bipartite, toeInput_, toneRolloffStart_,
+		   cdfPtr, cdfStrength_);
+
+	for (unsigned int i = 0; i < 64; i++) {
+		float smoothed = smoothingFactor_ * static_cast<float>(gammaState.lutB[i]) +
+				 (1.0f - smoothingFactor_) * static_cast<float>(newLut[i]);
+		gammaState.lutB[i] = static_cast<uint32_t>(std::round(smoothed));
+	}
+
+	/*
+	 * Enforce LUT monotonicity: per-entry integer rounding of the
+	 * smoothed float sequence can produce a local inversion where
+	 * lut[i] < lut[i-1].  The ISC hardware requires a non-decreasing
+	 * LUT; a non-monotone table causes incorrect tone mapping on the
+	 * affected range.  Clamp each entry to be at least as large as its
+	 * predecessor to guarantee hardware correctness.
+	 */
+	for (unsigned int i = 1; i < 64; i++)
+		gammaState.lutB[i] = std::max(gammaState.lutB[i], gammaState.lutB[i - 1]);
+
 	gammaState.lutG = gammaState.lutB;
 	gammaState.lutR = gammaState.lutB;
 
@@ -226,6 +292,7 @@ void Gamma::process(IPAContext &context,
 		<< " lumNorm=" << lumNorm
 		<< " gammaAdapt=" << gammaAdapt
 		<< " gammaEff=" << gammaEff
+		<< " cdfStrength=" << cdfStrength_
 		<< " bipartite=" << bipartite;
 }
 

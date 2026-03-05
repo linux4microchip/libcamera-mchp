@@ -94,6 +94,75 @@ float calculateHighlightMean(const isc_stat_buffer *stats, unsigned int channel)
 }
 
 /**
+ * \brief Compute a 64-point normalised luminance CDF aligned to LUT entries
+ * \param[in] stats Pointer to ISC statistics buffer
+ * \param[out] lut_cdf 64-element array filled with CDF values in [0, 1]
+ *
+ * Builds a combined luminance histogram by weighting the four Bayer channels
+ * with BT.601 coefficients (same as calculateHistogramSpread), then computes
+ * the normalised cumulative distribution function (CDF) at the midpoint of
+ * each of the 64 gamma LUT input ranges.
+ *
+ * The ISC gamma LUT has 64 entries; entry i covers the 10-bit input range
+ * [i*16 .. (i+1)*16 - 1].  The ISC histogram has 512 bins; bin k represents
+ * input values [k*2 .. k*2+1].  Therefore LUT entry i corresponds to
+ * histogram bins [i*8 .. (i+1)*8 - 1].  The CDF is sampled at the midpoint
+ * bin i*8 + 4, giving the fraction of pixels with luminance below the
+ * centre of that LUT entry's input range.
+ *
+ * lut_cdf[j] = fraction of pixels with intensity ≤ (j*16 + 8) / 1023
+ *
+ * When blended with a power-law tone curve in computeLut(), a cdf_strength
+ * of 1.0 produces full histogram equalisation (uniform output distribution),
+ * while 0.0 leaves the power law unchanged.  Intermediate values give a
+ * locally-adaptive curve that stretches low-contrast histogram regions.
+ *
+ * Degenerate case (all bins zero): fills lut_cdf with a linear ramp [0..1]
+ * so computeLut() degenerates gracefully to the pure power-law path.
+ */
+void calculateLuminanceCdf(const isc_stat_buffer *stats,
+			   std::array<float, 64> &lut_cdf)
+{
+	/* BT.601 channel weights: GR=0.2935, R=0.299, GB=0.2935, B=0.114 */
+	static constexpr float kWeights[4] = { 0.2935f, 0.299f, 0.2935f, 0.114f };
+
+	std::array<float, kHistBins> combined = {};
+	float total = 0.0f;
+
+	for (unsigned int ch = 0; ch < 4; ch++) {
+		float w = kWeights[ch];
+		for (unsigned int i = 0; i < kHistBins; i++) {
+			float v = w * static_cast<float>(stats->hist[ch].hist_bins[i]);
+			combined[i] += v;
+			total += v;
+		}
+	}
+
+	if (total < 1.0f) {
+		/* Degenerate: produce a linear ramp so the power-law takes over */
+		for (unsigned int j = 0; j < 64; j++)
+			lut_cdf[j] = static_cast<float>(j) / 63.0f;
+		return;
+	}
+
+	/*
+	 * Build cumulative sum, then sample at midpoint of each LUT entry.
+	 * LUT entry j midpoint → histogram bin j*8 + 4.
+	 */
+	float cumulative = 0.0f;
+	unsigned int histBin = 0;
+	for (unsigned int j = 0; j < 64; j++) {
+		unsigned int midBin = j * 8 + 4;
+		/* Accumulate up to (and including) the midpoint bin */
+		while (histBin <= midBin && histBin < kHistBins) {
+			cumulative += combined[histBin];
+			histBin++;
+		}
+		lut_cdf[j] = cumulative / total;
+	}
+}
+
+/**
  * \brief Calculate overall scene luminance from all histogram channels
  * \param[in] stats Pointer to ISC statistics buffer
  * \return Estimated luminance (0.0-511.0 range)

@@ -139,6 +139,9 @@ algorithms:
       strength: 0.3
       target_output: 0.45
       smoothing_factor: 0.3
+      # Slightly higher CDF strength for NoIR: IR washes out tonal contrast,
+      # so stronger local adaptation restores perceived detail.
+      cdf_strength: 0.25
       dark_scene_threshold: 0.01
       toe_input: 0.0313
       # Lower rolloff threshold for NoIR: IR causes highlights to clip

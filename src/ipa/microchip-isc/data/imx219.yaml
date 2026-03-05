@@ -140,6 +140,13 @@ algorithms:
       target_output: 0.45
       # Temporal smoothing [0.0-1.0]. Higher values reduce flicker.
       smoothing_factor: 0.3
+      # Histogram CDF blend strength [0.0-1.0].
+      # 0.0 = pure power-law (no local adaptation).
+      # 0.2 = 20% histogram equalisation blended with 80% power-law.
+      #       Lifts flat/foggy histogram regions without over-processing
+      #       scenes that already use the full dynamic range.
+      # 1.0 = full histogram equalisation (maximum local contrast).
+      cdf_strength: 0.2
       # Normalised luminance floor below which adaptive gamma update is skipped.
       dark_scene_threshold: 0.01
       # Normalised input breakpoint for bipartite linear toe (SAMA7G5 only).

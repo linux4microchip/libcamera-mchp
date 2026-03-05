@@ -48,7 +48,9 @@ public:
 private:
 	static void computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 			       bool bipartite = false, float toeInput = 0.04f,
-			       float rolloffStart = 1.0f);
+			       float rolloffStart = 1.0f,
+			       const std::array<float, 64> *cdf = nullptr,
+			       float cdfStrength = 0.0f);
 
 	/* Base gamma exponent (e.g. 2.2 for sRGB-like encoding). */
 	float gamma_ = 2.2f;
@@ -84,6 +86,19 @@ private:
 	 * 0.01–0.15, typical 0.04).
 	 */
 	float toeInput_ = 0.04f;
+
+	/*
+	 * Histogram CDF blend strength [0.0–1.0].
+	 * At 0.0 the LUT is a pure power-law (current behaviour).
+	 * At 1.0 full histogram equalisation is applied: each LUT entry maps
+	 * its input quantile directly to output, producing maximum local
+	 * contrast regardless of scene distribution.
+	 * Intermediate values blend the two, giving locally-adaptive contrast
+	 * enhancement that scales with scene flatness. Temporal LUT smoothing
+	 * prevents flicker from frame-to-frame histogram variation.
+	 * Tunable via YAML cdf_strength (typical 0.25–0.4).
+	 */
+	float cdfStrength_ = 0.0f;
 
 	/*
 	 * Normalised output level above which highlight roll-off is applied.
