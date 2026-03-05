@@ -67,6 +67,9 @@ algorithms:
       # Minimum luminance (histogram units 0-511) for AE stability check.
       # Below this floor the loop is treated as unstable regardless of error.
       ae_luminance_floor: 0.5
+      # Mains flicker avoidance: set to 50 or 60 to round shutter to the
+      # nearest multiple of the mains half-period. 0 = disabled (outdoor/DC).
+      flicker_hz: 0
 
       convergence:
         speed: 0.3
