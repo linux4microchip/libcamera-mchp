@@ -132,6 +132,15 @@ struct IPAActiveState {
 		 * with CCM so both modules track the same illuminant estimate.
 		 */
 		unsigned int ct;
+		/*
+		 * True once AWB has declared the gains stable (per-channel
+		 * delta below stabilityThreshold_). Read by CCM to match its
+		 * convergence speed: when false CCM uses a faster smoothing
+		 * factor so the colour matrix tracks the changing CT estimate
+		 * in sync with the gains, preventing a mismatch where new AWB
+		 * gains are applied with an old CCM matrix.
+		 */
+		bool awbConverged;
 	} awb;
 
 	struct {

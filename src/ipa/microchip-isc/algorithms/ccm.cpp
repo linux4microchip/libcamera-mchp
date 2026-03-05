@@ -243,22 +243,34 @@ void Ccm::process(IPAContext &context,
 	/*
 	 * Adaptive temporal smoothing based on CT rate of change.
 	 * Large CT jumps indicate scene changes and warrant immediate
-	 * matrix snap (sf=0). Moderate changes use a faster-than-normal
-	 * factor to track the changing illuminant estimate without lag.
+	 * matrix snap (sf=0). Moderate changes or AWB still converging
+	 * use a faster-than-normal factor to track the changing illuminant
+	 * estimate in sync with AWB gains, preventing a transient mismatch
+	 * where new AWB gains are applied with a lagging colour matrix.
 	 *
-	 * The AWB convergence flag is intentionally not used here: it
-	 * introduces a cross-module timing dependency where CCM's mode
-	 * changes on the same frame AWB declares stability while CT is
-	 * still drifting, causing visible colour casts on transitions.
+	 * The CT-delta guard takes priority: CCM speed is driven by how fast
+	 * CT is changing, not solely by the AWB stable flag, so the matrix
+	 * does not unnecessarily slam on the same frame AWB declares stable
+	 * while CT has already settled for multiple frames.
 	 */
 	auto &ccm = context.activeState.ccm;
 	if (frame > 0) {
 		float ctDelta = std::abs(ct - lastCt_);
 		float sf = smoothingFactor_;
-		if (ctDelta > ctSnapThreshold_)
-			sf = 0.0f;   /* Snap immediately on large scene change */
-		else if (ctDelta > ctFastThreshold_)
-			sf = smoothingFactor_ * ctFastFactor_;  /* Faster for moderate change */
+		if (ctDelta > ctSnapThreshold_) {
+			/* Large scene change: snap immediately */
+			sf = 0.0f;
+		} else if (ctDelta > ctFastThreshold_ ||
+			   !context.activeState.awb.awbConverged) {
+			/*
+			 * Moderate CT change or AWB still converging: use
+			 * faster adaptation so the colour matrix tracks the
+			 * changing illuminant estimate in sync with the AWB
+			 * gains. Prevents a transient mismatch where new gains
+			 * are applied with an old matrix during scene changes.
+			 */
+			sf = smoothingFactor_ * ctFastFactor_;
+		}
 
 		for (size_t i = 0; i < 9; i++)
 			matrix[i] = sf * ccm.matrix[i] + (1.0f - sf) * matrix[i];

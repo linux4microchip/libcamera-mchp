@@ -289,26 +289,26 @@ void Awb::process(IPAContext &context,
 		 */
 		if (highlightWeight_ > 0.0f) {
 			float hlGR = calculateHighlightMean(stats, kHistChannelGR);
-			float hlR  = calculateHighlightMean(stats, kHistChannelR);
+			float hlR = calculateHighlightMean(stats, kHistChannelR);
 			float hlGB = calculateHighlightMean(stats, kHistChannelGB);
-			float hlB  = calculateHighlightMean(stats, kHistChannelB);
+			float hlB = calculateHighlightMean(stats, kHistChannelB);
 
 			/* Gain-undo highlight means with the same applied gains */
 			if (frameContext.awb.rGain > 0.0 &&
 			    frameContext.awb.bGain > 0.0 &&
 			    frameContext.awb.grGain > 0.0 &&
 			    frameContext.awb.gbGain > 0.0) {
-				hlR  /= frameContext.awb.rGain;
-				hlB  /= frameContext.awb.bGain;
+				hlR /= frameContext.awb.rGain;
+				hlB /= frameContext.awb.bGain;
 				hlGR /= frameContext.awb.grGain;
 				hlGB /= frameContext.awb.gbGain;
 			}
 
 			float w = highlightWeight_;
 			meanGR = (1.0f - w) * meanGR + w * hlGR;
-			meanR  = (1.0f - w) * meanR  + w * hlR;
+			meanR = (1.0f - w) * meanR + w * hlR;
 			meanGB = (1.0f - w) * meanGB + w * hlGB;
-			meanB  = (1.0f - w) * meanB  + w * hlB;
+			meanB = (1.0f - w) * meanB + w * hlB;
 		}
 
 		/* avgGreen for Robertson CT estimation only */
@@ -442,6 +442,9 @@ else
 		<< " < threshold=" << darkSceneThreshold_
 		<< "), CT frozen at " << awb.ct << " K";
 }
+
+/* Publish convergence state for CCM to pace its own smoothing */
+awb.awbConverged = awbStable_;
 
 std::array<float, 2> gains = {
 	static_cast<float>(awb.rGain),
