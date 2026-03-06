@@ -196,7 +196,7 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 void Gamma::process(IPAContext &context,
 		    const uint32_t frame,
 		    IPAFrameContext &frameContext,
-		    const isc_stat_buffer *stats,
+		    const mchp_isc_stat_buffer *stats,
 		    [[maybe_unused]] ControlList &metadata)
 {
 	auto &gammaState = context.activeState.gamma;

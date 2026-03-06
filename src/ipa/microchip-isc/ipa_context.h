@@ -11,6 +11,7 @@
 #include <stdint.h>
 
 #include <libcamera/base/utils.h>
+
 #include <libcamera/controls.h>
 
 #include "libcamera/internal/bayer_format.h"
@@ -117,10 +118,10 @@ struct IPAActiveState {
 	} agc;
 
 	struct {
-		double rGain;
-		double bGain;
-		double grGain;
-		double gbGain;
+		float rGain;
+		float bGain;
+		float grGain;
+		float gbGain;
 		int32_t rOffset;
 		int32_t bOffset;
 		int32_t grOffset;
@@ -173,14 +174,24 @@ struct IPAActiveState {
 
 	struct {
 		/*
-		 * Rolling per-channel mean cache for the ISC 4-channel histogram.
-		 * The ISC updates one Bayer channel per frame (GR→R→GB→B cycle).
-		 * Reading all four channels from a single stats buffer mixes fresh
-		 * and stale data; this cache holds each channel's most recent
-		 * measured mean. Updated in processStats() using valid_channels.
+		 * Per-channel histogram means from the most recent stats delivery.
+		 * The ISC cycles GR→R→GB→B, but isc_stats_isr() fires only after
+		 * the B channel completes, delivering all 4 channels together with
+		 * valid_channels = 0x0f.  All four means are therefore always fresh
+		 * at delivery time and updated together in processStats().
 		 * Indexed by kHistChannelGR/R/GB/B constants from common.h.
 		 */
 		std::array<float, 4> channelMeans;
+		/*
+		 * Frame sequence number at which each channel's histogram was
+		 * measured (snapshotted in the kernel at HISDONE IRQ time).
+		 * Because each Bayer channel is measured on a different frame
+		 * within the 4-frame cycle, the four capture_frame values differ
+		 * by 0–3.  AWB uses these to look up the exposure and gains that
+		 * were active when each channel was measured, enabling per-channel
+		 * exposure normalization before gain computation.
+		 */
+		std::array<uint32_t, 4> captureFrame;
 	} histogram;
 
 	struct {
@@ -215,10 +226,10 @@ struct IPAFrameContext : public FrameContext {
 	} agc;
 
 	struct {
-		double rGain;
-		double bGain;
-		double grGain;
-		double gbGain;
+		float rGain;
+		float bGain;
+		float grGain;
+		float gbGain;
 		bool autoEnabled;
 	} awb;
 
@@ -226,21 +237,24 @@ struct IPAFrameContext : public FrameContext {
 	 * Per-frame scene analysis: computed once in processStats() before
 	 * the algorithm loop and shared by all algorithms to avoid redundant
 	 * histogram passes. Algorithms must read these values rather than
-	 * calling calculateLuminance() / calculateHistogramSpread() /
-	 * calculateClipping() directly.
+	 * calling calculateHistogramSpread() / calculateClipping() directly.
 	 *
-	 * luminance:     BT.601-weighted mean (histogram units 0–511).
-	 * spread:        P5–P95 inter-percentile range / 512 (0–1).
-	 * clipping:      fraction of pixels in the top 4 bins (0–1).
-	 * isDark:        luminance / 511 < darkSceneThreshold (approx 0.02).
+	 * luminance:      BT.601-weighted mean from the pre-WB histogram
+	 *                 (histogram units 0–511). The ISC histogram taps
+	 *                 vp_data (pre-WB, post-DPC), so channel means are
+	 *                 raw sensor values independent of AWB gains. Used
+	 *                 by AGC, CBC, and Gamma.
+	 * spread:         P5–P95 inter-percentile range / 512 (0–1).
+	 * clipping:       fraction of pixels in the top 4 bins (0–1).
+	 * isDark:         luminance / 511 < darkSceneThreshold (approx 0.02).
 	 * isHighContrast: clipping exceeds the AGC clip threshold (~0.02).
 	 */
 	struct {
 		float luminance;
 		float spread;
 		float clipping;
-		bool  isDark;
-		bool  isHighContrast;
+		bool isDark;
+		bool isHighContrast;
 	} scene;
 };
 

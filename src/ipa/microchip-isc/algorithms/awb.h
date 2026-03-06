@@ -28,7 +28,7 @@ public:
 			  const ControlList &controls) override;
 	void process(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
-		     const isc_stat_buffer *stats,
+		     const mchp_isc_stat_buffer *stats,
 		     ControlList &metadata) override;
 
 private:
@@ -68,10 +68,10 @@ private:
 	 * frames have sensible colour before the AWB loop converges.
 	 * Set to the D65 grey-card gains measured on the production sensor.
 	 */
-	double refRGain_ = 1.0;
-	double refBGain_ = 1.0;
-	double refGrGain_ = 1.0;
-	double refGbGain_ = 1.0;
+	float refRGain_ = 1.0f;
+	float refBGain_ = 1.0f;
+	float refGrGain_ = 1.0f;
+	float refGbGain_ = 1.0f;
 
 	/*
 	 * Blend fraction [0.0–1.0] of the highlight-based illuminant estimate

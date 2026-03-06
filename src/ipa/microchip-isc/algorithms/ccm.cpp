@@ -223,7 +223,7 @@ void Ccm::interpolateMatrix(float ct,
 void Ccm::process(IPAContext &context,
 		  const uint32_t frame,
 		  [[maybe_unused]] IPAFrameContext &frameContext,
-		  [[maybe_unused]] const isc_stat_buffer *stats,
+		  [[maybe_unused]] const mchp_isc_stat_buffer *stats,
 		  [[maybe_unused]] ControlList &metadata)
 {
 	/*

@@ -4,26 +4,28 @@
  *
  * Microchip ISC statistics buffer definition
  *
- * The ISC hardware provides a DMA-delivered statistics buffer containing
- * 512-bin histograms for each of the four Bayer channels (GR, R, GB, B).
- * This structure matches the kernel driver's stat buffer layout.
+ * Mirror of the kernel UAPI struct mchp_isc_stat_buffer defined in
+ * include/uapi/linux/media/microchip/isc-config.h.  Must be kept in
+ * sync with the kernel layout; any divergence silently corrupts all
+ * per-frame histogram reads.
+ *
+ * Layout (natural C alignment, no packing):
+ *   timestamp_ns (8) + frame_number (4) + meas_type (4)
+ *   + hist[4] × mchp_isc_hist_channel (2072 each)
+ *   + valid_channels (1) + bayer_pattern (1) + reserved[3] (6)
  */
 
 #pragma once
 
 #include <stdint.h>
 
-struct isc_stat_buffer {
-	uint32_t frame_number;
-	uint64_t timestamp;
-	uint32_t meas_type;
+/* Number of histogram bins per Bayer channel. */
+static constexpr unsigned int kIscHistBins = 512;
+/* Number of Bayer channels in the stats buffer (GR, R, GB, B). */
+static constexpr unsigned int kIscHistChannels = 4;
 
-	struct {
-		uint32_t hist_bins[512];
-		uint32_t hist_min;
-		uint32_t hist_max;
-		uint32_t total_pixels;
-	} hist[4]; /* GR, R, GB, B channels */
+/* Measurement type flags (meas_type bitmask). */
+static constexpr uint32_t kIscStatMeasHist = 1u << 0;
 
 /* bayer_pattern values matching MCHP_ISC_BAYCFG_* kernel constants. */
 static constexpr uint8_t kIscBaycfgGRGR = 0;
@@ -62,5 +64,37 @@ struct mchp_isc_stat_buffer {
 	struct mchp_isc_hist_channel hist[kIscHistChannels]; /**< GR, R, GB, B */
 	uint8_t valid_channels; /**< Bitmask of valid channels in hist[] */
 	uint8_t bayer_pattern; /**< Active CFA pattern (kIscBaycfg*) */
-	uint16_t reserved[3];
+	/*
+	 * Padding to match the kernel UAPI layout exactly.
+	 * Must be uint8_t[6], NOT uint16_t[3]: after two consecutive uint8_t
+	 * fields, a uint16_t array would require 2-byte alignment, potentially
+	 * inserting 0 or 1 byte of implicit padding before it depending on
+	 * the ABI. uint8_t requires only 1-byte alignment — no implicit
+	 * padding, matching the C99 kernel struct layout byte-for-byte.
+	 */
+	uint8_t reserved[6];
 };
+
+/*
+ * Compile-time size check against the kernel UAPI struct.
+ * mchp_isc_hist_channel: 512*4 + 4 + 4 + 4 + 4 + 8 = 2072 bytes
+ * mchp_isc_stat_buffer:  8 + 4 + 4 + 4*2072 + 1 + 1 + 6 = 8308 bytes
+ * If this assert fires, the kernel UAPI has changed and this header
+ * must be updated — otherwise every histogram read is corrupted silently.
+ */
+/*
+ * Size breakdown (ARM 32-bit / natural alignment):
+ *   mchp_isc_hist_channel:
+ *     hist_bins[512]    = 2048
+ *     hist_min/max/total/capture_frame (4×uint32) = 16
+ *     capture_ts (uint64, 8-byte aligned at offset 2064) = 8
+ *     sizeof = 2072
+ *   mchp_isc_stat_buffer:
+ *     timestamp_ns(8) + frame_number(4) + meas_type(4) = 16
+ *     hist[4] = 4 × 2072 = 8288
+ *     valid_channels(1) + bayer_pattern(1) + reserved[6](6) = 8
+ *     sizeof = 8312
+ */
+static_assert(sizeof(mchp_isc_stat_buffer) == 8312,
+	      "mchp_isc_stat_buffer size mismatch with kernel UAPI — "
+	      "update isc_stats.h to match include/uapi/linux/media/microchip/isc-config.h");

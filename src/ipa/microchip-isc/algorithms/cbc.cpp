@@ -156,7 +156,7 @@ void Cbc::queueRequest(IPAContext &context,
 void Cbc::process(IPAContext &context,
 		  const uint32_t frame,
 		  IPAFrameContext &frameContext,
-		  [[maybe_unused]] const isc_stat_buffer *stats,
+		  [[maybe_unused]] const mchp_isc_stat_buffer *stats,
 		  [[maybe_unused]] ControlList &metadata)
 {
 	auto &cbc = context.activeState.cbc;

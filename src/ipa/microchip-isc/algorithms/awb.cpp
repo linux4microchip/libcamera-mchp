@@ -53,10 +53,10 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 
 	if (tuningData.contains("reference_gains")) {
 		const YamlObject &rg = tuningData["reference_gains"];
-		refRGain_ = rg["r"].get<double>(refRGain_);
-		refBGain_ = rg["b"].get<double>(refBGain_);
-		refGrGain_ = rg["gr"].get<double>(refGrGain_);
-		refGbGain_ = rg["gb"].get<double>(refGbGain_);
+		refRGain_ = rg["r"].get<float>(refRGain_);
+		refBGain_ = rg["b"].get<float>(refBGain_);
+		refGrGain_ = rg["gr"].get<float>(refGrGain_);
+		refGbGain_ = rg["gb"].get<float>(refGbGain_);
 	}
 
 	highlightWeight_ = tuningData["highlight_weight"].get<float>(highlightWeight_);
@@ -215,7 +215,7 @@ void Awb::queueRequest(IPAContext &context,
 void Awb::process(IPAContext &context,
 		  const uint32_t frame,
 		  IPAFrameContext &frameContext,
-		  const isc_stat_buffer *stats,
+		  const mchp_isc_stat_buffer *stats,
 		  ControlList &metadata)
 {
 	auto &awb = context.activeState.awb;
@@ -223,8 +223,8 @@ void Awb::process(IPAContext &context,
 	/* Skip computation when histogram stats are not available (non-RAW input) */
 	if (!context.configuration.hw.statsAvailable) {
 		std::array<float, 2> gains = {
-			static_cast<float>(awb.rGain),
-			static_cast<float>(awb.bGain),
+			awb.rGain,
+			awb.bGain,
 		};
 		metadata.set(controls::ColourGains, gains);
 		metadata.set(controls::AwbLocked, awbStable_);
@@ -237,8 +237,8 @@ void Awb::process(IPAContext &context,
 	/* In manual mode, report current gains and skip auto computation */
 	if (!frameContext.awb.autoEnabled) {
 		std::array<float, 2> gains = {
-			static_cast<float>(awb.rGain),
-			static_cast<float>(awb.bGain),
+			awb.rGain,
+			awb.bGain,
 		};
 		metadata.set(controls::ColourGains, gains);
 		metadata.set(controls::AwbLocked, awbStable_);
@@ -249,17 +249,15 @@ void Awb::process(IPAContext &context,
 	}
 
 	/*
-	 * Read per-channel means from the rolling cache in activeState.
-	 * The cache is updated in processStats() using the valid_channels
-	 * bitmask so each entry reflects the channel's most recent
-	 * measurement rather than stale data from a combined stats buffer
-	 * where three of four channels are always one to three frames old.
+	 * Read per-channel means from activeState. All four channels are
+	 * always fresh — the ISC stats buffer delivers all four together once
+	 * per 4-frame cycle (isc_stats_isr() fires only after B completes).
 	 */
-	const auto &cm = context.activeState.histogram.channelMeans;
-	float meanGR = cm[kHistChannelGR];
-	float meanR = cm[kHistChannelR];
-	float meanGB = cm[kHistChannelGB];
-	float meanB = cm[kHistChannelB];
+	const auto &hist = context.activeState.histogram;
+	float meanGR = hist.channelMeans[kHistChannelGR];
+	float meanR = hist.channelMeans[kHistChannelR];
+	float meanGB = hist.channelMeans[kHistChannelGB];
+	float meanB = hist.channelMeans[kHistChannelB];
 
 	/*
 	 * Guard against AWB updates in near-dark scenes. The check uses
@@ -274,18 +272,33 @@ void Awb::process(IPAContext &context,
 
 	if (lumApplied >= darkSceneThreshold_) {
 		/*
-		 * The ISC histogram is collected after white balance gains are
-		 * applied by the hardware. Undo the previously applied gains
-		 * stored in frameContext to recover the true sensor illuminant
-		 * signal for CT estimation and grey-world gain computation.
+		 * Per-channel exposure-normalized gain undo.
+		 *
+		 * Each Bayer channel is measured on a different frame within
+		 * the 4-frame GR→R→GB→B cycle. hist.captureFrame[ch] records
+		 * the frame sequence number when each channel's histogram was
+		 * actually collected (snapshotted at HISDONE IRQ time in the
+		 * kernel). Using the gains from the current delivery frame for
+		 * all four channels is incorrect: those gains may have changed
+		 * in the 0–3 frames between measurement and delivery.
+		 *
+		 * Look up each channel's frame context using its captureFrame
+		 * to recover the AWB gains that were applied to the hardware
+		 * when that specific channel's histogram was measured. This
+		 * gives a per-channel gain-undone mean that accurately reflects
+		 * the sensor's illuminant signal independent of gain history.
 		 */
-		if (frameContext.awb.rGain > 0.0 && frameContext.awb.bGain > 0.0 &&
-		    frameContext.awb.grGain > 0.0 && frameContext.awb.gbGain > 0.0) {
-			meanR /= frameContext.awb.rGain;
-			meanB /= frameContext.awb.bGain;
-			meanGR /= frameContext.awb.grGain;
-			meanGB /= frameContext.awb.gbGain;
-		}
+		auto undoGain = [&](float mean, unsigned int ch, auto gainFn) -> float {
+			uint32_t cf = hist.captureFrame[ch];
+			const IPAFrameContext &fc = context.frameContexts.get(cf);
+			float g = gainFn(fc.awb);
+			return (g > 0.0f) ? mean / g : mean;
+		};
+
+		meanGR = undoGain(meanGR, kHistChannelGR, [](const auto &a) { return a.grGain; });
+		meanR = undoGain(meanR, kHistChannelR, [](const auto &a) { return a.rGain; });
+		meanGB = undoGain(meanGB, kHistChannelGB, [](const auto &a) { return a.gbGain; });
+		meanB = undoGain(meanB, kHistChannelB, [](const auto &a) { return a.bGain; });
 
 		/*
 		 * Blend full-frame grey-world means with highlight-based means.
@@ -300,16 +313,11 @@ void Awb::process(IPAContext &context,
 			float hlGB = calculateHighlightMean(stats, kHistChannelGB);
 			float hlB = calculateHighlightMean(stats, kHistChannelB);
 
-			/* Gain-undo highlight means with the same applied gains */
-			if (frameContext.awb.rGain > 0.0 &&
-			    frameContext.awb.bGain > 0.0 &&
-			    frameContext.awb.grGain > 0.0 &&
-			    frameContext.awb.gbGain > 0.0) {
-				hlR /= frameContext.awb.rGain;
-				hlB /= frameContext.awb.bGain;
-				hlGR /= frameContext.awb.grGain;
-				hlGB /= frameContext.awb.gbGain;
-			}
+			/* Gain-undo highlight means using per-channel captureFrame gains */
+			hlGR = undoGain(hlGR, kHistChannelGR, [](const auto &a) { return a.grGain; });
+			hlR = undoGain(hlR, kHistChannelR, [](const auto &a) { return a.rGain; });
+			hlGB = undoGain(hlGB, kHistChannelGB, [](const auto &a) { return a.gbGain; });
+			hlB = undoGain(hlB, kHistChannelB, [](const auto &a) { return a.bGain; });
 
 			float w = highlightWeight_;
 			meanGR = (1.0f - w) * meanGR + w * hlGR;
@@ -336,28 +344,22 @@ void Awb::process(IPAContext &context,
 		 * grGain = 1.0 (GR is the reference); rGain and bGain must
 		 * use the same reference so all four channels equalise to GR.
 		 */
-		double rGain = std::clamp(static_cast<double>(meanGR / meanR),
-					  static_cast<double>(gainMin_),
-					  static_cast<double>(gainMax_));
-		double bGain = std::clamp(static_cast<double>(meanGR / meanB),
-					  static_cast<double>(gainMin_),
-					  static_cast<double>(gainMax_));
-		double grGain = 1.0;
-		double gbGain = std::clamp(static_cast<double>(meanGR / meanGB),
-					   static_cast<double>(gbGainMin_),
-					   static_cast<double>(gbGainMax_));
+		float rGain = std::clamp(meanGR / meanR, gainMin_, gainMax_);
+		float bGain = std::clamp(meanGR / meanB, gainMin_, gainMax_);
+		float grGain = 1.0f;
+		float gbGain = std::clamp(meanGR / meanGB, gbGainMin_, gbGainMax_);
 
-		if (frame > 0 && awb.rGain > 0.0) {
-			double rDelta = std::abs(rGain - awb.rGain) / awb.rGain;
-			double bDelta = std::abs(bGain - awb.bGain) / awb.bGain;
-			double gbDelta = std::abs(gbGain - awb.gbGain) / awb.gbGain;
+		if (frame > 0 && awb.rGain > 0.0f) {
+			float rDelta = std::abs(rGain - awb.rGain) / awb.rGain;
+			float bDelta = std::abs(bGain - awb.bGain) / awb.bGain;
+			float gbDelta = std::abs(gbGain - awb.gbGain) / awb.gbGain;
 
 			/*
 			 * Hysteresis: enter stable below stabilityThreshold_;
 			 * only exit when delta exceeds resumeThreshold_ (2x).
 			 * Prevents colour flicker near the stability boundary.
 			 */
-			double maxDelta = std::max({ rDelta, bDelta, gbDelta });
+			float maxDelta = std::max({ rDelta, bDelta, gbDelta });
 			if (!awbStable_)
 				awbStable_ = maxDelta < stabilityThreshold_;
 			else if (maxDelta > resumeThreshold_)
@@ -453,10 +455,7 @@ else
 /* Publish convergence state for CCM to pace its own smoothing */
 awb.awbConverged = awbStable_;
 
-std::array<float, 2> gains = {
-	static_cast<float>(awb.rGain),
-	static_cast<float>(awb.bGain),
-};
+std::array<float, 2> gains = { awb.rGain, awb.bGain };
 metadata.set(controls::ColourGains, gains);
 metadata.set(controls::AwbLocked, awbStable_);
 

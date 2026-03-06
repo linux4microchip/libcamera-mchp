@@ -28,7 +28,7 @@ struct IscParams {
 };
 
 using Module = ipa::Module<IPAContext, IPAFrameContext, IPACameraSensorInfo,
-			   IscParams, isc_stat_buffer>;
+			   IscParams, mchp_isc_stat_buffer>;
 
 } /* namespace ipa::microchip_isc */
 

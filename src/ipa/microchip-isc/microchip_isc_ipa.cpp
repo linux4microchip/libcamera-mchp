@@ -8,8 +8,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <map>
 #include <string.h>
+#include <map>
 #include <vector>
 
 #include <linux/v4l2-controls.h>
@@ -19,6 +19,7 @@
 #include <libcamera/base/span.h>
 
 #include <libcamera/control_ids.h>
+
 #include <libcamera/ipa/ipa_interface.h>
 #include <libcamera/ipa/ipa_module_info.h>
 #include <libcamera/ipa/microchip_isc_ipa_interface.h>
@@ -147,9 +148,9 @@ int IPAMicrochipISC::init(const IPASettings &settings,
 	 * them during their init() calls below. The configure() path also
 	 * writes hwCaps on each reconfigure, so these are always current.
 	 */
-	context_.configuration.hw.hasDpc           = ipaConfig.hwCaps.hasDpc;
+	context_.configuration.hw.hasDpc = ipaConfig.hwCaps.hasDpc;
 	context_.configuration.hw.hasBipartiteGamma = ipaConfig.hwCaps.hasBipartiteGamma;
-	context_.configuration.hw.hasCbhs          = ipaConfig.hwCaps.hasCbhs;
+	context_.configuration.hw.hasCbhs = ipaConfig.hwCaps.hasCbhs;
 
 	LOG(ISC_IPA, Debug)
 		<< "Platform capabilities: hasDpc=" << ipaConfig.hwCaps.hasDpc
@@ -254,9 +255,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	 * Re-apply on each configure() in case the IPA is shared across
 	 * multiple camera instances with different hardware variants.
 	 */
-	context_.configuration.hw.hasDpc           = ipaConfig.hwCaps.hasDpc;
+	context_.configuration.hw.hasDpc = ipaConfig.hwCaps.hasDpc;
 	context_.configuration.hw.hasBipartiteGamma = ipaConfig.hwCaps.hasBipartiteGamma;
-	context_.configuration.hw.hasCbhs          = ipaConfig.hwCaps.hasCbhs;
+	context_.configuration.hw.hasCbhs = ipaConfig.hwCaps.hasCbhs;
 
 	/*
 	 * statsAvailable requires both a valid Bayer input (bayerOrder ≠
@@ -281,16 +282,17 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	 * AWB: start with identity gains. Awb::configure() will replace these
 	 * with the YAML reference_gains once the algorithm runs.
 	 */
-	context_.activeState.awb.rGain = 1.0;
-	context_.activeState.awb.bGain = 1.0;
-	context_.activeState.awb.grGain = 1.0;
-	context_.activeState.awb.gbGain = 1.0;
+	context_.activeState.awb.rGain = 1.0f;
+	context_.activeState.awb.bGain = 1.0f;
+	context_.activeState.awb.grGain = 1.0f;
+	context_.activeState.awb.gbGain = 1.0f;
 	context_.activeState.awb.autoEnabled = true;
 	context_.activeState.awb.ct = 5500; /* Neutral daylight default */
 	context_.activeState.awb.awbConverged = false;
 
 	/* Channel mean cache: reset to zero so warmup guard is reliable */
 	context_.activeState.histogram.channelMeans.fill(0.0f);
+	context_.activeState.histogram.captureFrame.fill(0);
 
 	/*
 	 * Black level correction:
@@ -361,6 +363,85 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 			return ret;
 	}
 
+	/*
+	 * Advertise sensor-mode-dependent controls: ExposureTime, AnalogueGain,
+	 * and FrameDurationLimits. These are placed here (configure) rather than
+	 * in agc::init() because their ranges depend on the current sensor mode
+	 * (output size, pixel rate, line length) which is only known at configure
+	 * time and may change between configure() calls.
+	 */
+	{
+		const auto &agcCfg = context_.configuration.agc;
+		const utils::Duration &lineDuration =
+			context_.configuration.sensor.lineDuration;
+
+		int32_t minExpUs =
+			static_cast<int32_t>(agcCfg.minShutterSpeed.get<std::micro>());
+		int32_t maxExpUs =
+			static_cast<int32_t>(agcCfg.maxShutterSpeed.get<std::micro>());
+		int32_t defExpUs =
+			static_cast<int32_t>(agcCfg.defaultExposure *
+					     lineDuration.get<std::micro>());
+		defExpUs = std::clamp(defExpUs, minExpUs, maxExpUs);
+
+		context_.ctrlMap[&controls::ExposureTime] =
+			ControlInfo(minExpUs, maxExpUs, defExpUs);
+
+		float minGain = agcCfg.minAnalogueGain;
+		float maxGain = agcCfg.maxAnalogueGain;
+		context_.ctrlMap[&controls::AnalogueGain] =
+			ControlInfo(minGain, maxGain, minGain);
+
+		/*
+		 * FrameDurationLimits: computed from HBLANK + VBLANK sensor
+		 * controls, giving the true achievable frame rate range for the
+		 * active sensor mode. Fall back to exposure limits when these
+		 * controls are absent (non-standard sensors).
+		 */
+		auto hblankIt = sensorControls_.find(V4L2_CID_HBLANK);
+		auto vblankIt = sensorControls_.find(V4L2_CID_VBLANK);
+
+		if (hblankIt != sensorControls_.end() &&
+		    vblankIt != sensorControls_.end()) {
+			uint32_t hblank = static_cast<uint32_t>(
+				hblankIt->second.def().get<int32_t>());
+			uint32_t lineLength = info.outputSize.width + hblank;
+
+			const ControlInfo &v4l2VBlank = vblankIt->second;
+			std::array<uint32_t, 3> frameHeights = {
+				static_cast<uint32_t>(v4l2VBlank.min().get<int32_t>()) +
+					info.outputSize.height,
+				static_cast<uint32_t>(v4l2VBlank.max().get<int32_t>()) +
+					info.outputSize.height,
+				static_cast<uint32_t>(v4l2VBlank.def().get<int32_t>()) +
+					info.outputSize.height,
+			};
+
+			std::array<int64_t, 3> frameDurations;
+			for (unsigned int i = 0; i < frameHeights.size(); ++i) {
+				uint64_t frameSize = lineLength * frameHeights[i];
+				frameDurations[i] =
+					static_cast<int64_t>(
+						frameSize /
+						(info.pixelRate / 1000000U));
+			}
+
+			context_.ctrlMap[&controls::FrameDurationLimits] =
+				ControlInfo(frameDurations[0], frameDurations[1],
+					    ControlValue(Span<const int64_t, 2>{
+						    { frameDurations[2], frameDurations[2] } }));
+		} else {
+			/* Fallback: derive from shutter speed limits */
+			int64_t minDur = static_cast<int64_t>(minExpUs);
+			int64_t maxDur = static_cast<int64_t>(maxExpUs);
+			int64_t defDur = static_cast<int64_t>(defExpUs);
+			context_.ctrlMap[&controls::FrameDurationLimits] =
+				ControlInfo(minDur, maxDur,
+					    ControlValue(Span<const int64_t, 2>{
+						    { defDur, defDur } }));
+		}
+	}
+
 	*ipaControls = ControlInfoMap(ControlInfoMap::Map(context_.ctrlMap), controls::controls);
 
 	/*
@@ -421,7 +502,7 @@ void IPAMicrochipISC::processStats(unsigned int request,
 {
 	IPAFrameContext &frameContext = context_.frameContexts.get(request);
 
-	const isc_stat_buffer *stats = reinterpret_cast<isc_stat_buffer *>(
+	const mchp_isc_stat_buffer *stats = reinterpret_cast<mchp_isc_stat_buffer *>(
 		buffers_.at(bufferId).planes()[0].data());
 
 	/*
@@ -444,24 +525,26 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	}
 
 	/*
-	 * Rolling per-channel mean cache update.
+	 * Update per-channel histogram means and capture-frame attribution.
 	 *
-	 * The ISC histogram block captures one Bayer channel per frame
-	 * (GR→R→GB→B cycle). The valid_channels bitmask in the stats buffer
-	 * indicates which channel(s) were updated this frame. Only the fresh
-	 * channel's mean is updated in the cache; the other three channels
-	 * retain their most recently measured values from earlier frames.
+	 * The ISC cycles GR→R→GB→B (one Bayer channel per frame), but the
+	 * kernel driver fires isc_stats_isr() only once after the B channel
+	 * completes the 4-frame cycle, delivering all four histograms together
+	 * (valid_channels = 0x0f).  All four means are therefore always fresh
+	 * in each stats delivery; there is no stale-channel problem.
 	 *
-	 * If valid_channels is zero (driver does not set it), fall back to
-	 * frame_number % 4 to identify the fresh channel. Either way, at most
-	 * one channel is updated per frame, preventing stale data from
-	 * overwriting a fresher cached value from an out-of-order delivery.
+	 * Each channel also carries capture_frame — the frame sequence number
+	 * at which that channel's histogram was actually measured.  Stored in
+	 * activeState.histogram.captureFrame[] for AWB to look up the exposure
+	 * and gains that were active on the measurement frame.
 	 */
 	if (context_.configuration.hw.statsAvailable &&
 	    stats->valid_channels == 0x0f) {
 		auto &hist = context_.activeState.histogram;
-		for (unsigned int ch = 0; ch < 4; ch++)
+		for (unsigned int ch = 0; ch < 4; ch++) {
 			hist.channelMeans[ch] = calculateChannelMean(stats, ch);
+			hist.captureFrame[ch] = stats->hist[ch].capture_frame;
+		}
 	}
 
 	/*
@@ -480,27 +563,28 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		/*
 		 * All four channel means were just updated above from the
 		 * current stats delivery (valid_channels = 0x0f, all fresh).
-		 * Gain-applied luminance is used by AGC and CBC; gain-undone
-		 * luminance is used by Gamma so the exponent adapts to the
-		 * true scene light level rather than the AWB-amplified signal.
+		 * Luminance is used by AGC, CBC, and Gamma. Since the histogram
+		 * taps pre-WB, channel means are raw sensor values — no gain
+		 * undo is needed. luminanceUndone equals luminance.
 		 */
 		const auto &hist = context_.activeState.histogram;
 		const auto &m = hist.channelMeans;
 
 		float meanG = (m[kHistChannelGR] + m[kHistChannelGB]) / 2.0f;
 		frameContext.scene.luminance = 0.299f * m[kHistChannelR] +
-					      0.587f * meanG +
-					      0.114f * m[kHistChannelB];
-		frameContext.scene.spread    = calculateHistogramSpread(stats);
-		frameContext.scene.clipping  = calculateClipping(stats);
-		frameContext.scene.isDark    =
+					       0.587f * meanG +
+					       0.114f * m[kHistChannelB];
+
+		frameContext.scene.spread = calculateHistogramSpread(stats);
+		frameContext.scene.clipping = calculateClipping(stats);
+		frameContext.scene.isDark =
 			(frameContext.scene.luminance / kHistogramMax) < 0.02f;
 		frameContext.scene.isHighContrast = frameContext.scene.clipping > 0.02f;
 	} else {
-		frameContext.scene.luminance      = 0.0f;
-		frameContext.scene.spread         = 0.0f;
-		frameContext.scene.clipping       = 0.0f;
-		frameContext.scene.isDark         = true;
+		frameContext.scene.luminance = 0.0f;
+		frameContext.scene.spread = 0.0f;
+		frameContext.scene.clipping = 0.0f;
+		frameContext.scene.isDark = true;
 		frameContext.scene.isHighContrast = false;
 	}
 
