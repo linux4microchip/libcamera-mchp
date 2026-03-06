@@ -306,6 +306,15 @@ void Awb::process(IPAContext &context,
 		 * approximate the illuminant colour than the full-frame mean in
 		 * scenes with strong dominant colours (sky, foliage, skin tones).
 		 * highlightWeight_ = 0 gives pure grey-world.
+		 *
+		 * Dynamic weight: when the gain-undone scene mean has a large
+		 * chromatic divergence from neutral (|R/G - 1| or |B/G - 1|
+		 * exceeds 0.2), the scene has a dominant colour and grey-world
+		 * is unreliable. In that case the highlight estimate — which
+		 * samples pixels near the specular highlights where the
+		 * illuminant colour is most visible — is a better reference.
+		 * Increase the effective weight proportionally to divergence,
+		 * capped at 0.8 to retain some grey-world stability.
 		 */
 		if (highlightWeight_ > 0.0f) {
 			float hlGR = calculateHighlightMean(stats, kHistChannelGR);
@@ -319,11 +328,33 @@ void Awb::process(IPAContext &context,
 			hlGB = undoGain(hlGB, kHistChannelGB, [](const auto &a) { return a.gbGain; });
 			hlB = undoGain(hlB, kHistChannelB, [](const auto &a) { return a.bGain; });
 
-			float w = highlightWeight_;
-			meanGR = (1.0f - w) * meanGR + w * hlGR;
-			meanR = (1.0f - w) * meanR + w * hlR;
-			meanGB = (1.0f - w) * meanGB + w * hlGB;
-			meanB = (1.0f - w) * meanB + w * hlB;
+			/*
+			 * Chromaticity divergence: how far the full-frame
+			 * undone mean deviates from a neutral R/G = B/G = 1.
+			 * A scene with a strong blue sky has meanB >> meanG,
+			 * giving bNorm >> 1 and large divergence. The factor
+			 * 0.5 scales divergence into blend weight space so that
+			 * a 0.4 divergence (e.g. 40% colour cast) adds 0.2 to
+			 * the base highlightWeight_, and the cap of 0.8 ensures
+			 * we always keep at least 20% grey-world contribution.
+			 */
+			float meanGpre = (meanGR + meanGB) / 2.0f;
+			float rNorm = (meanGpre > 0.0f) ? meanR / meanGpre : 1.0f;
+			float bNorm = (meanGpre > 0.0f) ? meanB / meanGpre : 1.0f;
+			float divergence = std::max(std::abs(rNorm - 1.0f),
+						    std::abs(bNorm - 1.0f));
+			float effectiveWeight = std::clamp(
+				highlightWeight_ + 0.5f * divergence,
+				highlightWeight_, 0.8f);
+
+			meanGR = (1.0f - effectiveWeight) * meanGR + effectiveWeight * hlGR;
+			meanR = (1.0f - effectiveWeight) * meanR + effectiveWeight * hlR;
+			meanGB = (1.0f - effectiveWeight) * meanGB + effectiveWeight * hlGB;
+			meanB = (1.0f - effectiveWeight) * meanB + effectiveWeight * hlB;
+
+			LOG(ISC_AWB, Debug)
+				<< "AWB highlight blend: divergence=" << divergence
+				<< " effectiveWeight=" << effectiveWeight;
 		}
 
 		/* avgGreen for Robertson CT estimation only */
