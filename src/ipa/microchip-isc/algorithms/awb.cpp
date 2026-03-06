@@ -93,6 +93,28 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		}
 	}
 
+	/*
+	 * Advertise all controls emitted in metadata or accepted as input.
+	 * Without registration here the controls do not appear in the camera's
+	 * ControlInfoMap, so applications cannot query their ranges.
+	 */
+	context.ctrlMap[&controls::AwbEnable] =
+		ControlInfo(false, true, true);
+	context.ctrlMap[&controls::AwbLocked] =
+		ControlInfo(false, true, false);
+	/*
+	 * ColourGains: [R gain, B gain] float pair. Clamp range matches the
+	 * grey-world gain limits from the tuning file; default is neutral (1.0).
+	 */
+	context.ctrlMap[&controls::ColourGains] =
+		ControlInfo(Span<const float>({ gainMin_, gainMin_ }),
+			    Span<const float>({ gainMax_, gainMax_ }),
+			    Span<const float>({ 1.0f, 1.0f }));
+	context.ctrlMap[&controls::ColourTemperature] =
+		ControlInfo(static_cast<int32_t>(ctMin_),
+			    static_cast<int32_t>(ctMax_),
+			    5500);
+
 	LOG(ISC_AWB, Debug)
 		<< "AWB initialized: smoothing=" << smoothingFactor_
 		<< " damping=" << damping_

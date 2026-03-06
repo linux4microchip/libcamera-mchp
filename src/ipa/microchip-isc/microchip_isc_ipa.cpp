@@ -43,6 +43,26 @@ namespace ipa::microchip_isc {
 
 static constexpr uint32_t kMaxFrameContexts = 16;
 
+/**
+ * \class IPAMicrochipISC
+ * \brief IPA module for the Microchip ISC image sensor controller
+ *
+ * Implements the IPA interface for the Microchip ISC / XISC pipeline handler.
+ * Hosts the AWB, AGC, CCM, CBC, and Gamma algorithm chain. Each algorithm
+ * operates on the 4-channel 512-bin ISC hardware histogram delivered once
+ * per 4-frame Bayer cycle.
+ *
+ * The algorithm chain shares state through IPAContext:
+ * - AWB computes per-channel gains and colour temperature (CT)
+ * - CCM interpolates a 3×3 colour correction matrix from the AWB CT
+ * - AGC adjusts sensor exposure and analogue gain to hit target brightness
+ * - CBC corrects residual brightness/contrast error after AGC has converged
+ * - Gamma applies adaptive tone mapping using gain-undone scene luminance
+ *
+ * Platform capabilities (DPC, bipartite gamma, CBHS saturation) are read
+ * from the YAML tuning file hardware section at init() time.
+ */
+
 /*
  * Sentinel value passed by the pipeline handler in the bayerOrder argument
  * of configure() to indicate a non-RAW sensor output (YUYV, RGB). In that
@@ -136,6 +156,8 @@ int IPAMicrochipISC::init(const IPASettings &settings,
 			<< " (expected 1), using algorithm defaults";
 		return 0;
 	}
+
+
 
 	if (!data->contains("algorithms")) {
 		LOG(ISC_IPA, Warning) << "Tuning file has no algorithms section";
