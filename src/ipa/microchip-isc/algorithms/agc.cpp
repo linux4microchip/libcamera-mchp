@@ -100,6 +100,10 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	context.ctrlMap[&controls::ExposureValue] =
 		ControlInfo(-2.0f, 2.0f, 0.0f);
 
+	/* Advertise AeLocked: true once exposure has stabilised */
+	context.ctrlMap[&controls::AeLocked] =
+		ControlInfo(false, true, false);
+
 	/* Advertise ExposureTimeMode, AnalogueGainMode, AeMeteringMode, AeState */
 	context.ctrlMap[&controls::AeState] =
 		ControlInfo(controls::AeStateIdle, controls::AeStateConverged,
@@ -290,6 +294,7 @@ void Agc::process(IPAContext &context,
 			     static_cast<float>(frameContext.agc.analogueGain));
 		metadata.set(controls::AeState,
 			     static_cast<int32_t>(controls::AeStateIdle));
+		metadata.set(controls::AeLocked, false);
 		return;
 	}
 
@@ -303,6 +308,7 @@ void Agc::process(IPAContext &context,
 			     static_cast<float>(agcState.analogueGain));
 		metadata.set(controls::AeState,
 			     static_cast<int32_t>(controls::AeStateIdle));
+		metadata.set(controls::AeLocked, false);
 		return;
 	}
 
@@ -321,6 +327,7 @@ void Agc::process(IPAContext &context,
 			     static_cast<float>(agcState.analogueGain));
 		metadata.set(controls::AeState,
 			     static_cast<int32_t>(controls::AeStateSearching));
+		metadata.set(controls::AeLocked, false);
 		return;
 	}
 
@@ -482,10 +489,13 @@ void Agc::process(IPAContext &context,
 	metadata.set(controls::AnalogueGain, static_cast<float>(agcState.analogueGain));
 
 	/*
-	 * Report AeState. Both exposure and gain are considered when deciding
-	 * if the AEGC loop has converged, so convergence is declared only when
-	 * both are within the stability band. Manual-only modes are reported
-	 * as Idle since the algorithm is not actively computing values.
+	 * Report AeState and AeLocked. Both exposure and gain are considered
+	 * when deciding if the AEGC loop has converged, so convergence is
+	 * declared only when both are within the stability band. Manual-only
+	 * modes are reported as Idle since the algorithm is not computing values.
+	 * AeLocked is the boolean equivalent of AeStateConverged, emitted so
+	 * that applications waiting for stable exposure can poll it directly
+	 * without interpreting AeState enum values.
 	 */
 	int32_t aeState;
 	if (exposureManual && gainManual) {
@@ -496,6 +506,7 @@ void Agc::process(IPAContext &context,
 		aeState = controls::AeStateSearching;
 	}
 	metadata.set(controls::AeState, aeState);
+	metadata.set(controls::AeLocked, aeStable);
 }
 
 REGISTER_IPA_ALGORITHM(Agc, "Agc")
