@@ -821,6 +821,30 @@ void AGC::applyOverexposureProtection(ExposureResult &result, const ImageStats &
 	}
 }
 
+uint32_t AGC::calculateAdaptiveExposure(float brightness) const
+{
+	/*
+	 * Fallback exposure estimator used when no sensor-specific calibration
+	 * curve is available (unknown sensor model, empty curve, or interpolation
+	 * failure). Uses a simple inverse-brightness mapping clamped to the
+	 * configured sensor exposure range.
+	 */
+	constexpr float kMaxBrightness = 255.0f;
+	constexpr float kMinBrightness = 1.0f;
+
+	float clamped = std::clamp(brightness, kMinBrightness, kMaxBrightness);
+	float ratio = 1.0f - (clamped - kMinBrightness) / (kMaxBrightness - kMinBrightness);
+
+	uint32_t exposure = static_cast<uint32_t>(
+		config_.minExposureTime +
+		ratio * (config_.maxExposureTime - config_.minExposureTime));
+
+	LOG(ISC_AGC, Debug) << "Adaptive exposure fallback: brightness=" << brightness
+		<< " ratio=" << ratio << " exposure=" << exposure << "us";
+
+	return exposure;
+}
+
 void AGC::setAWBContext(const AWBContext &context)
 {
 	awbContext_ = context;
