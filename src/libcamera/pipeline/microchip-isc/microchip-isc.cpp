@@ -29,6 +29,8 @@
 #include <libcamera/formats.h>
 #include <libcamera/stream.h>
 #include <libcamera/transform.h>
+#include <libcamera/color_space.h>
+#include <libcamera/control_ids.h>
 
 #include <libcamera/ipa/microchip_isc_ipa_interface.h>
 #include <libcamera/ipa/microchip_isc_ipa_proxy.h>
@@ -121,6 +123,7 @@ public:
 	};
 
 	std::map<uint32_t, FrameInfo> frameInfo_;
+	ControlList latestIpaMetadata_;
 
 	FrameInfo *findFrameInfo(Request *request);
 	FrameInfo *findFrameInfo(FrameBuffer *buffer);
@@ -267,11 +270,25 @@ int MicrochipISCCameraData::allocateStatsBuffers()
 		std::vector<FrameBuffer::Plane> planes(buffer->planes().begin(),
 						       buffer->planes().end());
 		ipaBuffers_.emplace_back(buffer->cookie(), std::move(planes));
-		availableStatsBuffers_.push(buffer.get());
 	}
 
 	if (ipa_)
 		ipa_->mapBuffers(ipaBuffers_);
+
+	/*
+	 * Pre-queue all stats buffers to V4L2 so the stats DMA starts
+	 * immediately at streamOn and runs independently of request
+	 * queueing.  statsBufferReady() re-queues each buffer immediately
+	 * after processing, keeping the ring full at all times.
+	 */
+	for (auto &buffer : statsBuffers_) {
+		int qret = statsDevice_->queueBuffer(buffer.get());
+		if (qret < 0) {
+			LOG(MicrochipISC, Error)
+				<< "Failed to pre-queue stats buffer: " << qret;
+			return qret;
+		}
+	}
 
 	return 0;
 }
@@ -299,16 +316,21 @@ void MicrochipISCCameraData::freeStatsBuffers()
 void MicrochipISCCameraData::statsProcessed(unsigned int request,
 					    const ControlList &metadata)
 {
+	/*
+	 * Cache the latest IPA metadata for use by future frames.
+	 * Stats are produced once per 4-frame Bayer cycle, so many frames
+	 * complete before the IPA responds — the cached value is applied to
+	 * each completed request in bufferReady() so that AwbLocked and
+	 * ColourTemperature reach the application even with async IPC delay.
+	 */
+	latestIpaMetadata_ = metadata;
+
+	/* Also apply directly if the originating frame is still pending */
 	auto it = frameInfo_.find(request);
-	if (it == frameInfo_.end())
-		return;
-
-	FrameInfo &info = it->second;
-	info.request->metadata().merge(metadata);
-	info.statsDone = true;
-
-	auto *pipeline = static_cast<PipelineHandlerMicrochipISC *>(pipe());
-	pipeline->tryCompleteRequest(this, &info);
+	if (it != frameInfo_.end()) {
+		FrameInfo &info = it->second;
+		info.request->metadata().merge(metadata);
+	}
 }
 
 void MicrochipISCCameraData::setSensorControls(const ControlList &controls)
@@ -384,18 +406,21 @@ PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
 		switch (role) {
 		case StreamRole::StillCapture:
 			cfg.pixelFormat = formats::RGB565;
+			cfg.colorSpace = ColorSpace::Srgb;
 			cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
 			cfg.bufferCount = 4;
 			break;
 
 		case StreamRole::VideoRecording:
 			cfg.pixelFormat = formats::YUYV;
+			cfg.colorSpace = ColorSpace::Sycc;
 			cfg.size = findOptimalSize(data->configs_, Size(1920, 1080));
 			cfg.bufferCount = 4;
 			break;
 
 		case StreamRole::Viewfinder:
 			cfg.pixelFormat = formats::YUYV;
+			cfg.colorSpace = ColorSpace::Sycc;
 			cfg.size = findOptimalSize(data->configs_, Size(1280, 720));
 			cfg.bufferCount = 2;
 			break;
@@ -409,6 +434,7 @@ PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
 			 * any ISC processing block.
 			 */
 			cfg.pixelFormat = findRawFormat(data->configs_);
+			cfg.colorSpace = ColorSpace::Raw;
 			cfg.size = findOptimalSize(data->configs_,
 						   data->sensor_->resolution());
 			cfg.bufferCount = 4;
@@ -416,6 +442,7 @@ PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
 
 		default:
 			cfg.pixelFormat = data->configs_[0].captureFormat;
+			cfg.colorSpace = ColorSpace::Sycc;
 			cfg.size = data->configs_[0].captureSize;
 			cfg.bufferCount = 4;
 			break;
@@ -676,20 +703,6 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 		 */
 		bool isXisc = (data->iscVideo_ &&
 			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
-		ipaConfig.hwCaps.hasDpc = isXisc;
-		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
-		ipaConfig.hwCaps.hasCbhs = isXisc;
-		ipaConfig.hwCaps.statsAvailable = foundStatsVideo;
-
-		/*
-		 * Detect ISC hardware variant from the ISP control set.
-		 * V4L2_CID_HUE is only registered by the SAMA7G5/SAM9X7 CBHS
-		 * block; its presence uniquely identifies the XISC variant which
-		 * also carries DPC and bipartite gamma. The SAMA5D2 ISC registers
-		 * none of these three controls.
-		 */
-		bool isXisc = (data->iscVideo_ &&
-			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
 		ipaConfig.hwCaps.hasDpc            = isXisc;
 		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
 		ipaConfig.hwCaps.hasCbhs           = isXisc;
@@ -812,13 +825,6 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 
 		bool isXisc = (data->iscVideo_ &&
 			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
-		ipaConfig.hwCaps.hasDpc = isXisc;
-		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
-		ipaConfig.hwCaps.hasCbhs = isXisc;
-		ipaConfig.hwCaps.statsAvailable = data->statsEnabled_;
-
-		bool isXisc = (data->iscVideo_ &&
-			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
 		ipaConfig.hwCaps.hasDpc            = isXisc;
 		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
 		ipaConfig.hwCaps.hasCbhs           = isXisc;
@@ -910,6 +916,7 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 			return statsRet;
 		}
 
+		LOG(MicrochipISC, Debug) << "Stats buffers allocated, starting streamOn";
 		statsRet = data->statsDevice_->streamOn();
 		if (statsRet < 0) {
 			LOG(MicrochipISC, Error) << "Failed to start stats streaming: " << statsRet;
@@ -957,15 +964,13 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 						const ControlValue &value)
 {
 	uint32_t cid;
-	bool isSensorControl = false;
+	bool isIpaHandled = false;
 
 	/* Map libcamera controls to V4L2 controls */
 	if (id == controls::Brightness)
 		cid = V4L2_CID_BRIGHTNESS;
 	else if (id == controls::Contrast)
 		cid = V4L2_CID_CONTRAST;
-	else if (id == controls::AwbEnable)
-		cid = V4L2_CID_AUTO_WHITE_BALANCE;
 	else if (id == controls::microchip::RedGain)
 		cid = V4L2_CID_ISC_WB_R_GAIN;
 	else if (id == controls::microchip::BlueGain)
@@ -985,20 +990,24 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	else if (id == controls::AnalogueGain) {
 		cid = V4L2_CID_ANALOGUE_GAIN;
 		isIpaHandled = true;
-	} else if (id == controls::DigitalGain) {
+	}
+	else if (id == controls::DigitalGain) {
 		cid = V4L2_CID_DIGITAL_GAIN;
 		isIpaHandled = true;
-	} else if (id == controls::AwbEnable) {
+	}
+	else if (id == controls::AwbEnable) {
 		isIpaHandled = true;
-	} else if (id == controls::ExposureTime) {
+	}
+	else if (id == controls::ExposureTime) {
 		cid = V4L2_CID_EXPOSURE;
 		isIpaHandled = true;
-	} else
+	}
+	else
 		return -EINVAL;
 
 	/* Handle sensor controls differently */
-	if (isSensorControl) {
-		return 0; /* Sensor controls are handled by the IPA */
+	if (isIpaHandled) {
+		return 0; /* Handled by IPA via queueRequest, not mapped to V4L2 */
 	}
 
 	switch (cid) {
@@ -1032,14 +1041,16 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	case V4L2_CID_ISC_WB_GR_OFFSET:
 	case V4L2_CID_ISC_WB_GB_OFFSET: {
 		int32_t val = value.get<int32_t>();
-		int32_t min = controlInfo.min().get<int32_t>();
-		int32_t max = controlInfo.max().get<int32_t>();
-		controls->set(cid, std::clamp(val, min, max));
-		break;
-	}
-	case V4L2_CID_AUTO_WHITE_BALANCE: {
-		bool bval = value.get<bool>();
-		controls->set(cid, static_cast<int32_t>(bval));
+		const ControlInfoMap *infoMap = controls->infoMap();
+		if (infoMap) {
+			auto it = infoMap->find(cid);
+			if (it != infoMap->end()) {
+				int32_t min = it->second.min().get<int32_t>();
+				int32_t max = it->second.max().get<int32_t>();
+				val = std::clamp(val, min, max);
+			}
+		}
+		controls->set(cid, val);
 		break;
 	}
 	default:
@@ -1381,16 +1392,11 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 
 	MicrochipISCCameraData::FrameInfo frameInfo;
 	frameInfo.request = request;
+	/*
+	 * Stats buffers are pre-queued to V4L2 at startDevice and recycled
+	 * immediately in statsBufferReady() — no per-request management.
+	 */
 	frameInfo.statsDone = !data->statsEnabled_ || !data->ipa_;
-
-	if (data->statsEnabled_ && data->ipa_) {
-		if (data->availableStatsBuffers_.empty()) {
-			LOG(MicrochipISC, Error) << "Stats buffer underrun";
-			return -ENODEV;
-		}
-		frameInfo.statsBuffer = data->availableStatsBuffers_.front();
-		data->availableStatsBuffers_.pop();
-	}
 
 	data->frameInfo_[request->sequence()] = frameInfo;
 
@@ -1399,20 +1405,8 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 
 	int ret = processControls(data, request);
 	if (ret < 0) {
-		if (frameInfo.statsBuffer)
-			data->availableStatsBuffers_.push(frameInfo.statsBuffer);
 		data->frameInfo_.erase(request->sequence());
 		return ret;
-	}
-
-	if (frameInfo.statsBuffer) {
-		ret = data->statsDevice_->queueBuffer(frameInfo.statsBuffer);
-		if (ret < 0) {
-			LOG(MicrochipISC, Error) << "Failed to queue stats buffer: " << ret;
-			data->availableStatsBuffers_.push(frameInfo.statsBuffer);
-			data->frameInfo_.erase(request->sequence());
-			return ret;
-		}
 	}
 
 	for (Stream &stream : data->streams_) {
@@ -1444,13 +1438,32 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 
 	MicrochipISCCameraData::FrameInfo *info = data->findFrameInfo(request);
 	if (!info) {
-		LOG(MicrochipISC, Error) << "No frame info for request " << request->sequence();
+		/*
+		 * No frame info — request was requeued after captureReady_ was
+		 * set (race between app requeue and main-thread stop()).
+		 * Complete it immediately so queuedRequests_ drains and
+		 * stop() does not assert.
+		 */
+		LOG(MicrochipISC, Warning) << "No frame info for request "
+					   << request->sequence()
+					   << " — completing as stale";
+		completeBuffer(request, buffer);
+		completeRequest(request);
 		return;
 	}
 
 	if (buffer->metadata().timestamp) {
 		request->metadata().set(controls::SensorTimestamp, buffer->metadata().timestamp);
 	}
+
+	/*
+	 * Merge the most recent IPA metadata (AwbLocked, ColourTemperature, etc.)
+	 * into this request.  The IPA responds asynchronously and statsProcessed()
+	 * caches the latest result; applying it here ensures every completed frame
+	 * carries up-to-date convergence state for the application.
+	 */
+	if (!data->latestIpaMetadata_.empty())
+		request->metadata().merge(data->latestIpaMetadata_);
 
 	completeBuffer(request, buffer);
 	info->bufferDone = true;
@@ -1459,21 +1472,43 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 
 void PipelineHandlerMicrochipISC::statsBufferReady(FrameBuffer *buffer)
 {
+	LOG(MicrochipISC, Debug) << "statsBufferReady called cookie=" << buffer->cookie();
 	MicrochipISCCameraData *data = activeData_;
 	if (!data) {
 		LOG(MicrochipISC, Error) << "No active camera data";
 		return;
 	}
 
-	MicrochipISCCameraData::FrameInfo *info = data->findFrameInfo(buffer);
-	if (!info) {
-		LOG(MicrochipISC, Warning) << "Stats buffer without associated request";
-		return;
+	/*
+	 * Stats buffers cycle independently of image buffers.  Find the
+	 * oldest in-flight frame that has not yet been processed (lowest
+	 * sequence number with statsDone == false).  This is always the
+	 * correct frame because the stats DMA ring and the image DMA ring
+	 * advance in lockstep and V4L2 returns buffers in FIFO order.
+	 */
+	MicrochipISCCameraData::FrameInfo *info = nullptr;
+	for (auto &[seq, fi] : data->frameInfo_) {
+		if (!fi.statsDone) {
+			info = &fi;
+			break;
+		}
 	}
 
 	if (buffer->metadata().status == FrameMetadata::FrameCancelled) {
-		info->statsDone = true;
-		tryCompleteRequest(data, info);
+		/* Stop in progress — mark done so the frame can complete */
+		if (info) {
+			info->statsDone = true;
+			tryCompleteRequest(data, info);
+		}
+		return; /* Do NOT re-queue — streamOff is imminent */
+	}
+
+	/* Re-queue immediately to keep the stats DMA ring alive */
+	if (data->statsStreaming_)
+		data->statsDevice_->queueBuffer(buffer);
+
+	if (!info) {
+		LOG(MicrochipISC, Warning) << "Stats buffer ready with no pending frame";
 		return;
 	}
 
@@ -1486,24 +1521,28 @@ void PipelineHandlerMicrochipISC::statsBufferReady(FrameBuffer *buffer)
 	static const std::array<uint32_t, 2> sensorCtrlIds = {
 		V4L2_CID_EXPOSURE, V4L2_CID_ANALOGUE_GAIN
 	};
-	ControlList sensorControls =
-		data->sensor_->getControls(sensorCtrlIds);
-	data->ipa_->processStats(info->request->sequence(), buffer->cookie(), sensorControls);
+	ControlList sensorControls = data->sensor_->getControls(sensorCtrlIds);
+	data->ipa_->processStats(info->request->sequence(), buffer->cookie(),
+				 sensorControls);
+
+	info->statsDone = true;
+	tryCompleteRequest(data, info);
 }
 
 void PipelineHandlerMicrochipISC::tryCompleteRequest(
 	MicrochipISCCameraData *data,
 	MicrochipISCCameraData::FrameInfo *info)
 {
-	if (!info->bufferDone || !info->statsDone)
+	if (!info->bufferDone)
 		return;
 
 	if (info->request->hasPendingBuffers())
 		return;
 
-	if (info->statsBuffer)
-		data->availableStatsBuffers_.push(info->statsBuffer);
-
+	/*
+	 * Stats buffers run independently and are recycled in
+	 * statsBufferReady() — statsDone no longer gates request completion.
+	 */
 	data->frameInfo_.erase(info->request->sequence());
 	completeRequest(info->request);
 }
@@ -1512,15 +1551,11 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 {
 	MicrochipISCCameraData *data = cameraData(camera);
 
-	data->frameInfo_.clear();
-
 	if (data->ipa_)
 		data->ipa_->stop();
 
 	if (data->statsEnabled_ && data->statsStreaming_) {
-		int ret = data->statsDevice_->streamOff();
-		if (ret < 0)
-			LOG(MicrochipISC, Error) << "Failed to stop stats: " << ret;
+		data->statsDevice_->streamOff();
 		data->statsStreaming_ = false;
 	}
 
@@ -1530,6 +1565,13 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 		data->iscVideo_->streamOff();
 		data->iscVideo_->releaseBuffers();
 	}
+
+	/*
+	 * Clear frame info after streamOff so that any bufferReady() callbacks
+	 * fired during streamOff can still find their entries and complete cleanly,
+	 * avoiding "No frame info for request N" warnings.
+	 */
+	data->frameInfo_.clear();
 
 	/*
 	 * Subdevices (sensor, ISC blocks) are opened for the lifetime of the
