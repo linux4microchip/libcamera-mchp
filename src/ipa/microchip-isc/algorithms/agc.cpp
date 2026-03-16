@@ -92,18 +92,6 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 			    static_cast<int64_t>(1000000),
 			    static_cast<int64_t>(33333));
 
-	/* Advertise AeLocked: true once exposure has stabilised */
-	context.ctrlMap[&controls::AeLocked] =
-		ControlInfo(false, true, false);
-
-	/* Advertise ExposureValue: ±2 EV in 0.1-stop steps */
-	context.ctrlMap[&controls::ExposureValue] =
-		ControlInfo(-2.0f, 2.0f, 0.0f);
-
-	/* Advertise AeLocked: true once exposure has stabilised */
-	context.ctrlMap[&controls::AeLocked] =
-		ControlInfo(false, true, false);
-
 	/* Advertise ExposureTimeMode, AnalogueGainMode, AeMeteringMode, AeState */
 	context.ctrlMap[&controls::AeState] =
 		ControlInfo(controls::AeStateIdle, controls::AeStateConverged,
@@ -122,7 +110,7 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	 * are not implementable without a separate statistics block.
 	 */
 	context.ctrlMap[&controls::AeMeteringMode] =
-		ControlInfo({ { ControlValue(controls::MeteringMatrix) } },
+		ControlInfo(std::vector<ControlValue>{ ControlValue(controls::MeteringMatrix) },
 			    ControlValue(controls::MeteringMatrix));
 
 	LOG(ISC_AGC, Debug)
@@ -273,7 +261,7 @@ void Agc::queueRequest(IPAContext &context,
 void Agc::process(IPAContext &context,
 		  const uint32_t frame,
 		  IPAFrameContext &frameContext,
-		  const mchp_isc_stat_buffer *stats,
+		  [[maybe_unused]] const mchp_isc_stat_buffer *stats,
 		  ControlList &metadata)
 {
 	auto &agcState = context.activeState.agc;
@@ -290,11 +278,10 @@ void Agc::process(IPAContext &context,
 			frameContext.agc.exposure *
 			context.configuration.sensor.lineDuration.get<std::micro>());
 		metadata.set(controls::ExposureTime, exposureUs);
-		metadata.set(controls::AnalogueGain,
-			     static_cast<float>(frameContext.agc.analogueGain));
+		metadata.set(controls::AnalogueGain, frameContext.agc.analogueGain);
+		metadata.set(controls::FrameDuration, static_cast<int64_t>(exposureUs));
 		metadata.set(controls::AeState,
 			     static_cast<int32_t>(controls::AeStateIdle));
-		metadata.set(controls::AeLocked, false);
 		return;
 	}
 
@@ -304,11 +291,10 @@ void Agc::process(IPAContext &context,
 			agcState.exposure *
 			context.configuration.sensor.lineDuration.get<std::micro>());
 		metadata.set(controls::ExposureTime, exposureUs);
-		metadata.set(controls::AnalogueGain,
-			     static_cast<float>(agcState.analogueGain));
+		metadata.set(controls::AnalogueGain, agcState.analogueGain);
+		metadata.set(controls::FrameDuration, static_cast<int64_t>(exposureUs));
 		metadata.set(controls::AeState,
 			     static_cast<int32_t>(controls::AeStateIdle));
-		metadata.set(controls::AeLocked, false);
 		return;
 	}
 
@@ -323,11 +309,10 @@ void Agc::process(IPAContext &context,
 			agcState.exposure *
 			context.configuration.sensor.lineDuration.get<std::micro>());
 		metadata.set(controls::ExposureTime, exposureUs);
-		metadata.set(controls::AnalogueGain,
-			     static_cast<float>(agcState.analogueGain));
+		metadata.set(controls::AnalogueGain, agcState.analogueGain);
+		metadata.set(controls::FrameDuration, static_cast<int64_t>(exposureUs));
 		metadata.set(controls::AeState,
 			     static_cast<int32_t>(controls::AeStateSearching));
-		metadata.set(controls::AeLocked, false);
 		return;
 	}
 
@@ -417,7 +402,7 @@ void Agc::process(IPAContext &context,
 
 		/* Update gain if not in manual mode */
 		if (!gainManual) {
-			double analogueGain;
+			float analogueGain;
 
 			if (exposureManual) {
 				/*
@@ -437,20 +422,24 @@ void Agc::process(IPAContext &context,
 					(static_cast<float>(frameContext.agc.exposure) *
 					 ratio) / maxExposure;
 				analogueGain = agcConfig.minAnalogueGain * remaining;
-			} else if (ratio < gainReductionThreshold_) {
+			} else if (ratio < gainReductionThreshold_ &&
+				   agcState.exposure <= minExposure) {
 				/*
-				 * Scene overexposed: step gain toward minimum
-				 * to reduce noise before exposure converges
-				 * downward. Temporal smoothing prevents a
-				 * sudden jump.
+				 * Scene overexposed AND exposure is already at
+				 * minimum: exposure cannot go lower, so reduce
+				 * gain toward minimum to correct overexposure.
+				 * Exposure is always preferred over gain to
+				 * minimise noise; gain is only reduced once
+				 * the exposure knob is exhausted.
 				 */
 				analogueGain = agcConfig.minAnalogueGain;
 			} else {
 				/*
-				 * Exposure is still converging toward target:
-				 * hold the current gain. Resetting to minGain
-				 * here would continuously fight the exposure
-				 * loop and prevent stable convergence.
+				 * Exposure is still converging or can be
+				 * reduced further: hold the current gain.
+				 * Let the exposure loop handle the correction;
+				 * adjusting gain simultaneously causes
+				 * oscillation and prevents stable convergence.
 				 */
 				analogueGain = agcState.analogueGain;
 			}
@@ -461,7 +450,7 @@ void Agc::process(IPAContext &context,
 
 			/* Temporal smoothing prevents sudden gain jumps */
 			analogueGain = convergenceSpeed_ * analogueGain +
-				       (1.0 - convergenceSpeed_) *
+				       (1.0f - convergenceSpeed_) *
 				       frameContext.agc.analogueGain;
 
 			agcState.analogueGain = analogueGain;
@@ -486,16 +475,14 @@ void Agc::process(IPAContext &context,
 		agcState.exposure *
 		context.configuration.sensor.lineDuration.get<std::micro>());
 	metadata.set(controls::ExposureTime, exposureUs);
-	metadata.set(controls::AnalogueGain, static_cast<float>(agcState.analogueGain));
+	metadata.set(controls::AnalogueGain, agcState.analogueGain);
+	metadata.set(controls::FrameDuration, static_cast<int64_t>(exposureUs));
 
 	/*
-	 * Report AeState and AeLocked. Both exposure and gain are considered
-	 * when deciding if the AEGC loop has converged, so convergence is
-	 * declared only when both are within the stability band. Manual-only
-	 * modes are reported as Idle since the algorithm is not computing values.
-	 * AeLocked is the boolean equivalent of AeStateConverged, emitted so
-	 * that applications waiting for stable exposure can poll it directly
-	 * without interpreting AeState enum values.
+	 * Report AeState. Both exposure and gain are considered when deciding
+	 * if the AEGC loop has converged, so convergence is declared only when
+	 * both are within the stability band. Manual-only modes are reported
+	 * as Idle since the algorithm is not computing values.
 	 */
 	int32_t aeState;
 	if (exposureManual && gainManual) {
@@ -506,7 +493,6 @@ void Agc::process(IPAContext &context,
 		aeState = controls::AeStateSearching;
 	}
 	metadata.set(controls::AeState, aeState);
-	metadata.set(controls::AeLocked, aeStable);
 }
 
 REGISTER_IPA_ALGORITHM(Agc, "Agc")

@@ -55,7 +55,7 @@ algorithms:
         gr: 1.0
         gb: 1.02
 
-      # Sensor-to-XYZ colour matrix for McCamy CCT estimation.
+      # Sensor-to-XYZ colour matrix for Robertson (1968) CCT estimation.
       # Approximate values for IMX219 derived from published spectral responsivity.
       # Row-major: row 0 = X, row 1 = Y, row 2 = Z. All rows should sum ~1.0.
       # Calibrate with a Macbeth ColorChecker under known illuminants for ±200 K accuracy.

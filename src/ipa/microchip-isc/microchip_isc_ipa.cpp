@@ -8,8 +8,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <string.h>
 #include <map>
+#include <string.h>
 #include <vector>
 
 #include <linux/v4l2-controls.h>
@@ -100,6 +100,7 @@ private:
 
 	std::map<unsigned int, MappedFrameBuffer> buffers_;
 	ControlInfoMap sensorControls_;
+	ControlInfoMap ispControls_;
 
 	std::unique_ptr<CameraSensorHelper> camHelper_;
 
@@ -157,8 +158,6 @@ int IPAMicrochipISC::init(const IPASettings &settings,
 		return 0;
 	}
 
-
-
 	if (!data->contains("algorithms")) {
 		LOG(ISC_IPA, Warning) << "Tuning file has no algorithms section";
 		return 0;
@@ -203,6 +202,21 @@ int IPAMicrochipISC::start()
 void IPAMicrochipISC::stop()
 {
 	context_.frameContexts.clear();
+
+	/*
+	 * Re-enable kernel AWB so that subsequent v4l2-ctl captures work
+	 * correctly. The IPA disabled kernel AWB at configure() time and
+	 * took over gain computation. Without this restore,
+	 * V4L2_CID_AUTO_WHITE_BALANCE stays 0 after libcamera exits and
+	 * the kernel applies the IPA's last WB gains without the IPA's
+	 * CCM (which config_cc() resets to identity at each stream start),
+	 * producing a colour cast in the next capture session.
+	 */
+	if (!ispControls_.empty()) {
+		ControlList ctrls(ispControls_);
+		ctrls.set(V4L2_CID_AUTO_WHITE_BALANCE, static_cast<int32_t>(1));
+		IPAMicrochipISCInterface::setIspControls.emit(ctrls);
+	}
 }
 
 void IPAMicrochipISC::updateSessionConfiguration(
@@ -251,14 +265,14 @@ void IPAMicrochipISC::updateSessionConfiguration(
 
 	if (camHelper_) {
 		context_.configuration.agc.minAnalogueGain =
-			camHelper_->gain(minGain);
+			static_cast<float>(camHelper_->gain(minGain));
 		context_.configuration.agc.maxAnalogueGain =
-			camHelper_->gain(maxGain);
+			static_cast<float>(camHelper_->gain(maxGain));
 	} else {
 		context_.configuration.agc.minAnalogueGain =
-			static_cast<double>(minGain);
+			static_cast<float>(minGain);
 		context_.configuration.agc.maxAnalogueGain =
-			static_cast<double>(maxGain);
+			static_cast<float>(maxGain);
 	}
 }
 
@@ -268,6 +282,7 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 {
 	const IPACameraSensorInfo &info = ipaConfig.sensorInfo;
 	sensorControls_ = ipaConfig.sensorControls;
+	ispControls_ = ipaConfig.ispControls;
 
 	updateSessionConfiguration(info, ipaConfig.sensorControls,
 				   static_cast<BayerFormat::Order>(bayerOrder));
@@ -542,8 +557,8 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		int32_t rawGain =
 			sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
 		frameContext.agc.analogueGain =
-			camHelper_ ? camHelper_->gain(rawGain)
-				   : static_cast<double>(rawGain);
+			static_cast<float>(camHelper_ ? camHelper_->gain(rawGain)
+						      : static_cast<double>(rawGain));
 	}
 
 	/*
@@ -587,7 +602,7 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		 * current stats delivery (valid_channels = 0x0f, all fresh).
 		 * Luminance is used by AGC, CBC, and Gamma. Since the histogram
 		 * taps pre-WB, channel means are raw sensor values — no gain
-		 * undo is needed. luminanceUndone equals luminance.
+		 * undo needed.
 		 */
 		const auto &hist = context_.activeState.histogram;
 		const auto &m = hist.channelMeans;
@@ -658,17 +673,26 @@ void IPAMicrochipISC::setSensorControls()
 void IPAMicrochipISC::setIspControls()
 {
 	/*
-	 * Ideally this ControlList would be backed by an ISP-specific
-	 * ControlInfoMap. It currently uses sensorControls_ because the IPA
-	 * IPC interface (mojom) does not carry a separate ISP controls map
-	 * without a build-time regeneration that requires the full Yocto
-	 * environment. In practice ControlList::set(id, value) does not
-	 * validate the control ID against the backing map, so the pipeline
-	 * handler receives all ISP controls correctly by their V4L2 IDs.
-	 * This is a known limitation to be addressed when the interface is
-	 * extended.
+	 * Use the ISP-specific ControlInfoMap received from the pipeline
+	 * handler via IPAConfigInfo.ispControls. This ensures the ControlList
+	 * is backed by the correct map so that the ControlSerializer can
+	 * resolve types by ID in isolated (IPC/sandboxed) proxy mode.
+	 * Fall back to sensorControls_ only if ispControls_ is empty (e.g.
+	 * when running against an older pipeline handler that has not yet
+	 * been updated to populate the field).
 	 */
-	ControlList ctrls(sensorControls_);
+	ControlList ctrls(ispControls_);
+
+	/*
+	 * Disable kernel AWB before writing manual gains. When
+	 * V4L2_CID_AUTO_WHITE_BALANCE=1 the kernel marks the WB gain controls
+	 * as V4L2_CTRL_FLAG_INACTIVE and isc_s_ctrl() silently returns 0,
+	 * discarding every IPA gain write. Setting AWB=0 here (atomically with
+	 * the gain values in the same ControlList) makes the gain controls
+	 * active so the values actually reach hardware. stop() restores AWB=1
+	 * for post-libcamera v4l2-ctl captures.
+	 */
+	ctrls.set(V4L2_CID_AUTO_WHITE_BALANCE, static_cast<int32_t>(0));
 
 	/* AWB gains: convert float (1.0=unity) to fixed-point (kWbGainScale=1.0x) */
 	const auto &awb = context_.activeState.awb;
