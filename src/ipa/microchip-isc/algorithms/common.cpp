@@ -76,7 +76,7 @@ float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel)
 float calculateHighlightMean(const isc_stat_buffer *stats, unsigned int channel)
 {
 	std::array<uint32_t, kHistBins> bins;
-	std::memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
+	memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
 	Histogram hist(bins);
 
 	if (hist.total() == 0)

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
+
 /*
  * Copyright (C) 2024 Microchip Technology Inc. All rights reserved.
  *
@@ -36,6 +37,8 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	if (tuningData.contains("convergence")) {
 		const YamlObject &conv = tuningData["convergence"];
 		smoothingFactor_ = conv["speed"].get<float>(smoothingFactor_);
+		startupSpeed_ = conv["startup_speed"].get<float>(smoothingFactor_);
+		startupFrames_ = conv["startup_frames"].get<unsigned int>(0);
 		damping_ = conv["damping"].get<float>(damping_);
 		stabilityThreshold_ = conv["stability_threshold"].get<float>(stabilityThreshold_);
 		resumeThreshold_ = stabilityThreshold_ * 2.0f;
@@ -57,6 +60,32 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		refBGain_ = rg["b"].get<float>(refBGain_);
 		refGrGain_ = rg["gr"].get<float>(refGrGain_);
 		refGbGain_ = rg["gb"].get<float>(refGbGain_);
+	}
+
+	/*
+	 * Per-CT reference gain table: list of {ct, r, b} entries in the
+	 * tuning YAML. At configure() the IPA interpolates starting gains
+	 * from the last-known colour temperature so the first frame has
+	 * near-correct white balance without waiting for AWB to converge.
+	 * Entries must be in ascending CT order.
+	 */
+	defaultCt_ = tuningData["ct_fallback"].get<float>(defaultCt_);
+	if (tuningData.contains("reference_gains_table")) {
+		for (const auto &entry : tuningData["reference_gains_table"].asList()) {
+			float ct = entry["ct"].get<float>(0.0f);
+			float r = entry["r"].get<float>(refRGain_);
+			float b = entry["b"].get<float>(refBGain_);
+			if (ct > 0.0f)
+				refGainTable_.push_back({ ct, r, b });
+		}
+		/* Ensure ascending order so interpolation is correct */
+		std::sort(refGainTable_.begin(), refGainTable_.end(),
+			  [](const RefGainEntry &a, const RefGainEntry &b) {
+				  return a.ct < b.ct;
+			  });
+		LOG(ISC_AWB, Debug)
+			<< "Loaded " << refGainTable_.size()
+			<< " per-CT reference gain entries";
 	}
 
 	highlightWeight_ = tuningData["highlight_weight"].get<float>(highlightWeight_);
@@ -142,16 +171,36 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 int Awb::configure(IPAContext &context,
 		   [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
 {
-	context.activeState.awb.rGain = refRGain_;
-	context.activeState.awb.bGain = refBGain_;
+	/*
+	 * Choose starting gains from the per-CT table when available.
+	 * Use the last-known CT (awb.ct) if valid, otherwise fall back to
+	 * defaultCt_ from the tuning file. This ensures the first captured
+	 * frame has approximately correct white balance whether the camera
+	 * is indoors (~3000 K) or outdoors (~6500 K) without waiting for
+	 * the AWB loop to converge across illuminants.
+	 */
+	float startCt = (context.activeState.awb.ct > 0)
+				? static_cast<float>(context.activeState.awb.ct)
+				: defaultCt_;
+
+	if (!refGainTable_.empty()) {
+		auto [r, b] = interpolateRefGains(startCt);
+		context.activeState.awb.rGain = r;
+		context.activeState.awb.bGain = b;
+	} else {
+		context.activeState.awb.rGain = refRGain_;
+		context.activeState.awb.bGain = refBGain_;
+	}
 	context.activeState.awb.grGain = refGrGain_;
 	context.activeState.awb.gbGain = refGbGain_;
 	awbStable_ = false;
 
 	LOG(ISC_AWB, Debug)
-		<< "AWB configured with reference gains: R=" << refRGain_
+		<< "AWB configured with reference gains: R="
+		<< context.activeState.awb.rGain
 		<< " GR=" << refGrGain_ << " GB=" << refGbGain_
-		<< " B=" << refBGain_;
+		<< " B=" << context.activeState.awb.bGain
+		<< " (CT=" << startCt << " K)";
 
 	return 0;
 }
@@ -227,9 +276,11 @@ void Awb::queueRequest(IPAContext &context,
  * neutral grey. Gains are computed to equalise the mean of each Bayer
  * channel to the green reference. Temporal smoothing prevents flickering.
  *
- * The ISC histogram is collected after white balance gains are applied by
- * the hardware. The previously applied gains stored in frameContext are
- * used to undo this effect and recover the true sensor illuminant signal.
+ * The ISC histogram taps wb_data — the Bayer stream AFTER the WB block
+ * (post-WB). Channel means already reflect the current hardware gains.
+ * Grey-world gains must therefore use multiplicative correction
+ * (current_gain x ratio) not a direct ratio, to avoid converging at
+ * sqrt(K) instead of K. See gain computation below.
  *
  * Color temperature is estimated from gain-undone R/B means and written to
  * activeState.awb.ct for use by CCM (single source of truth).
@@ -241,6 +292,9 @@ void Awb::process(IPAContext &context,
 		  ControlList &metadata)
 {
 	auto &awb = context.activeState.awb;
+
+	/* Track calls from first stats delivery for startup speed selection */
+	awbFrameCount_++;
 
 	/* Skip computation when histogram stats are not available (non-RAW input) */
 	if (!context.configuration.hw.statsAvailable) {
@@ -292,36 +346,9 @@ void Awb::process(IPAContext &context,
 	float meanGApplied = (meanGR + meanGB) / 2.0f;
 	float lumApplied = 0.299f * meanR + 0.587f * meanGApplied + 0.114f * meanB;
 
+	float rawCt = 0.0f;
+
 	if (lumApplied >= darkSceneThreshold_) {
-		/*
-		 * Per-channel exposure-normalized gain undo.
-		 *
-		 * Each Bayer channel is measured on a different frame within
-		 * the 4-frame GR→R→GB→B cycle. hist.captureFrame[ch] records
-		 * the frame sequence number when each channel's histogram was
-		 * actually collected (snapshotted at HISDONE IRQ time in the
-		 * kernel). Using the gains from the current delivery frame for
-		 * all four channels is incorrect: those gains may have changed
-		 * in the 0–3 frames between measurement and delivery.
-		 *
-		 * Look up each channel's frame context using its captureFrame
-		 * to recover the AWB gains that were applied to the hardware
-		 * when that specific channel's histogram was measured. This
-		 * gives a per-channel gain-undone mean that accurately reflects
-		 * the sensor's illuminant signal independent of gain history.
-		 */
-		auto undoGain = [&](float mean, unsigned int ch, auto gainFn) -> float {
-			uint32_t cf = hist.captureFrame[ch];
-			const IPAFrameContext &fc = context.frameContexts.get(cf);
-			float g = gainFn(fc.awb);
-			return (g > 0.0f) ? mean / g : mean;
-		};
-
-		meanGR = undoGain(meanGR, kHistChannelGR, [](const auto &a) { return a.grGain; });
-		meanR = undoGain(meanR, kHistChannelR, [](const auto &a) { return a.rGain; });
-		meanGB = undoGain(meanGB, kHistChannelGB, [](const auto &a) { return a.gbGain; });
-		meanB = undoGain(meanB, kHistChannelB, [](const auto &a) { return a.bGain; });
-
 		/*
 		 * Blend full-frame grey-world means with highlight-based means.
 		 * Near-saturated pixels (top 20% intensity, gain-undone) better
@@ -344,15 +371,9 @@ void Awb::process(IPAContext &context,
 			float hlGB = calculateHighlightMean(stats, kHistChannelGB);
 			float hlB = calculateHighlightMean(stats, kHistChannelB);
 
-			/* Gain-undo highlight means using per-channel captureFrame gains */
-			hlGR = undoGain(hlGR, kHistChannelGR, [](const auto &a) { return a.grGain; });
-			hlR = undoGain(hlR, kHistChannelR, [](const auto &a) { return a.rGain; });
-			hlGB = undoGain(hlGB, kHistChannelGB, [](const auto &a) { return a.gbGain; });
-			hlB = undoGain(hlB, kHistChannelB, [](const auto &a) { return a.bGain; });
-
 			/*
 			 * Chromaticity divergence: how far the full-frame
-			 * undone mean deviates from a neutral R/G = B/G = 1.
+			 * mean deviates from a neutral R/G = B/G = 1.
 			 * A scene with a strong blue sky has meanB >> meanG,
 			 * giving bNorm >> 1 and large divergence. The factor
 			 * 0.5 scales divergence into blend weight space so that
@@ -388,19 +409,24 @@ void Awb::process(IPAContext &context,
 		 * with the sensor-to-XYZ matrix from the tuning file. AWB is
 		 * the single authority for CT; CCM reads activeState.awb.ct.
 		 */
-		float rawCt = estimateColorTemperature(
+		rawCt = estimateColorTemperature(
 			meanR, meanG, meanB,
 			&context.configuration.sensor.ctColorMatrix);
 
 		/*
-		 * Grey world: normalise R and B to GR (not avgGreen).
-		 * grGain = 1.0 (GR is the reference); rGain and bGain must
-		 * use the same reference so all four channels equalise to GR.
+		 * Multiplicative grey-world correction for post-WB histogram.
+		 * target = current_gain * (meanGR / channel_mean)
+		 *        = current_gain * (GR_raw / (current_gain * ch_raw))
+		 *        = GR_raw / ch_raw = K  (constant regardless of gain)
+		 * Converges monotonically to K. A direct ratio gives sqrt(K).
 		 */
-		float rGain = std::clamp(meanGR / meanR, gainMin_, gainMax_);
-		float bGain = std::clamp(meanGR / meanB, gainMin_, gainMax_);
+		float rGain = std::clamp(awb.rGain * (meanGR / std::max(meanR, 1.0f)),
+					 gainMin_, gainMax_);
+		float bGain = std::clamp(awb.bGain * (meanGR / std::max(meanB, 1.0f)),
+					 gainMin_, gainMax_);
 		float grGain = 1.0f;
-		float gbGain = std::clamp(meanGR / meanGB, gbGainMin_, gbGainMax_);
+		float gbGain = std::clamp(awb.gbGain * (meanGR / std::max(meanGB, 1.0f)),
+					  gbGainMin_, gbGainMax_);
 
 		if (frame > 0 && awb.rGain > 0.0f) {
 			float rDelta = std::abs(rGain - awb.rGain) / awb.rGain;
@@ -422,7 +448,32 @@ void Awb::process(IPAContext &context,
 				/* Within stability threshold: skip update */
 				LOG(ISC_AWB, Debug) << "AWB stable, keeping gains";
 			} else {
-				float update = 1.0f - smoothingFactor_;
+				/*
+				 * Use startup_speed for the first startupFrames_
+				 * AWB process() calls (awbFrameCount_, counted from
+				 * the first stats callback, not the global frame
+				 * number which starts at warmupFrames_).  This
+				 * mirrors the RPi IPA approach: instant convergence
+				 * during sensor startup so gains reach steady state
+				 * before the stability lock check fires.  After that
+				 * switch to the lower tracking speed for smooth
+				 * temporal adaptation without flicker.
+				 */
+				/*
+				 * smoothingFactor_ is the IIR "keep" factor:
+				 *   update = 1 - smoothingFactor_
+				 * So smoothingFactor_=0.7 → update=0.3 (30% step).
+				 * startupSpeed_ is the convergence step size directly:
+				 *   startupSpeed_=1.0 → update=1.0 (instant jump).
+				 * Use update directly for startup, derive from
+				 * smoothingFactor_ for steady-state tracking.
+				 */
+				float update;
+				if (startupFrames_ > 0 &&
+				    awbFrameCount_ <= startupFrames_)
+					update = startupSpeed_;
+				else
+					update = 1.0f - smoothingFactor_;
 				if (convergenceFrames_ > 0)
 					update = std::max(update,
 							  1.0f / convergenceFrames_);
@@ -469,16 +520,10 @@ void Awb::process(IPAContext &context,
 				<< " GB=" << meanGB
 				<< " B=" << meanB << ")";
 		}
-	} else {
-		/* First frame: set gains directly */
-		awb.rGain = rGain;
-		awb.bGain = bGain;
-		awb.grGain = grGain;
-		awb.gbGain = gbGain;
 	}
 
 	/*
-		 * Update colour temperature with temporal smoothing.
+	 * Update colour temperature with temporal smoothing.
 		 * Apply damping_ in addition to smoothingFactor_ so CT and
 		 * gains converge at the same rate — without it CT leads ahead
 		 * of the gains, causing a transient CCM matrix mismatch during
@@ -496,24 +541,57 @@ void Awb::process(IPAContext &context,
 
 	LOG(ISC_AWB, Debug) << "AWB CT: raw=" << rawCt
 			    << " K smoothed=" << awb.ct << " K";
+
+	if (lumApplied < darkSceneThreshold_)
+		LOG(ISC_AWB, Debug)
+			<< "Scene too dark for AWB (lum=" << lumApplied
+			<< " < threshold=" << darkSceneThreshold_
+			<< "), CT frozen at " << awb.ct << " K";
+
+
+	/* Publish convergence state for CCM to pace its own smoothing */
+	awb.awbConverged = awbStable_;
+
+	std::array<float, 2> gains = { awb.rGain, awb.bGain };
+	metadata.set(controls::ColourGains, gains);
+	metadata.set(controls::AwbLocked, awbStable_);
+
+	if (awb.ct > 0)
+		metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
 }
-else
+
+/**
+ * \brief Interpolate R and B reference gains from the per-CT table
+ * \param[in] ct Colour temperature in Kelvin
+ * \return { r_gain, b_gain } linearly interpolated at ct
+ *
+ * Clamps to the table endpoints for CT values outside the calibrated range.
+ */
+std::pair<float, float> Awb::interpolateRefGains(float ct) const
 {
-	LOG(ISC_AWB, Debug)
-		<< "Scene too dark for AWB (lum=" << lumApplied
-		<< " < threshold=" << darkSceneThreshold_
-		<< "), CT frozen at " << awb.ct << " K";
-}
+	if (refGainTable_.empty())
+		return { refRGain_, refBGain_ };
 
-/* Publish convergence state for CCM to pace its own smoothing */
-awb.awbConverged = awbStable_;
+	/* Below lowest entry: clamp to first */
+	if (ct <= refGainTable_.front().ct)
+		return { refGainTable_.front().r, refGainTable_.front().b };
 
-std::array<float, 2> gains = { awb.rGain, awb.bGain };
-metadata.set(controls::ColourGains, gains);
-metadata.set(controls::AwbLocked, awbStable_);
+	/* Above highest entry: clamp to last */
+	if (ct >= refGainTable_.back().ct)
+		return { refGainTable_.back().r, refGainTable_.back().b };
 
-if (awb.ct > 0)
-	metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
+	/* Find bracketing entries and linearly interpolate */
+	for (size_t i = 1; i < refGainTable_.size(); ++i) {
+		if (ct <= refGainTable_[i].ct) {
+			const auto &lo = refGainTable_[i - 1];
+			const auto &hi = refGainTable_[i];
+			float t = (ct - lo.ct) / (hi.ct - lo.ct);
+			return { lo.r + t * (hi.r - lo.r),
+				 lo.b + t * (hi.b - lo.b) };
+		}
+	}
+
+	return { refGainTable_.back().r, refGainTable_.back().b };
 }
 
 REGISTER_IPA_ALGORITHM(Awb, "Awb")

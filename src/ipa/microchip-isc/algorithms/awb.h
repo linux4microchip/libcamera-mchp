@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include <utility>
+#include <vector>
+
 #include "algorithm.h"
 
 namespace libcamera {
@@ -32,69 +35,88 @@ public:
 		     ControlList &metadata) override;
 
 private:
-	/* Tuning parameters */
-	float smoothingFactor_ = 0.2f;
+	/*
+	 * Tuning parameters — populated by init() from YAML.
+	 * In-class initializers provide safe defaults if a YAML section is
+	 * absent. The get<T>(member_) pattern in init() then overrides with
+	 * the YAML value when present, or keeps the default when absent.
+	 */
+
+	/* IIR smoothing factor: fraction of history to retain (YAML: convergence.speed) */
+	float smoothingFactor_ = 0.7f;
+
+	/* Startup instant-convergence speed (YAML: convergence.startup_speed) */
+	float startupSpeed_ = 1.0f;
+
+	/* Stats deliveries at startup_speed (YAML: convergence.startup_frames) */
+	unsigned int startupFrames_ = 8;
+
+	/* Damping applied on top of IIR rate (YAML: convergence.damping) */
 	float damping_ = 1.0f;
+
+	/* Per-channel fractional delta for stable declaration (YAML: convergence.stability_threshold) */
 	float stabilityThreshold_ = 0.015f;
+
+	/* Resume threshold = stabilityThreshold_ * 2 — set by init() */
+	float resumeThreshold_ = 0.03f;
+
+	/* Backward-compat speed floor (YAML: convergence.frames) */
 	unsigned int convergenceFrames_ = 0;
 
-	/*
-	 * Minimum scene luminance (in histogram units, 0–511) below which
-	 * AWB updates are suppressed. Near-dark histogram data is unreliable
-	 * due to ISC 8-bit quantization and causes erratic gain swings.
-	 */
-	float darkSceneThreshold_ = 16.0f;
+	/* Minimum scene luminance for AWB update (YAML: min_scene_luminance) */
+	float darkSceneThreshold_ = 8.0f;
 
-	/*
-	 * Per-channel gain clamp limits. Wider limits allow faster adaptation
-	 * but risk oscillation in extreme scenes (snow, candlelight). Set via
-	 * YAML gain_limits; defaults match the grey-world practical range.
-	 */
+	/* Per-channel gain limits (YAML: r_b_min, r_b_max) */
 	float gainMin_ = 0.2f;
-	float gainMax_ = 3.0f;
-	float gbGainMin_ = 0.9f;
-	float gbGainMax_ = 1.1f;
+	float gainMax_ = 16.0f;
 
-	/*
-	 * Colour temperature limits in Kelvin. Values outside this range
-	 * indicate histogram artefacts or extremely unusual illuminants and
-	 * are clamped to prevent nonsensical CCM matrix lookups.
-	 */
-	float ctMin_ = 2000.0f;
-	float ctMax_ = 10000.0f;
+	/* Green-balance gain limits (YAML: gb_gain_min, gb_gain_max) */
+	float gbGainMin_ = 0.8f;
+	float gbGainMax_ = 1.25f;
 
-	/*
-	 * Reference (neutral) gains applied on configure() so the first
-	 * frames have sensible colour before the AWB loop converges.
-	 * Set to the D65 grey-card gains measured on the production sensor.
-	 */
-	float refRGain_ = 1.0f;
-	float refBGain_ = 1.0f;
+	/* CT clamp limits (YAML: color_temperature.min/max) */
+	float ctMin_ = 1800.0f;
+	float ctMax_ = 15000.0f;
+
+	/* Reference gains at configure() before AWB converges (YAML: reference_gains) */
+	float refRGain_ = 2.55f;
+	float refBGain_ = 2.10f;
 	float refGrGain_ = 1.0f;
 	float refGbGain_ = 1.0f;
 
-	/*
-	 * Blend fraction [0.0–1.0] of the highlight-based illuminant estimate
-	 * mixed into the grey-world gain computation. Near-saturated pixels
-	 * (top 20% intensity) are closer to the true illuminant colour than
-	 * the full-frame mean, improving AWB accuracy in high-saturation scenes.
-	 * 0.0 = pure grey-world; 0.3 gives a good balance for outdoor shooting.
-	 * Tunable via YAML highlight_weight.
-	 */
-	float highlightWeight_ = 0.3f;
+	/* Fallback CT when no prior estimate exists (YAML: ct_fallback) */
+	float defaultCt_ = 5500.0f;
+
+	/* Per-CT reference gain table (YAML: reference_gains_table) */
+	struct RefGainEntry {
+		float ct;
+		float r;
+		float b;
+	};
+	std::vector<RefGainEntry> refGainTable_;
+
+	std::pair<float, float> interpolateRefGains(float ct) const;
+
+	/* Highlight-blend weight (YAML: highlight_weight) */
+	float highlightWeight_ = 0.3f; /* 0=pure grey-world, 1=pure highlight */
 
 	/*
-	 * Set true when the maximum per-channel delta is below
-	 * stabilityThreshold_ for the current frame. Written to
-	 * controls::AwbLocked in metadata.
+	 * Robertson CT correction PWL table (YAML: ct_correction_pwl).
+	 * Maps Robertson-estimated CT → corrected CT using piecewise linear
+	 * interpolation. Calibrated from ColorChecker captures under known
+	 * illuminants. Without calibration the ct_color_matrix approximation
+	 * causes systematic errors — up to +47% at 2860K for IMX219.
+	 *
+	 * Format: pairs of [robertson_K, corrected_K], sorted ascending
+	 * by robertson_K. Empty = no correction applied.
 	 */
+	struct CtCorrectionPoint {
+		float robertson; /* Robertson raw estimate in K */
+		float corrected; /* True CCT in K               */
+	};
+	/* ---- Runtime state — NOT tuning params ---- */
+	unsigned int awbFrameCount_ = 0;
 	bool awbStable_ = false;
-	/*
-	 * AWB re-enters converging state only when the per-channel delta
-	 * exceeds this threshold. Set to 2x stabilityThreshold_ in init()
-	 * to provide hysteresis against colour flicker near the boundary.
-	 */
-	float resumeThreshold_ = 0.030f;
 };
 
 } /* namespace ipa::microchip_isc */

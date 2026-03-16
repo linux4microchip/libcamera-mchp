@@ -1,7 +1,4 @@
 ---
-# SPDX-License-Identifier: CC0-1.0
-%YAML 1.1
----
 version: 1
 # Algorithm configurations
 # Hardware capabilities (hasDpc, hasBipartiteGamma, hasCbhs, statsAvailable)
@@ -19,10 +16,18 @@ algorithms:
       black_level_b: 64
   - Awb:
       convergence:
-        speed: 0.1
+        # Tracking speed [0-1]: fraction of gain error corrected per update.
+        # Used after startup_frames to give smooth temporal tracking.
+        speed: 0.3
+        # Startup speed [0-1]: fast convergence for the first startup_frames
+        # updates, matching the RPi IPA approach of instant convergence during
+        # sensor warmup so gains reach steady state before the lock check.
+        startup_speed: 1.0
+        # Number of frames to use startup_speed before switching to speed.
+        startup_frames: 10
         damping: 0.85
         stability_threshold: 0.015
-        frames: 8
+        frames: 3
         # Minimum scene luminance (histogram units 0-511) below which AWB
         # updates are suppressed. Near-dark scenes produce unreliable
         # channel means due to ISC 8-bit histogram quantization.
@@ -37,7 +42,7 @@ algorithms:
       # green-balance ratio. Tighten for more stable but slower adaptation.
       gain_limits:
         r_b_min: 0.2
-        r_b_max: 3.0
+        r_b_max: 16.0
         gb_min: 0.9
         gb_max: 1.1
 
@@ -46,12 +51,33 @@ algorithms:
       # 0.0 = pure grey-world; 0.3 balances accuracy with stability.
       highlight_weight: 0.3
 
-      # Reference (neutral daylight D65) gains applied at configure() time
-      # so the first frames have correct colour before AWB converges.
-      # Measure under D65 illumination with a grey card at 18% reflectance.
+      # Fallback colour temperature used when no prior CT estimate exists.
+      # 5500 K covers outdoor daylight and typical indoor LED.
+      ct_fallback: 5500
+
+      # Per-CT reference gain table — interpolated at configure() from the
+      # last-known CT so the first frame has near-correct white balance for
+      # any illuminant (indoor tungsten → outdoor daylight → overcast sky)
+      # without waiting for the AWB loop to converge.
+      #
+      # Calibrate: point at an 18% grey card per illuminant, wait for
+      # AwbLocked=true in metadata, read ColourGains. Values below are
+      # approximate for IMX219 + standard IR-cut lens.
+      reference_gains_table:
+        - { ct: 2500, r: 4.20, b: 1.05 }   # Candlelight / deep tungsten
+        - { ct: 3000, r: 3.80, b: 1.20 }   # Tungsten lamp
+        - { ct: 3500, r: 3.40, b: 1.40 }   # Halogen / warm LED
+        - { ct: 4000, r: 3.00, b: 1.65 }   # Cool fluorescent / neutral LED
+        - { ct: 4500, r: 2.80, b: 1.85 }   # Midday window light
+        - { ct: 5500, r: 2.55, b: 2.10 }   # Daylight / noon sun
+        - { ct: 6500, r: 2.30, b: 2.40 }   # D65 / overcast
+        - { ct: 7500, r: 2.10, b: 2.75 }   # Heavily overcast / open shade
+        - { ct: 9000, r: 1.85, b: 3.20 }   # Blue sky / deep shade
+
+      # Scalar fallback used only when reference_gains_table is absent.
       reference_gains:
-        r: 1.65
-        b: 1.45
+        r: 2.55
+        b: 2.10
         gr: 1.0
         gb: 1.02
 

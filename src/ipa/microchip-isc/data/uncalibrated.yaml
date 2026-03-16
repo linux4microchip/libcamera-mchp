@@ -1,7 +1,4 @@
 ---
-# SPDX-License-Identifier: CC0-1.0
-%YAML 1.1
----
 # Generic fallback tuning file for uncalibrated sensors.
 # Used when no sensor-specific tuning file is available.
 # All algorithms use their built-in defaults.
