@@ -29,8 +29,6 @@
 #include <libcamera/formats.h>
 #include <libcamera/stream.h>
 #include <libcamera/transform.h>
-#include <libcamera/color_space.h>
-#include <libcamera/control_ids.h>
 
 #include <libcamera/ipa/microchip_isc_ipa_interface.h>
 #include <libcamera/ipa/microchip_isc_ipa_proxy.h>
@@ -67,7 +65,8 @@ class MicrochipISCCameraData : public Camera::Private
 public:
 	MicrochipISCCameraData(PipelineHandler *pipe, std::shared_ptr<MediaDevice> media)
 		: Camera::Private(pipe), media_(media),
-		  statsEnabled_(false), statsStreaming_(false)
+		  statsEnabled_(false), statsStreaming_(false),
+		  videoStreaming_(false)
 	{
 		streams_.resize(2);
 		ipa_ = IPAManager::createIPA<ipa::microchip_isc::IPAProxyMicrochipISC>(pipe, 1, 1);
@@ -114,6 +113,7 @@ public:
 	ControlInfoMap ipaControls_;
 	bool statsEnabled_;
 	bool statsStreaming_;
+	bool videoStreaming_;
 
 	struct FrameInfo {
 		Request *request = nullptr;
@@ -703,10 +703,10 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 		 */
 		bool isXisc = (data->iscVideo_ &&
 			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
-		ipaConfig.hwCaps.hasDpc            = isXisc;
+		ipaConfig.hwCaps.hasDpc = isXisc;
 		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
-		ipaConfig.hwCaps.hasCbhs           = isXisc;
-		ipaConfig.hwCaps.statsAvailable    = foundStatsVideo;
+		ipaConfig.hwCaps.hasCbhs = isXisc;
+		ipaConfig.hwCaps.statsAvailable = foundStatsVideo;
 
 		ControlInfoMap ipaControls;
 		ret = data->ipa_->init({ ipaTuningFile, sensorModel }, ipaConfig,
@@ -825,10 +825,10 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 
 		bool isXisc = (data->iscVideo_ &&
 			       data->iscVideo_->controls().count(V4L2_CID_HUE) > 0);
-		ipaConfig.hwCaps.hasDpc            = isXisc;
+		ipaConfig.hwCaps.hasDpc = isXisc;
 		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
-		ipaConfig.hwCaps.hasCbhs           = isXisc;
-		ipaConfig.hwCaps.statsAvailable    = data->statsEnabled_;
+		ipaConfig.hwCaps.hasCbhs = isXisc;
+		ipaConfig.hwCaps.statsAvailable = data->statsEnabled_;
 
 		uint8_t bayerOrder = static_cast<uint8_t>(
 			data->sensor_->bayerOrder(Transform::Identity));
@@ -928,7 +928,18 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 		data->statsStreaming_ = true;
 	}
 
-	/* Import and start video */
+	/*
+	 * Import buffers but do NOT call streamOn() yet. The ISC kernel
+	 * driver's start_streaming() dequeues the first buffer from the
+	 * DMA list immediately. If STREAMON is issued before any buffer
+	 * has been queued via queueRequest() the DMA queue is empty and
+	 * subsequent QBUF calls return -ETIMEDOUT.
+	 *
+	 * streamOn() is deferred to the first queueBuffer() call where
+	 * the kernel DMA queue already contains at least one buffer.
+	 * This matches the pattern used by mainline libcamera pipelines
+	 * (simple, rkisp1) that drive V4L2 devices with the same constraint.
+	 */
 	unsigned int count = 8;
 	int ret = data->iscVideo_->importBuffers(count);
 	if (ret < 0) {
@@ -943,20 +954,9 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 		return ret;
 	}
 
-	ret = data->iscVideo_->streamOn();
-	if (ret < 0) {
-		LOG(MicrochipISC, Error) << "Failed to start video streaming: " << ret;
-		if (data->statsEnabled_ && data->statsStreaming_) {
-			data->statsDevice_->streamOff();
-			data->statsStreaming_ = false;
-		}
-		data->freeStatsBuffers();
-		if (data->ipa_)
-			data->ipa_->stop();
-		return ret;
-	}
+	data->videoStreaming_ = false;
 
-	LOG(MicrochipISC, Debug) << "Camera ready";
+	LOG(MicrochipISC, Debug) << "Camera ready — video streamOn deferred to first buffer";
 	return 0;
 }
 
@@ -990,19 +990,15 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	else if (id == controls::AnalogueGain) {
 		cid = V4L2_CID_ANALOGUE_GAIN;
 		isIpaHandled = true;
-	}
-	else if (id == controls::DigitalGain) {
+	} else if (id == controls::DigitalGain) {
 		cid = V4L2_CID_DIGITAL_GAIN;
 		isIpaHandled = true;
-	}
-	else if (id == controls::AwbEnable) {
+	} else if (id == controls::AwbEnable) {
 		isIpaHandled = true;
-	}
-	else if (id == controls::ExposureTime) {
+	} else if (id == controls::ExposureTime) {
 		cid = V4L2_CID_EXPOSURE;
 		isIpaHandled = true;
-	}
-	else
+	} else
 		return -EINVAL;
 
 	/* Handle sensor controls differently */
@@ -1419,6 +1415,25 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 			}
 		}
 	}
+
+	/*
+	 * Deferred streamOn: issue VIDIOC_STREAMON only after the first
+	 * buffer has been queued into the kernel DMA list. The ISC
+	 * start_streaming() handler immediately dequeues the first entry
+	 * from the DMA queue; calling STREAMON before any buffer is present
+	 * leaves the queue empty and all subsequent QBUF calls return
+	 * -ETIMEDOUT.
+	 */
+	if (!data->videoStreaming_) {
+		ret = data->iscVideo_->streamOn();
+		if (ret < 0) {
+			LOG(MicrochipISC, Error) << "Failed to start video streaming: " << ret;
+			return ret;
+		}
+		data->videoStreaming_ = true;
+		LOG(MicrochipISC, Debug) << "Video streamOn issued on first buffer";
+	}
+
 	return 0;
 }
 
@@ -1562,7 +1577,10 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 	data->freeStatsBuffers();
 
 	if (data->iscVideo_) {
-		data->iscVideo_->streamOff();
+		if (data->videoStreaming_) {
+			data->iscVideo_->streamOff();
+			data->videoStreaming_ = false;
+		}
 		data->iscVideo_->releaseBuffers();
 	}
 
