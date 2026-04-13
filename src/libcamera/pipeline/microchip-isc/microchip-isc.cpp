@@ -1289,13 +1289,21 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
 			continue;
 		}
 
+		/*
+		 * Use the requested size as the capture size, not the
+		 * subdev-negotiated size. The sensor may snap to a wider
+		 * native width (e.g. 3280 instead of 3264) but the ISC
+		 * video device will clip to the requested size. Storing
+		 * the requested size ensures generateConfiguration() can
+		 * match it against user requests.
+		 */
 		Configuration config;
 		config.code = code;
 		config.sensorSize = size;
 		config.captureFormat = pixelFormat;
-		config.captureSize = format.size;
+		config.captureSize = size;
 		config.outputFormats = { pixelFormat };
-		config.outputSizes = SizeRange{ format.size, format.size };
+		config.outputSizes = SizeRange{ size, size };
 
 		configs_.push_back(config);
 		LOG(MicrochipISC, Debug) << "Added configuration: " << pixelFormat.toString()
