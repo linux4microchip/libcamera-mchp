@@ -329,7 +329,8 @@ void MicrochipISCCameraData::statsProcessed(unsigned int request,
 	auto it = frameInfo_.find(request);
 	if (it != frameInfo_.end()) {
 		FrameInfo &info = it->second;
-		info.request->metadata().merge(metadata);
+		info.request->metadata().merge(metadata,
+					       ControlList::MergePolicy::OverwriteExisting);
 	}
 }
 
@@ -1478,7 +1479,8 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	 * carries up-to-date convergence state for the application.
 	 */
 	if (!data->latestIpaMetadata_.empty())
-		request->metadata().merge(data->latestIpaMetadata_);
+		request->metadata().merge(data->latestIpaMetadata_,
+					  ControlList::MergePolicy::OverwriteExisting);
 
 	completeBuffer(request, buffer);
 	info->bufferDone = true;
