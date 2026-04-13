@@ -895,10 +895,25 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 
 	data->frameInfo_.clear();
 
-	/* Configure hardware */
-	ControlList awbCtrls(data->iscVideo_->controls());
-	awbCtrls.set(V4L2_CID_AUTO_WHITE_BALANCE, 0);
-	data->iscVideo_->setControls(&awbCtrls);
+	/*
+	 * Disable kernel AWB before the IPA takes over WB gain control.
+	 * When V4L2_CID_AUTO_WHITE_BALANCE=1 the kernel marks the WB gain
+	 * registers as V4L2_CTRL_FLAG_INACTIVE and silently discards every
+	 * IPA gain write (isc_s_ctrl() returns 0 without touching hardware).
+	 * The IPA also sets AWB=0 inside setIspControls(), but that fires
+	 * asynchronously on the first stats callback — this synchronous call
+	 * at start() time ensures the gains are active from the very first
+	 * frame.
+	 */
+	{
+		ControlList awbCtrls(data->iscVideo_->controls());
+		awbCtrls.set(V4L2_CID_AUTO_WHITE_BALANCE, static_cast<int32_t>(0));
+		int ret = data->iscVideo_->setControls(&awbCtrls);
+		if (ret < 0)
+			LOG(MicrochipISC, Warning) << "Failed to disable kernel AWB: " << ret;
+		else
+			LOG(MicrochipISC, Debug) << "Kernel AWB disabled for IPA control";
+	}
 
 	if (data->ipa_) {
 		int ipaRet = data->ipa_->start();
