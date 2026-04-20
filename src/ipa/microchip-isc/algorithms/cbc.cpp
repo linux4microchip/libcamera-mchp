@@ -57,6 +57,24 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 	 * controls unconditionally would expose ranges the hardware cannot
 	 * honour.  Restrict registration to platforms where hasCbhs is set.
 	 */
+	/*
+	 * Register the standard image quality controls so that apps (and
+	 * --list-controls) can discover them and so that queueRequest()
+	 * receives them in the request ControlList.
+	 *
+	 * Brightness: float [-1.0, +1.0], neutral 0.0
+	 *   Converted to ISC CBHS register range [-1024, +1023]:
+	 *   hw = clamp(v * 1023, -1024, 1023)   (mirrors rkisp1 cproc.cpp)
+	 *
+	 * Contrast: float [0.0, 2.0], neutral 1.0
+	 *   Passed to the adaptive contrast engine as a user multiplier on
+	 *   top of the histogram-derived gain. 1.0 = no user adjustment.
+	 *   Stored as float in activeState; CBC process() multiplies the
+	 *   blended contrast gain by this value before writing to hardware.
+	 */
+	context.ctrlMap[&controls::Brightness] = ControlInfo(-1.0f, 1.0f, 0.0f);
+	context.ctrlMap[&controls::Contrast] = ControlInfo(0.0f, 2.0f, 1.0f);
+
 	if (context.configuration.hw.hasCbhs) {
 		context.ctrlMap[&controls::Saturation] =
 			ControlInfo(0.0f, 2.0f, 1.0f);
@@ -111,9 +129,36 @@ void Cbc::queueRequest(IPAContext &context,
 		       [[maybe_unused]] IPAFrameContext &frameContext,
 		       const ControlList &controls)
 {
+	/*
+	 * Brightness: libcamera float [-1.0, +1.0] → ISC CBHS int [-1024,+1023]
+	 * Conversion: hw = round(v * 1023)  — mirrors rkisp1 cproc.cpp
+	 * convertBrightness: v * 128 (8-bit CPROC); we scale to 1023 for ISC.
+	 * Stored in activeState; process() writes it to the ISP control list.
+	 */
+	const auto &brightness = controls.get(controls::Brightness);
+	if (brightness.has_value()) {
+		context.activeState.cbc.brightness = static_cast<int32_t>(
+			std::clamp(brightness.value() * 1023.0f,
+				   kBrightnessMin, kBrightnessMax));
+	}
+
+	/*
+	 * Contrast: libcamera float [0.0, 2.0], neutral 1.0.
+	 * Stored as a user multiplier; process() applies it on top of the
+	 * adaptive histogram-derived contrast gain. 1.0 = no user adjustment.
+	 * Neutral (1.0) does not override the adaptive algorithm — it scales it.
+	 */
+	const auto &contrast = controls.get(controls::Contrast);
+	if (contrast.has_value())
+		context.activeState.cbc.userContrastMultiplier =
+			std::clamp(contrast.value(), 0.0f, 2.0f);
+
+	/*
+	 * Saturation: libcamera float [0.0, 2.0], neutral 1.0.
+	 * Converted to ISC CBHS register: hw = v * kSaturationScale (16).
+	 */
 	const auto &saturation = controls.get(controls::Saturation);
 	if (saturation.has_value()) {
-		/* Convert libcamera scale (1.0=normal) to hardware (16=unity). */
 		int32_t sat = static_cast<int32_t>(
 			std::clamp(saturation.value() * kSaturationScale,
 				   0.0f, kSaturationScale * 2.0f));
@@ -179,7 +224,13 @@ void Cbc::process(IPAContext &context,
 	 * AGC owns luminance; CBC brightness only corrects static pipeline
 	 * offsets (e.g. sensor pedestal not fully removed by BLC).
 	 */
-	float brightness = static_cast<float>(defaultBrightness_);
+	/*
+	 * Use the user-requested brightness from activeState (set by
+	 * queueRequest() from controls::Brightness). Falls back to the YAML
+	 * default when no user request has been made (activeState initialised
+	 * to defaultBrightness_ in configure()).
+	 */
+	float brightness = static_cast<float>(context.activeState.cbc.brightness);
 
 	/* --- Contrast ---
 	 *
@@ -206,7 +257,25 @@ void Cbc::process(IPAContext &context,
 	 * At strength=0 contrast stays at unity; at strength=1 the full
 	 * histogram-derived gain is applied.
 	 */
-	float blendedGain = 1.0f + (contrastGain - 1.0f) * contrastStrength_;
+	/*
+	 * Apply user contrast multiplier (from controls::Contrast, default 1.0).
+	 * This scales the adaptive gain so:
+	 *   user=1.0 → pure adaptive (no change)
+	 *   user=1.5 → 50% stronger contrast than adaptive alone
+	 *   user=0.5 → 50% weaker contrast
+	 * Mirrors rkisp1 cproc.cpp pattern: user value scales the ISP param.
+	 */
+	float userMul = context.activeState.cbc.userContrastMultiplier;
+	float blendedGain = (1.0f + (contrastGain - 1.0f) * contrastStrength_) * userMul;
+
+	/*
+	 * Store the effective contrast multiplier in activeState so the AGC
+	 * can close the feedback loop. Without this, CBC boosts contrast by
+	 * up to 3× on dark low-spread scenes while the AGC targets a raw
+	 * histogram value unaware of the downstream brightness amplification,
+	 * causing systematic overexposure on dim indoor scenes.
+	 */
+	context.activeState.cbc.contrastGainLinear = blendedGain;
 
 	/* Convert to hardware units: unity = contrastUnityHw (16 on SAMA7G5, 256 on SAMA5D2) */
 	float targetContrastHw = blendedGain * context.configuration.hw.contrastUnityHw;
@@ -220,12 +289,40 @@ void Cbc::process(IPAContext &context,
 	cbc.contrast = static_cast<int32_t>(
 		std::clamp(contrast, kContrastMin, kContrastMax));
 
+	/*
+	 * CCM saturation compensation: the active CCM matrix introduces a
+	 * saturation boost as a side effect of off-diagonal cross-channel
+	 * correction. CCM stores this boost factor in ccm.satBoost. Divide
+	 * the nominal CBHS saturation by satBoost so the combined pipeline
+	 * saturation (CCM × CBHS) stays close to the intended value.
+	 *
+	 * Only applied on SAMA7G5 (hasCbhs = true) and only when the nominal
+	 * saturation has been explicitly set (not left at hardware reset 0).
+	 * The result is clamped to [0, kSaturationScale * 2.0f] (= 32) to
+		 * prevent exceeding the hardware register range (unity = 16,
+		 * maximum useful saturation = 2× unity). No smoothing is applied
+		 * here because the CCM matrix itself is already temporally smoothed.
+	 */
+	if (context.configuration.hw.hasCbhs) {
+		float satBoost = context.activeState.ccm.satBoost;
+		if (satBoost > 1.0f) {
+			/*
+			 * kSaturationScale * 2.0f matches the queueRequest() upper
+			 * clamp (libcamera Saturation=2.0 maps to hardware=32).
+			 */
+			float compensated = static_cast<float>(cbc.saturation) / satBoost;
+			cbc.saturation = static_cast<int32_t>(
+				std::clamp(compensated, 0.0f, kSaturationScale * 2.0f));
+		}
+	}
+
 	LOG(ISC_CBC, Debug)
 		<< "CBC: brightness=" << cbc.brightness
 		<< " spread=" << spread
 		<< " contrastGain=" << contrastGain
 		<< " contrast=" << cbc.contrast
 		<< " saturation=" << cbc.saturation
+		<< " (ccmSatBoost=" << context.activeState.ccm.satBoost << ")"
 		<< " hue=" << cbc.hue;
 }
 
