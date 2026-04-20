@@ -364,8 +364,8 @@ void MicrochipISCCameraData::statsProcessed(unsigned int request,
 	auto it = frameInfo_.find(request);
 	if (it != frameInfo_.end()) {
 		FrameInfo &info = it->second;
-		info.request->metadata().merge(metadata,
-					       ControlList::MergePolicy::OverwriteExisting);
+		info.request->_d()->metadata().merge(metadata,
+						     ControlList::MergePolicy::OverwriteExisting);
 	}
 }
 
@@ -1926,8 +1926,8 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	}
 
 	/* Always set SensorTimestamp — zero is valid (hardware may not provide one). */
-	request->metadata().set(controls::SensorTimestamp,
-				static_cast<int64_t>(buffer->metadata().timestamp));
+	request->_d()->metadata().set(controls::SensorTimestamp,
+				      static_cast<int64_t>(buffer->metadata().timestamp));
 
 	/*
 	 * Merge the most recent IPA metadata (AwbLocked, ColourTemperature, etc.)
@@ -1936,8 +1936,8 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	 * carries up-to-date convergence state for the application.
 	 */
 	if (!data->latestIpaMetadata_.empty())
-		request->metadata().merge(data->latestIpaMetadata_,
-					  ControlList::MergePolicy::OverwriteExisting);
+		request->_d()->metadata().merge(data->latestIpaMetadata_,
+						ControlList::MergePolicy::OverwriteExisting);
 
 	completeBuffer(request, buffer);
 	info->bufferDone = true;
