@@ -68,7 +68,15 @@ public:
 		  statsEnabled_(false), statsStreaming_(false),
 		  videoStreaming_(false)
 	{
-		streams_.resize(2);
+		/*
+		 * ISC has a single DMA output — only one stream is ever active.
+		 * Sized 2 previously for a future multi-stream extension that is
+		 * explicitly rejected in generateConfiguration(). Size to 1 to
+		 * avoid the queueRequestDevice loop silently skipping streams_[1]
+		 * (which has no buffer) on every request, and to avoid confusing
+		 * any consumer that iterates streams_ expecting real entries.
+		 */
+		streams_.resize(1);
 		ipa_ = IPAManager::createIPA<ipa::microchip_isc::IPAProxyMicrochipISC>(pipe, 1, 1);
 		if (ipa_) {
 			ipa_->statsProcessed.connect(this, &MicrochipISCCameraData::statsProcessed);
@@ -91,7 +99,24 @@ public:
 
 	struct Configuration {
 		uint32_t code;
+		/*
+		 * sensorSize: the user-visible / config-matching size. This is
+		 * the capture size clamped to the ISC video device maximum.
+		 * Used by generateConfiguration() to match user requests.
+		 *
+		 * nativeSensorSize: the actual size the sensor hardware
+		 * negotiates to. Some sensors snap to a wider native readout
+		 * (e.g. IMX219 snaps 3264→3280 at max resolution). The
+		 * subdevice chain (sensor→CSI→ISC scaler) must be configured
+		 * at nativeSensorSize so the kernel ISC driver sees the correct
+		 * RAW mbus code at the scaler input and sets bits_pipeline with
+		 * CFA_ENABLE|WB_ENABLE|GAM_ENABLE. The video device (DMA out)
+		 * is set to captureSize; the ISC scaler crops the difference.
+		 * Without this separation the kernel falls back to
+		 * bits_pipeline=0 (raw passthrough), bypassing all ISP stages.
+		 */
 		Size sensorSize;
+		Size nativeSensorSize;
 		PixelFormat captureFormat;
 		Size captureSize;
 		std::vector<PixelFormat> outputFormats;
@@ -99,7 +124,15 @@ public:
 	};
 
 	std::unique_ptr<CameraSensor> sensor_;
-	std::map<std::string, std::unique_ptr<V4L2Subdevice>> iscSubdev_;
+	/*
+	 * ISC subdevices in pipeline order: sensor → bridge(s) → scaler.
+	 * Format negotiation (setupFormats) must propagate from sensor outward;
+	 * std::map orders by name (alphabetical) which is not pipeline order
+	 * and would set formats on the scaler before the bridge on some systems.
+	 * std::vector preserves insertion order from match() which walks the
+	 * media graph topology — correct pipeline order.
+	 */
+	std::vector<std::pair<std::string, std::unique_ptr<V4L2Subdevice>>> iscSubdev_;
 	std::unique_ptr<V4L2VideoDevice> iscVideo_;
 	std::unique_ptr<V4L2VideoDevice> statsDevice_;
 	std::vector<std::unique_ptr<FrameBuffer>> statsBuffers_;
@@ -117,8 +150,15 @@ public:
 
 	struct FrameInfo {
 		Request *request = nullptr;
-		FrameBuffer *statsBuffer = nullptr;
 		bool bufferDone = false;
+		/*
+		 * statsDone: set true when processStats() has been called for
+		 * this frame. Used only by stopDevice() to distinguish frames
+		 * whose image DMA stalled (bufferDone=false) from those that
+		 * completed normally. Stats buffers are recycled independently
+		 * and do NOT gate request completion (tryCompleteRequest only
+		 * checks bufferDone + hasPendingBuffers).
+		 */
 		bool statsDone = false;
 	};
 
@@ -126,10 +166,9 @@ public:
 	ControlList latestIpaMetadata_;
 
 	FrameInfo *findFrameInfo(Request *request);
-	FrameInfo *findFrameInfo(FrameBuffer *buffer);
 
 private:
-	void tryPipeline(unsigned int code, const Size &size);
+	void tryPipeline(unsigned int code, const Size &size, const Size &maxVideoSize);
 };
 
 /**
@@ -221,13 +260,19 @@ private:
 
 unsigned int MicrochipISCCameraData::getMediaBusFormat(PixelFormat *pixelFormat) const
 {
-	auto it = MicrochipISCCameraConfiguration::formatsMap_.find(*pixelFormat);
-	if (it != MicrochipISCCameraConfiguration::formatsMap_.end())
+	const auto &fmtMap = MicrochipISCCameraConfiguration::formatsMap_;
+	auto it = fmtMap.find(*pixelFormat);
+	if (it != fmtMap.end())
 		return it->second;
 
-	/* If not found, default format sets to YUYV */
+	/* Requested format not in the map — fall back to YUYV. */
 	*pixelFormat = formats::YUYV;
-	return MicrochipISCCameraConfiguration::formatsMap_.at(*pixelFormat);
+	auto yuvIt = fmtMap.find(formats::YUYV);
+	if (yuvIt == fmtMap.end()) {
+		LOG(MicrochipISC, Error) << "YUYV fallback not in formatsMap_";
+		return 0;
+	}
+	return yuvIt->second;
 }
 
 MicrochipISCCameraData::FrameInfo *MicrochipISCCameraData::findFrameInfo(Request *request)
@@ -237,16 +282,6 @@ MicrochipISCCameraData::FrameInfo *MicrochipISCCameraData::findFrameInfo(Request
 		return nullptr;
 
 	return &it->second;
-}
-
-MicrochipISCCameraData::FrameInfo *MicrochipISCCameraData::findFrameInfo(FrameBuffer *buffer)
-{
-	for (auto &[sequence, info] : frameInfo_) {
-		if (info.statsBuffer == buffer)
-			return &info;
-	}
-
-	return nullptr;
 }
 
 int MicrochipISCCameraData::allocateStatsBuffers()
@@ -371,6 +406,25 @@ void MicrochipISCCameraData::setIspControls(const ControlList &controls)
 		LOG(MicrochipISC, Error) << "Failed to apply ISC controls: " << ret;
 }
 
+/*
+ * formatsMap_ maps a libcamera PixelFormat to the V4L2 media-bus format
+ * code used by the sensor subdevice chain. This map serves TWO purposes:
+ *
+ *  1. Sensor enumeration (init): only Bayer mbus codes are meaningful here —
+ *     the ISC sensor always outputs raw Bayer data. ISC output formats
+ *     (RGB565, YUYV, UYVY) are produced by the ISC post-processing pipeline
+ *     and are NOT sensor mbus formats. For sensor enumeration, only the Bayer
+ *     entries are used; the ISC output entries yield empty sensor size lists
+ *     (sensor_->sizes(MEDIA_BUS_FMT_RGB565_2X8_LE) == {}) and are harmless
+ *     but wasteful. See sensorMbusFormats_ below for the correct subset.
+ *
+ *  2. Format advertisement (validate / getMediaBusFormat): all entries are
+ *     valid — the ISC converts Bayer to any of these output formats.
+ *
+ * The mix of sensor-mbus and ISC-output-format entries in one map is a
+ * historical artefact. The correct fix is to use sensorMbusFormats_ for
+ * enumeration and formatsMap_ only for advertisement. This is done in init().
+ */
 const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::formatsMap_ = {
 	{ formats::SBGGR8, MEDIA_BUS_FMT_SBGGR8_1X8 },
 	{ formats::SGBRG8, MEDIA_BUS_FMT_SGBRG8_1X8 },
@@ -387,7 +441,30 @@ const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::forma
 	{ formats::YUYV, MEDIA_BUS_FMT_YUYV8_2X8 },
 	{ formats::UYVY, MEDIA_BUS_FMT_UYVY8_2X8 },
 	{ formats::RGB565, MEDIA_BUS_FMT_RGB565_2X8_LE },
-	/* Add other formats as needed */
+};
+
+/*
+ * Sensor mbus format codes used for pipeline enumeration only.
+ * These are the Bayer codes that the ISC sensor outputs; ISC post-processing
+ * converts them to ISC output formats (RGB565, YUYV, etc.) downstream.
+ * Using only these for sensor_->sizes() enumeration avoids spurious
+ * tryPipeline() calls for ISC-output mbus codes that the sensor never
+ * produces, which previously caused O(n_formats × n_sizes) duplicate entries
+ * in configs_ for every sensor mode.
+ */
+static const std::vector<unsigned int> kSensorMbusFormats = {
+	MEDIA_BUS_FMT_SBGGR8_1X8,
+	MEDIA_BUS_FMT_SGBRG8_1X8,
+	MEDIA_BUS_FMT_SGRBG8_1X8,
+	MEDIA_BUS_FMT_SRGGB8_1X8,
+	MEDIA_BUS_FMT_SBGGR10_1X10,
+	MEDIA_BUS_FMT_SGBRG10_1X10,
+	MEDIA_BUS_FMT_SGRBG10_1X10,
+	MEDIA_BUS_FMT_SRGGB10_1X10,
+	MEDIA_BUS_FMT_SBGGR12_1X12,
+	MEDIA_BUS_FMT_SGBRG12_1X12,
+	MEDIA_BUS_FMT_SGRBG12_1X12,
+	MEDIA_BUS_FMT_SRGGB12_1X12,
 };
 
 std::unique_ptr<CameraConfiguration>
@@ -400,6 +477,25 @@ PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
 
 	if (roles.empty())
 		return config;
+
+	/*
+	 * The ISC has a single DMA output — it cannot drive two independent
+	 * streams simultaneously. Reject multi-stream requests early so the
+	 * caller gets a clear nullptr rather than a silently broken config
+	 * where both streams share the same pipe config from the last role.
+	 */
+	if (roles.size() > 1) {
+		LOG(MicrochipISC, Error)
+			<< "Multi-stream configuration not supported "
+			<< "(requested " << roles.size() << " streams, max 1)";
+		return nullptr;
+	}
+
+	/* Safety: no sensor modes enumerated — hardware not usable. */
+	if (data->configs_.empty()) {
+		LOG(MicrochipISC, Error) << "No sensor configurations available";
+		return nullptr;
+	}
 
 	for (StreamRole role : roles) {
 		StreamConfiguration cfg{};
@@ -474,6 +570,10 @@ PipelineHandlerMicrochipISC::generateConfiguration(Camera *camera,
 Size PipelineHandlerMicrochipISC::findOptimalSize(const std::vector<MicrochipISCCameraData::Configuration> &configs,
 						  const Size &target)
 {
+	/* Guard: callers check configs_.empty() before reaching here, but be safe. */
+	if (configs.empty())
+		return Size(0, 0);
+
 	Size optimal = configs[0].captureSize;
 
 	for (const auto &config : configs) {
@@ -490,6 +590,9 @@ Size PipelineHandlerMicrochipISC::findOptimalSize(const std::vector<MicrochipISC
 
 PixelFormat PipelineHandlerMicrochipISC::findRawFormat(const std::vector<MicrochipISCCameraData::Configuration> &configs)
 {
+	if (configs.empty())
+		return PixelFormat{};
+
 	/* List of known raw formats */
 	const std::vector<PixelFormat> rawFormats = {
 		formats::SBGGR8,
@@ -682,9 +785,24 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	/* Initialize IPA with tuning file */
 	if (data->ipa_) {
 		std::string sensorModel = data->sensor_->model();
-		std::string ipaTuningFile =
-			data->ipa_->configurationFile(sensorModel + ".yaml",
-						      "uncalibrated.yaml");
+
+		/*
+		 * Allow the tuning file to be overridden via the
+		 * MCHPCAM_TUNING_FILE environment variable.
+		 * This is the standard way to select sensor variants
+		 * (e.g. imx219_noir.yaml) without modifying the kernel
+		 * driver or device tree.
+		 *
+		 * Example:
+		 *   MCHPCAM_TUNING_FILE=imx219_noir.yaml mchpcam-still -o t.jpg
+		 * or via the --noir flag in mchpcam-still which sets this env var.
+		 */
+		const char *tuningOverride = std::getenv("MCHPCAM_TUNING_FILE");
+		std::string ipaTuningFile = tuningOverride
+						    ? data->ipa_->configurationFile(tuningOverride,
+										    "uncalibrated.yaml")
+						    : data->ipa_->configurationFile(sensorModel + ".yaml",
+										    "uncalibrated.yaml");
 		ipa::microchip_isc::IPAConfigInfo ipaConfig{};
 		ret = data->sensor_->sensorInfo(&ipaConfig.sensorInfo);
 		if (ret) {
@@ -774,33 +892,55 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		return -EINVAL;
 	}
 
+	/*
+	 * Build the subdevice format using the NATIVE sensor size, not the
+	 * capture (adjusted) size. The native size is what the sensor hardware
+	 * actually outputs (e.g. 3280×2464 for IMX219 at max resolution) and
+	 * is what every subdevice in the chain from sensor → CSI → ISC scaler
+	 * must be configured with. This ensures the kernel ISC driver sees the
+	 * correct RAW mbus code at the scaler input and sets bits_pipeline with
+	 * CFA_ENABLE | WB_ENABLE | GAM_ENABLE | ... instead of falling back to
+	 * bits_pipeline=0 (raw passthrough) when there is a size mismatch.
+	 *
+	 * The video device (ISC DMA output) is separately configured with
+	 * captureSize (the user-requested, video-device-clamped size). The ISC
+	 * scaler crops nativeSensorSize → captureSize transparently.
+	 *
+	 * For sensors where native == capture (all sizes except max on some
+	 * sensors like IMX219) nativeSensorSize == sensorSize and there is no
+	 * difference in behaviour.
+	 */
 	V4L2SubdeviceFormat sensorFormat{};
 	sensorFormat.code = pipeConfig->code;
-	sensorFormat.size = pipeConfig->sensorSize;
+	sensorFormat.size = pipeConfig->nativeSensorSize;
 
-	LOG(MicrochipISC, Debug) << "Using validated config: sensor="
-				 << sensorFormat.size.width << "x" << sensorFormat.size.height;
+	LOG(MicrochipISC, Debug) << "Configuring subdev chain: native="
+				 << sensorFormat.size.width << "x" << sensorFormat.size.height
+				 << " capture=" << pipeConfig->captureSize.width
+				 << "x" << pipeConfig->captureSize.height;
 
-	/* Configure the sensor with validated format */
-	ret = data->sensor_->setFormat(&sensorFormat);
-	if (ret < 0) {
-		LOG(MicrochipISC, Error) << "Failed to set sensor format: " << ret;
-		return ret;
-	}
-
-	LOG(MicrochipISC, Debug) << "Sensor format: " << sensorFormat.toString();
-
-	/* Configure the ISC with the sensor format */
-	V4L2SubdeviceFormat iscFormat = sensorFormat;
-	ret = data->setupFormats(&iscFormat, V4L2Subdevice::ActiveFormat);
+	/* Configure sensor + full subdevice chain at native sensor size */
+	ret = data->setupFormats(&sensorFormat, V4L2Subdevice::ActiveFormat);
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to setup ISC formats: " << ret;
 		return ret;
 	}
 
+	LOG(MicrochipISC, Debug) << "Sensor/subdev format negotiated: " << sensorFormat.toString();
+
 	V4L2DeviceFormat captureFormat;
 	captureFormat.fourcc = data->iscVideo_->toV4L2PixelFormat(pipeConfig->captureFormat);
 	captureFormat.size = pipeConfig->captureSize;
+
+	/*
+	 * Set colorspace for YUV output formats so the ISC CSC stage is
+	 * configured correctly. Without this the kernel leaves colorspace
+	 * unset and the CSC matrix is not applied, producing black output.
+	 */
+	if (pipeConfig->captureFormat == formats::YUYV ||
+	    pipeConfig->captureFormat == formats::UYVY ||
+	    pipeConfig->captureFormat == formats::YUV420)
+		captureFormat.colorSpace = ColorSpace::Srgb;
 
 	LOG(MicrochipISC, Debug) << "Using validated config: capture="
 				 << captureFormat.size.width << "x" << captureFormat.size.height;
@@ -820,7 +960,40 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 			LOG(MicrochipISC, Error) << "Camera sensor information not available";
 			return ret;
 		}
+
+		/*
+		 * sensorControls is the ControlInfoMap (min/max/default ranges)
+		 * — used for gain/exposure conversion factors.
+		 *
+		 * sensorLiveControls is a ControlList of the CURRENT values
+		 * read from the sensor immediately after setFormat(). These
+		 * reflect the actual operating parameters for the active mode:
+		 * hblank, vblank, and exposure limits that differ per mode.
+		 * The IPA uses these to compute lineDuration correctly for
+		 * every supported sensor resolution without hardcoding defaults.
+		 */
 		ipaConfig.sensorControls = data->sensor_->controls();
+		const std::vector<uint32_t> liveCtrlIds = {
+			V4L2_CID_HBLANK,
+			V4L2_CID_VBLANK,
+			V4L2_CID_EXPOSURE,
+			V4L2_CID_ANALOGUE_GAIN,
+		};
+		ipaConfig.sensorLiveControls =
+			data->sensor_->getControls(liveCtrlIds);
+
+		/*
+		 * nativeSensorWidth is the hardware pixel count per line for
+		 * the active sensor mode — the width that, combined with the
+		 * live hblank, gives the true line length for lineDuration.
+		 * This is the post-negotiation native width (e.g. 3280 for
+		 * IMX219 at max resolution) stored in nativeSensorSize by
+		 * tryPipeline(). The sensorInfo.outputSize.width reflects the
+		 * capture-clamped width (3264) which would give a wrong result.
+		 */
+		ipaConfig.nativeSensorWidth =
+			static_cast<uint32_t>(pipeConfig->nativeSensorSize.width);
+
 		if (data->iscVideo_)
 			ipaConfig.ispControls = data->iscVideo_->controls();
 
@@ -932,16 +1105,20 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 			return statsRet;
 		}
 
-		LOG(MicrochipISC, Debug) << "Stats buffers allocated, starting streamOn";
-		statsRet = data->statsDevice_->streamOn();
-		if (statsRet < 0) {
-			LOG(MicrochipISC, Error) << "Failed to start stats streaming: " << statsRet;
-			data->freeStatsBuffers();
-			if (data->ipa_)
-				data->ipa_->stop();
-			return statsRet;
-		}
-		data->statsStreaming_ = true;
+		/*
+		 * Do NOT call statsDevice_->streamOn() here. The ISC stats
+		 * engine fires HISDONE only when the ISC video pipeline is
+		 * running — starting stats DMA before video DMA causes all
+		 * stats buffers to remain queued with no completions until
+		 * streamOff() returns them as cancelled at stop time.
+		 *
+		 * stats streamOn() is deferred to queueRequestDevice() where
+		 * it is issued immediately after video streamOn(), ensuring
+		 * the two DMAs start in the correct order (video first).
+		 */
+		LOG(MicrochipISC, Debug)
+			<< "Stats buffers allocated — streamOn deferred to first video frame";
+		data->statsStreaming_ = false; /* set true in queueRequestDevice */
 	}
 
 	/*
@@ -1026,9 +1203,21 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	case V4L2_CID_BRIGHTNESS:
 	case V4L2_CID_CONTRAST: {
 		/*
-		 * Clamp to the hardware range when the control is registered
-		 * in the ISP's ControlInfoMap; pass through unclamped otherwise.
-		 * Use find() rather than at() to avoid throwing on unknown IDs.
+		 * libcamera publishes Brightness in the normalised range
+		 * [-1.0, +1.0] and Contrast in [0.0, 1.0] per the libcamera
+		 * control spec. The ISC V4L2 hardware uses integer ranges:
+		 *   Brightness: V4L2_CID_BRIGHTNESS  [-1024, +1023] unity=0
+		 *   Contrast:   V4L2_CID_CONTRAST    [-2048, +2047] unity=16
+		 *
+		 * Scale the normalised float to the full hardware range so that
+		 * setting Brightness=0.5 maps to ~512 (half-scale boost) rather
+		 * than 1 (barely perceptible). The V4L2 info map supplies the
+		 * authoritative [min, max] for the clamp.
+		 *
+		 * Scaling formula (matches RkISP1 and IPU3 patterns):
+		 *   val = round(fval * (max - min) / 2.0 + (max + min) / 2.0)
+		 * For symmetric ranges (min == -max) this simplifies to:
+		 *   val = round(fval * max)
 		 */
 		float fval = value.get<float>();
 		int32_t val = static_cast<int32_t>(std::lroundf(fval));
@@ -1038,6 +1227,15 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 			if (it != infoMap->end()) {
 				int32_t min = it->second.min().get<int32_t>();
 				int32_t max = it->second.max().get<int32_t>();
+				/* Scale normalised float to hardware integer range */
+				float mid = (static_cast<float>(max) +
+					     static_cast<float>(min)) /
+					    2.0f;
+				float half = (static_cast<float>(max) -
+					      static_cast<float>(min)) /
+					     2.0f;
+				val = static_cast<int32_t>(
+					std::lroundf(fval * half + mid));
 				val = std::clamp(val, min, max);
 			}
 		}
@@ -1121,7 +1319,7 @@ int MicrochipISCCameraData::initSubdev(MediaEntity *entity)
 		return ret;
 	}
 
-	iscSubdev_[entityName] = std::move(subdev);
+	iscSubdev_.emplace_back(entityName, std::move(subdev));
 	LOG(MicrochipISC, Debug) << "Initialized subdevice: " << entityName;
 
 	return 0;
@@ -1150,28 +1348,58 @@ int MicrochipISCCameraData::init()
 
 	LOG(MicrochipISC, Debug) << "Maximum video device resolution: " << maxVideoSize.toString();
 
-	/* Try all formats from formatsMap_ */
-	for (const auto &[pixelFormat, mbusFormat] : MicrochipISCCameraConfiguration::formatsMap_) {
-		for (const Size &sensorSize : sensor_->sizes(mbusFormat)) {
-			/* Create adjusted size that respects video device limits */
-			Size adjustedSize = sensorSize;
+	/*
+	 * If the video device reports no formats, maxVideoSize stays 0×0.
+	 * Without a DMA size limit we cannot safely enumerate capture sizes —
+	 * the tryPipeline() clamp would be skipped, configs_ would list
+	 * oversized entries that setFormat() later rejects. Treat this as a
+	 * hard initialisation failure rather than silently proceeding.
+	 * Mirrors RkISP1 which returns -ENODEV if no ISP output formats are
+	 * found during match().
+	 */
+	if (maxVideoSize.width == 0 || maxVideoSize.height == 0) {
+		LOG(MicrochipISC, Error)
+			<< "Video device reports no supported formats — cannot determine DMA limit";
+		return -ENODEV;
+	}
 
-			/* If the sensor size exceeds video device capability, adjust it */
-			if (maxVideoSize.width > 0 && maxVideoSize.height > 0) {
-				if (sensorSize.width > maxVideoSize.width) {
-					LOG(MicrochipISC, Debug) << "Adjusting width from " << sensorSize.width
-								 << " to " << maxVideoSize.width;
-					adjustedSize.width = maxVideoSize.width;
-				}
-
-				if (sensorSize.height > maxVideoSize.height) {
-					LOG(MicrochipISC, Debug) << "Adjusting height from " << sensorSize.height
-								 << " to " << maxVideoSize.height;
-					adjustedSize.height = maxVideoSize.height;
-				}
+	/*
+	 * Build the configuration list from the formats the sensor actually
+	 * enumerates. Using sensor_->formats() (which calls VIDIOC_ENUM_MBUS_CODE
+	 * on the sensor subdevice) is the correct approach — it only yields
+	 * codes the sensor hardware physically supports, not every theoretically
+	 * possible Bayer code.
+	 *
+	 * Previously we iterated kSensorMbusFormats (all 12 Bayer codes) and
+	 * called sensor_->sizes() for each. IMX219 accepts any Bayer code via
+	 * VIDIOC_S_FMT (the kernel driver reinterprets its RGGB output), so
+	 * sensor_->sizes(SBGGR8_1X8) returned the same 4 sizes as SRGGB10_1X10.
+	 * This produced configs_ entries with SBGGR8 that, after stable_sort,
+	 * appeared before SRGGB10 entries at the same area. validate() then
+	 * selected SBGGR8 for 1920×1080 — negotiate() agreed, subdevs were
+	 * configured with the wrong Bayer order, and start_streaming() returned
+	 * EPIPE because the ISC pipeline validation failed. Using sensor_->formats()
+	 * restricts enumeration to the sensor's truly supported codes.
+	 */
+	/*
+	 * sensor_->mbusCodes() returns only the codes the sensor hardware
+	 * actually enumerates via VIDIOC_ENUM_MBUS_CODE. Filter to Bayer-only
+	 * (kSensorMbusFormats) to skip any non-Bayer sensor outputs.
+	 */
+	for (unsigned int mbusCode : sensor_->mbusCodes()) {
+		/* Skip non-Bayer sensor outputs (RGB, YUV, etc.) */
+		bool isBayer = false;
+		for (unsigned int bayerCode : kSensorMbusFormats) {
+			if (mbusCode == bayerCode) {
+				isBayer = true;
+				break;
 			}
+		}
+		if (!isBayer)
+			continue;
 
-			tryPipeline(mbusFormat, adjustedSize);
+		for (const Size &sensorSize : sensor_->sizes(mbusCode)) {
+			tryPipeline(mbusCode, sensorSize, maxVideoSize);
 		}
 	}
 
@@ -1179,6 +1407,29 @@ int MicrochipISCCameraData::init()
 		LOG(MicrochipISC, Error) << "No valid configuration found";
 		return -EINVAL;
 	}
+
+	/*
+	 * Sort configs_ smallest→largest by capture area. This ordering is
+	 * assumed by validate() (walk until captureSize >= requested, fall back
+	 * to configs.back() as the largest) and by findOptimalSize() (≤ walk
+	 * picks best-fit). The sensor driver may return sizes in any order so
+	 * we enforce the invariant here rather than relying on driver behaviour.
+	 * Mirrors the Simple pipeline which also sorts its config list before
+	 * use (simple.cpp: configs sorted by resolution in generateConfiguration).
+	 */
+	/*
+	 * stable_sort: preserves insertion order for equal-area entries
+	 * (same sensor mode, different mbus code) — deterministic across runs.
+	 * std::sort gives UB for equal elements with a non-total ordering;
+	 * area comparison is a valid strict weak order but does not distinguish
+	 * entries with the same area, so stable_sort is the correct choice here.
+	 * Mirrors the algorithm priority sort (line ~1645) which also uses stable_sort.
+	 */
+	std::stable_sort(configs_.begin(), configs_.end(),
+			 [](const Configuration &a, const Configuration &b) {
+				 return a.captureSize.width * a.captureSize.height <
+					b.captureSize.width * b.captureSize.height;
+			 });
 
 	/* Generate formats map */
 	for (const Configuration &config : configs_) {
@@ -1194,16 +1445,33 @@ int MicrochipISCCameraData::init()
 
 	LOG(MicrochipISC, Debug) << "About to initialize ControlInfoMap";
 	/* Initialize controlInfo_ */
+	/*
+	 * Static ControlInfoMap advertised to applications.
+	 *
+	 * Ranges match actual ISC hardware register limits:
+	 *   Brightness: V4L2_CID_BRIGHTNESS  [-1024, +1023] (asymmetric), unity=0
+	 *   Contrast:   V4L2_CID_CONTRAST    [-2048, +2047] (asymmetric), unity=16
+	 *   libcamera normalised range for Brightness: [-1.0, +1.0] → scaled to hw
+	 *   libcamera normalised range for Contrast:   [0.0, ~128.0] → hw unity=16
+	 *
+	 * Sensor-mode-dependent controls (ExposureTime, AnalogueGain,
+	 * FrameDurationLimits) are given placeholder ranges here that are
+	 * overwritten with mode-correct values in configure(). Applications
+	 * must re-read controls after configure() if they rely on accurate ranges.
+	 *
+	 * Gamma is applied via a hardware LUT (V4L2_CID_ISC_GAMMA_*_LUT), not
+	 * via a scalar V4L2_CID_GAMMA control. Do NOT advertise Gamma here —
+	 * exposing (0,0,0) would tell applications gamma is unsupported.
+	 */
 	controlInfo_ = ControlInfoMap({
-					      { &controls::Brightness, ControlInfo(-1024.0f, 1024.0f, 0.0f) },
-					      { &controls::Contrast, ControlInfo(-2048.0f, 2048.0f, 16.0f) },
+					      /* ISC CBC/CBHS post-processing controls */
+					      { &controls::Brightness, ControlInfo(-1.0f, 1.0f, 0.0f) },
+					      { &controls::Contrast, ControlInfo(0.0f, 128.0f, 1.0f) },
 					      { &controls::AwbEnable, ControlInfo(false, true, true) },
-					      { &controls::Gamma, ControlInfo(0.0f, 0.0f, 0.0f) }, /* actual min, max, default */
-					      /* NEW: Sensor hardware controls */
-					      { &controls::AnalogueGain, ControlInfo(0.0f, 23.2f, 0.0f) }, /* 0-232 mapped to 0-23.2x */
-					      { &controls::DigitalGain, ControlInfo(1.0f, 16.0f, 1.0f) }, /* 256-4095 mapped to 1-16x */
-					      { &controls::ExposureTime, ControlInfo(4, 3522, 1600) }, /* Direct microsecond values */
-					      /* Custom controls with values */
+					      /* Sensor controls — ranges overwritten in configure() */
+					      { &controls::AnalogueGain, ControlInfo(1.0f, 16.0f, 1.0f) },
+					      { &controls::ExposureTime, ControlInfo(100, 33333, 10000) },
+					      /* ISC WB register direct controls (bypass IPA) */
 					      { &controls::microchip::RedGain, ControlInfo(0, 8191, 512) },
 					      { &controls::microchip::BlueGain, ControlInfo(0, 8191, 512) },
 					      { &controls::microchip::GreenRedGain, ControlInfo(0, 8191, 512) },
@@ -1238,8 +1506,12 @@ int MicrochipISCCameraData::setupFormats(V4L2SubdeviceFormat *format,
 
 	for (const auto &[name, subdev] : iscSubdev_) {
 		ret = subdev->setFormat(0, format, whence);
-		if (ret < 0)
+		if (ret < 0) {
+			LOG(MicrochipISC, Error)
+				<< "Failed to set format on subdevice " << name
+				<< ": " << ret;
 			return ret;
+		}
 	}
 
 	return 0;
@@ -1280,11 +1552,44 @@ int MicrochipISCCameraData::setupLinks()
 	return 0;
 }
 
-void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
+void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size,
+					 const Size &maxVideoSize)
 {
-	LOG(MicrochipISC, Debug) << "Trying pipeline with format " << code
-				 << " and size " << size.toString();
+	/*
+	 * Derive the capture size: clamp the native sensor size to the ISC
+	 * video device maximum. This is what the ISC DMA output node will
+	 * capture and what the application sees. For sensors where the native
+	 * size already fits within the video device maximum (most modes),
+	 * captureSize == size. For oversized modes (e.g. IMX219 3280 > 3264),
+	 * captureSize is reduced to the video device limit and the ISC scaler
+	 * crops on hardware.
+	 */
+	Size captureSize = size;
+	if (maxVideoSize.width > 0 && maxVideoSize.height > 0) {
+		if (captureSize.width > maxVideoSize.width) {
+			LOG(MicrochipISC, Debug) << "Clamping capture width: "
+						 << captureSize.width << " -> " << maxVideoSize.width;
+			captureSize.width = maxVideoSize.width;
+		}
+		if (captureSize.height > maxVideoSize.height) {
+			LOG(MicrochipISC, Debug) << "Clamping capture height: "
+						 << captureSize.height << " -> " << maxVideoSize.height;
+			captureSize.height = maxVideoSize.height;
+		}
+	}
 
+	LOG(MicrochipISC, Debug) << "Trying pipeline: code=" << code
+				 << " sensor=" << size.toString()
+				 << " capture=" << captureSize.toString();
+
+	/*
+	 * Negotiate the subdevice chain at the NATIVE sensor size. This
+	 * TryFormat call does not change any hardware state — it discovers
+	 * what the sensor and intermediate subdevices actually negotiate to
+	 * when this size is requested. The result (format.size after the call)
+	 * is the true native sensor output, which may differ from the
+	 * requested size if the sensor snaps to a wider readout.
+	 */
 	V4L2SubdeviceFormat format{};
 	format.code = code;
 	format.size = size;
@@ -1295,34 +1600,54 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size)
 		return;
 	}
 
+	/*
+	 * format.size is now the hardware-negotiated native sensor output size.
+	 * Store it in nativeSensorSize — configure() will use this to set the
+	 * subdevice chain so the kernel ISC driver sees the correct RAW mbus
+	 * code and frame size at the scaler input, ensuring bits_pipeline is
+	 * set correctly for WB / CCM / gamma processing.
+	 */
+	Size nativeSize = format.size;
+
 	V4L2VideoDevice::Formats videoFormats = iscVideo_->formats(format.code);
 
 	for (const auto &videoFormat : videoFormats) {
-		PixelFormat pixelFormat = videoFormat.first.toPixelFormat();
-		if (!pixelFormat) {
-			LOG(MicrochipISC, Debug) << "Skipping unsupported pixel format";
+		PixelFormat pixelFormat = videoFormat.first.toPixelFormat(false);
+		if (!pixelFormat)
 			continue;
-		}
 
 		/*
-		 * Use the requested size as the capture size, not the
-		 * subdev-negotiated size. The sensor may snap to a wider
-		 * native width (e.g. 3280 instead of 3264) but the ISC
-		 * video device will clip to the requested size. Storing
-		 * the requested size ensures generateConfiguration() can
-		 * match it against user requests.
+		 * Deduplicate: skip if an identical (captureFormat, captureSize)
+		 * entry already exists. When multiple Bayer mbus codes negotiate
+		 * to the same native size (e.g. SRGGB10 and SGRBG10 both snap to
+		 * 1920×1080), the ISC video device reports the same output formats
+		 * for both, producing duplicate configs_ entries. Duplicates waste
+		 * memory, inflate the validate() walk, and cause sort instability.
 		 */
+		bool duplicate = false;
+		for (const auto &existing : configs_) {
+			if (existing.captureFormat == pixelFormat &&
+			    existing.captureSize == captureSize) {
+				duplicate = true;
+				break;
+			}
+		}
+		if (duplicate)
+			continue;
+
 		Configuration config;
 		config.code = code;
-		config.sensorSize = size;
+		config.sensorSize = captureSize; /* user-visible / matching size */
+		config.nativeSensorSize = nativeSize; /* actual subdev chain size     */
 		config.captureFormat = pixelFormat;
-		config.captureSize = size;
+		config.captureSize = captureSize;
 		config.outputFormats = { pixelFormat };
-		config.outputSizes = SizeRange{ size, size };
+		config.outputSizes = SizeRange{ captureSize, captureSize };
 
 		configs_.push_back(config);
 		LOG(MicrochipISC, Debug) << "Added configuration: " << pixelFormat.toString()
-					 << " " << format.size.toString();
+					 << " capture=" << captureSize.toString()
+					 << " native=" << nativeSize.toString();
 	}
 }
 
@@ -1379,15 +1704,56 @@ CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 		const std::vector<const MicrochipISCCameraData::Configuration *> &configs = formatIt->second;
 
 		if (configs.empty()) {
+			/*
+			 * The requested pixel format has no registered configs —
+			 * either it's an unsupported format or formats_ was
+			 * populated with an empty vector for it (the "all formats
+			 * advertised" pass in init()). Fall back to the first
+			 * available config and fix up pixelFormat + size so the
+			 * caller's StreamConfiguration is self-consistent.
+			 * Without fixing pixelFormat here, configure() would use
+			 * pipeConfig_->captureFormat while the caller's cfg still
+			 * holds the original unsupported format, causing setFormat
+			 * to fail with EINVAL.
+			 */
 			if (!data_->configs_.empty()) {
 				pipeConfig_ = &data_->configs_.front();
+				cfg.pixelFormat = pipeConfig_->captureFormat;
+				cfg.size = pipeConfig_->captureSize;
 				status = Adjusted;
 			} else {
 				LOG(MicrochipISC, Error) << "No valid configurations available";
 				return Invalid;
 			}
 		} else {
-			pipeConfig_ = configs.front();
+			/*
+			 * Select the best-fit sensor mode for the requested
+			 * size, following the same pattern as the Simple and
+			 * RkISP1 pipeline handlers.
+			 *
+			 * Pass 1 — sensor mode selection:
+			 *   Walk configs smallest→largest. Pick the first
+			 *   mode whose captureSize covers the request on both
+			 *   axes (no upscaling needed). If the request exceeds
+			 *   all available modes (e.g. app asks for 3280×2464
+			 *   but ISC DMA limit is 3264×2464), fall back to the
+			 *   largest mode — matching Simple pipeline phase-1
+			 *   (simple.cpp:1189) and RkISP1's maxPipeConfig path.
+			 *   Never fall back to the smallest (configs.front()):
+			 *   that silently configured 640×480 for a 3280×2464
+			 *   request and the stream appeared to succeed while
+			 *   producing wrong-size frames.
+			 *
+			 * Pass 2 — stream size clamp:
+			 *   Once the mode is chosen, clamp the requested size
+			 *   to the mode's outputSizes range via boundedTo() /
+			 *   expandedTo() — the same axis-independent clamp
+			 *   used by IPU3 (std::clamp), Mali-C55 (boundedTo),
+			 *   and RkISP1 (boundTo/expandTo). This ensures
+			 *   cfg.size is always within the advertised range and
+			 *   status is set to Adjusted when clamping occurs.
+			 */
+			pipeConfig_ = configs.back();
 			for (const MicrochipISCCameraData::Configuration *config : configs) {
 				if (config->captureSize.width >= cfg.size.width &&
 				    config->captureSize.height >= cfg.size.height) {
@@ -1397,7 +1763,28 @@ CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 			}
 		}
 
-		cfg.size = pipeConfig_->captureSize;
+		/*
+		 * Clamp requested size to the selected mode's output range.
+		 * outputSizes is a SizeRange{captureSize, captureSize} for
+		 * fixed-size sensor modes (set at enumerate time). boundedTo()
+		 * clamps each axis independently (matches RkISP1/Mali-C55);
+		 * expandedTo() floors to the minimum (protects against
+		 * requesting 0×0 or sub-minimum sizes).
+		 */
+		Size clampedSize = cfg.size
+					   .boundedTo(pipeConfig_->outputSizes.max)
+					   .expandedTo(pipeConfig_->outputSizes.min);
+		if (clampedSize != cfg.size) {
+			LOG(MicrochipISC, Debug)
+				<< "Adjusting stream size " << cfg.size.toString()
+				<< " -> " << clampedSize.toString()
+				<< " (mode max=" << pipeConfig_->outputSizes.max.toString()
+				<< ")";
+			cfg.size = clampedSize;
+			status = Adjusted;
+		} else {
+			cfg.size = pipeConfig_->captureSize;
+		}
 
 		if (cfg.bufferCount < 1)
 			cfg.bufferCount = 4;
@@ -1418,16 +1805,34 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 	 */
 	frameInfo.statsDone = !data->statsEnabled_ || !data->ipa_;
 
+	/*
+	 * Insert frameInfo before processControls so that any V4L2 event
+	 * arriving synchronously during the ioctl can find the entry.
+	 * Log a warning on duplicate sequence — should never happen in normal
+	 * operation but helps diagnose sequence-counter wraps or pipeline bugs.
+	 */
+	if (data->frameInfo_.count(request->sequence()))
+		LOG(MicrochipISC, Warning)
+			<< "Duplicate request sequence " << request->sequence()
+			<< " — overwriting stale frame info";
 	data->frameInfo_[request->sequence()] = frameInfo;
-
-	if (data->ipa_)
-		data->ipa_->queueRequest(request->sequence(), request->controls());
 
 	int ret = processControls(data, request);
 	if (ret < 0) {
 		data->frameInfo_.erase(request->sequence());
 		return ret;
 	}
+
+	/*
+	 * Notify the IPA only after processControls() succeeds. Moving the
+	 * call here prevents IPA state from advancing (frame counter, gain
+	 * history) when the request is about to be abandoned, which would
+	 * desynchronise IPA expectations from pipeline reality for all
+	 * subsequent frames. Mirrors the RPi pipeline where queueRequest is
+	 * issued only after the V4L2 controls have been applied successfully.
+	 */
+	if (data->ipa_)
+		data->ipa_->queueRequest(request->sequence(), request->controls());
 
 	for (Stream &stream : data->streams_) {
 		FrameBuffer *buffer = request->findBuffer(&stream);
@@ -1448,14 +1853,42 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 	 * leaves the queue empty and all subsequent QBUF calls return
 	 * -ETIMEDOUT.
 	 */
+	/*
+	 * Deferred streamOn: issue VIDIOC_STREAMON only once, on the first
+	 * queueBuffer call. Set videoStreaming_=true before the call so that
+	 * concurrent callbacks from other in-flight requests do not also
+	 * attempt streamOn (which would return -EPIPE on duplicate calls).
+	 * On failure, clear videoStreaming_ and return the error.
+	 */
 	if (!data->videoStreaming_) {
+		data->videoStreaming_ = true; /* set first to prevent re-entry */
 		ret = data->iscVideo_->streamOn();
 		if (ret < 0) {
+			data->videoStreaming_ = false;
 			LOG(MicrochipISC, Error) << "Failed to start video streaming: " << ret;
 			return ret;
 		}
-		data->videoStreaming_ = true;
 		LOG(MicrochipISC, Debug) << "Video streamOn issued on first buffer";
+
+		/*
+		 * Start stats DMA immediately after video DMA. The ISC stats
+		 * engine fires HISDONE only when the video pipeline is active;
+		 * starting stats before video results in zero completions until
+		 * streamOff. Starting here guarantees the first HISDONE (after
+		 * the first Bayer cycle = 4 frames) delivers live histogram data.
+		 */
+		if (data->statsEnabled_ && !data->statsStreaming_) {
+			int statsRet = data->statsDevice_->streamOn();
+			if (statsRet < 0) {
+				LOG(MicrochipISC, Error)
+					<< "Failed to start stats streaming: " << statsRet;
+				/* Non-fatal: video works without IPA stats */
+				data->statsEnabled_ = false;
+			} else {
+				data->statsStreaming_ = true;
+				LOG(MicrochipISC, Debug) << "Stats streamOn issued after video";
+			}
+		}
 	}
 
 	return 0;
@@ -1491,9 +1924,9 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 		return;
 	}
 
-	if (buffer->metadata().timestamp) {
-		request->metadata().set(controls::SensorTimestamp, buffer->metadata().timestamp);
-	}
+	/* Always set SensorTimestamp — zero is valid (hardware may not provide one). */
+	request->metadata().set(controls::SensorTimestamp,
+				static_cast<int64_t>(buffer->metadata().timestamp));
 
 	/*
 	 * Merge the most recent IPA metadata (AwbLocked, ColourTemperature, etc.)
@@ -1591,8 +2024,25 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 {
 	MicrochipISCCameraData *data = cameraData(camera);
 
-	if (data->ipa_)
-		data->ipa_->stop();
+	/*
+	 * Stop the DMA engines before stopping the IPA. This ordering is
+	 * critical: if ipa_->stop() is called first, the IPA may still
+	 * receive async statsProcessed() callbacks (queued in the IPC pipe)
+	 * after freeStatsBuffers() has unmapped the IPA buffer memory —
+	 * resulting in a use-after-free inside the IPA worker thread.
+	 *
+	 * Correct shutdown sequence (mirrors RPi pipeline_base.cpp stopDevice):
+	 *   1. streamOff video DMA  — no new bufferReady() callbacks
+	 *   2. streamOff stats DMA  — no new statsBufferReady() callbacks
+	 *   3. freeStatsBuffers()   — safe: no DMA in flight
+	 *   4. ipa_->stop()         — safe: no more stats callbacks expected
+	 *   5. cancel orphaned frames — complete any requests that stalled
+	 *   6. frameInfo_.clear()
+	 */
+	if (data->iscVideo_ && data->videoStreaming_) {
+		data->iscVideo_->streamOff();
+		data->videoStreaming_ = false;
+	}
 
 	if (data->statsEnabled_ && data->statsStreaming_) {
 		data->statsDevice_->streamOff();
@@ -1601,19 +2051,39 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 
 	data->freeStatsBuffers();
 
-	if (data->iscVideo_) {
-		if (data->videoStreaming_) {
-			data->iscVideo_->streamOff();
-			data->videoStreaming_ = false;
-		}
+	if (data->ipa_)
+		data->ipa_->stop();
+
+	if (data->iscVideo_)
 		data->iscVideo_->releaseBuffers();
-	}
 
 	/*
-	 * Clear frame info after streamOff so that any bufferReady() callbacks
-	 * fired during streamOff can still find their entries and complete cleanly,
-	 * avoiding "No frame info for request N" warnings.
+	 * Cancel any requests remaining in frameInfo_ whose image buffer
+	 * never completed (bufferDone=false). This covers the case where
+	 * the DMA stalled on the last frame before stopDevice — without this
+	 * the framework asserts on un-completed requests at camera close time.
+	 *
+	 * Guard: only call completeBuffer() when bufferDone=false. When
+	 * bufferDone=true, bufferReady() already called completeBuffer() and
+	 * tryCompleteRequest() erased the entry — if an entry is still in
+	 * the map with bufferDone=true it means hasPendingBuffers() returned
+	 * true at that point. Call completeRequest() to drain it.
+	 * Calling completeBuffer() twice corrupts the framework pending count
+	 * and causes the crash at _ZN9libcamera7Request7Private14completeBufferE.
+	 * Mirrors RkISP1 stopDevice which checks frameInfo.bufferCompleted
+	 * before calling completeBuffer (rkisp1.cpp:stopDevice).
 	 */
+	for (auto &[seq, info] : data->frameInfo_) {
+		if (!info.request)
+			continue;
+		if (!info.bufferDone) {
+			for (auto &[stream, buffer] : info.request->buffers()) {
+				buffer->_d()->cancel();
+				completeBuffer(info.request, buffer);
+			}
+		}
+		completeRequest(info.request);
+	}
 	data->frameInfo_.clear();
 
 	/*
