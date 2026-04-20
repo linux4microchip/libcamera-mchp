@@ -45,7 +45,10 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 0.1f);
 	toeInput_ = std::clamp(toeInput_, 0.01f, 0.15f);
 	toneRolloffStart_ = tuningData["tone_rolloff_start"].get<float>(toneRolloffStart_);
-	toneRolloffStart_ = std::clamp(toneRolloffStart_, 0.5f, 1.0f);
+	/* Upper bound 0.99f not 1.0f: rolloffStart=1.0 would produce
+	 * (1.0f - rolloffStart) = 0 in the denominator of the highlight
+	 * roll-off formula, causing a division by zero. */
+	toneRolloffStart_ = std::clamp(toneRolloffStart_, 0.5f, 0.99f);
 	cdfStrength_ = tuningData["cdf_strength"].get<float>(cdfStrength_);
 	cdfStrength_ = std::clamp(cdfStrength_, 0.0f, 1.0f);
 
@@ -206,69 +209,83 @@ void Gamma::process(IPAContext &context,
 		return;
 
 	/* Skip until the first complete 4-channel stats delivery has passed. */
-	if (frame < 3 || strength_ == 0.0f)
+	if (frame < 3)
+		return;
+
+	/*
+	 * When both strength and cdfStrength are zero there is nothing to
+	 * adapt — the LUT from configure() (pure power-law) is used as-is.
+	 */
+	if (strength_ == 0.0f && cdfStrength_ == 0.0f)
 		return;
 
 	/*
 	 * Use the raw scene luminance derived from the pre-WB histogram.
 	 * The ISC histogram taps vp_data (post-DPC, pre-WB), so channel
 	 * means are raw sensor values independent of the hardware WB gains.
-	 * This gives a stable luminance estimate that reflects true scene
-	 * brightness regardless of what AWB gains are currently applied.
 	 */
 	float lum = frameContext.scene.luminance;
 	float lumNorm = lum / kHistogramMax;
 
-	if (lumNorm < darkSceneThreshold_) {
-		LOG(ISC_Gamma, Debug) << "Scene too dark, skipping gamma adapt";
-		return;
-	}
-
 	/*
-	 * Compute the gamma exponent that would map the current linear
-	 * luminance to targetOutput_:
-	 *   targetOutput = lumNorm ^ (1 / gammaAdapt)
-	 *   gammaAdapt = log(lumNorm) / log(targetOutput)
+	 * Adaptive gamma exponent update (only when strength_ > 0).
+	 * When strength_==0 but cdfStrength_>0 we skip this block and keep
+	 * gammaEff at its current smoothed value, applying only CDF blending.
+	 * This allows pure CDF-driven local contrast without global gamma shift.
 	 */
-	float gammaAdapt = std::log(lumNorm) / std::log(targetOutput_);
-	gammaAdapt = std::clamp(gammaAdapt, 0.5f, 5.0f);
+	if (strength_ > 0.0f &&
+	    lumNorm > darkSceneThreshold_ &&
+	    lumNorm > 0.0f && lumNorm < 1.0f) {
+		/*
+		 * Compute the gamma exponent that maps the current linear
+		 * luminance to targetOutput_:
+		 *   targetOutput = lumNorm ^ (1 / gammaAdapt)
+		 *   gammaAdapt = log(lumNorm) / log(targetOutput)
+		 */
+		float gammaAdapt = std::log(lumNorm) / std::log(targetOutput_);
+		gammaAdapt = std::clamp(gammaAdapt, 0.5f, 5.0f);
 
-	/* Blend adaptive exponent with the base gamma. */
-	float gammaTarget = gamma_ + strength_ * (gammaAdapt - gamma_);
+		float gammaTarget = gamma_ + strength_ * (gammaAdapt - gamma_);
+		float gammaEff = smoothingFactor_ * gammaState.gammaEff +
+				 (1.0f - smoothingFactor_) * gammaTarget;
+		gammaState.gammaEff = gammaEff;
 
-	/* Temporal smoothing. */
-	float gammaEff = smoothingFactor_ * gammaState.gammaEff +
-			 (1.0f - smoothingFactor_) * gammaTarget;
-	gammaState.gammaEff = gammaEff;
+		LOG(ISC_Gamma, Debug)
+			<< "Gamma: lum=" << lum
+			<< " lumNorm=" << lumNorm
+			<< " gammaAdapt=" << gammaAdapt
+			<< " gammaEff=" << gammaEff
+			<< " cdfStrength=" << cdfStrength_
+			<< " bipartite=" << context.configuration.hw.hasBipartiteGamma;
+	} else if (strength_ > 0.0f && lumNorm <= darkSceneThreshold_) {
+		LOG(ISC_Gamma, Debug) << "Scene too dark, skipping gamma adapt";
+	}
 
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 
 	/*
-	 * Compute the 64-point normalised CDF of the scene luminance histogram.
-	 * Used by computeLut() to blend the power-law tone curve with histogram
-	 * equalisation, providing locally-adaptive contrast enhancement.
-	 * Only computed when cdfStrength_ > 0 to avoid unnecessary work.
+	 * CDF computation (only when cdfStrength_ > 0).
+	 * Shared by both the adaptive-gamma path and the pure-CDF path.
 	 */
 	std::array<float, 64> lut_cdf;
 	const std::array<float, 64> *cdfPtr = nullptr;
 	if (cdfStrength_ > 0.0f) {
-		calculateLuminanceCdf(stats, lut_cdf);
+		unsigned int pedestalBins =
+			context.configuration.sensor.blackLevel / 2;
+		calculateLuminanceCdf(stats, lut_cdf, pedestalBins);
 		cdfPtr = &lut_cdf;
 	}
 
 	/*
-	 * Compute the new LUT from the smoothed gamma exponent and CDF.
-	 * Apply temporal smoothing directly on the 64 LUT entries rather
-	 * than only on the scalar gammaEff: this is essential when CDF
-	 * blending is active because the CDF itself varies frame-to-frame
-	 * and scalar smoothing cannot suppress per-entry flicker.
-	 *
-	 * The previous LUT (gammaState.lutB) is used as the "old" value;
-	 * the new LUT is written into a temporary and blended in-place.
+	 * Compute the new LUT from the (updated) gammaEff and CDF, then
+	 * blend with the previous LUT for temporal smoothing.
+	 * Smoothing on LUT entries rather than only gammaEff is required
+	 * when CDF blending is active: the CDF varies frame-to-frame and
+	 * scalar-only smoothing cannot suppress per-entry flicker.
 	 */
 	std::array<uint32_t, 64> newLut;
-	computeLut(gammaEff, newLut, bipartite, toeInput_, toneRolloffStart_,
-		   cdfPtr, cdfStrength_);
+	computeLut(gammaState.gammaEff, newLut, bipartite, toeInput_,
+		   toneRolloffStart_, cdfPtr, cdfStrength_);
 
 	for (unsigned int i = 0; i < 64; i++) {
 		float smoothed = smoothingFactor_ * static_cast<float>(gammaState.lutB[i]) +
@@ -277,26 +294,16 @@ void Gamma::process(IPAContext &context,
 	}
 
 	/*
-	 * Enforce LUT monotonicity: per-entry integer rounding of the
-	 * smoothed float sequence can produce a local inversion where
-	 * lut[i] < lut[i-1].  The ISC hardware requires a non-decreasing
-	 * LUT; a non-monotone table causes incorrect tone mapping on the
-	 * affected range.  Clamp each entry to be at least as large as its
-	 * predecessor to guarantee hardware correctness.
+	 * Enforce LUT monotonicity. Integer rounding of the smoothed float
+	 * sequence can produce local inversions (lut[i] < lut[i-1]).
+	 * The ISC hardware requires a non-decreasing LUT — a non-monotone
+	 * table causes incorrect tone mapping over the affected range.
 	 */
 	for (unsigned int i = 1; i < 64; i++)
 		gammaState.lutB[i] = std::max(gammaState.lutB[i], gammaState.lutB[i - 1]);
 
 	gammaState.lutG = gammaState.lutB;
 	gammaState.lutR = gammaState.lutB;
-
-	LOG(ISC_Gamma, Debug)
-		<< "Gamma: lum=" << lum
-		<< " lumNorm=" << lumNorm
-		<< " gammaAdapt=" << gammaAdapt
-		<< " gammaEff=" << gammaEff
-		<< " cdfStrength=" << cdfStrength_
-		<< " bipartite=" << bipartite;
 }
 
 REGISTER_IPA_ALGORITHM(Gamma, "Gamma")
