@@ -24,6 +24,23 @@ struct IPAHwCapabilities {
 struct IPAConfigInfo {
 	libcamera.IPACameraSensorInfo sensorInfo;
 	libcamera.ControlInfoMap sensorControls;
+	/*
+	 * Live sensor controls read immediately after sensor_->setFormat() so
+	 * the IPA can compute lineDuration from the CURRENT hblank for the
+	 * active sensor mode rather than from the ControlInfoMap default.
+	 * Different sensor modes (e.g. 1920x1080 vs 3264x2464) have different
+	 * hblank values; using the default gives an incorrect lineDuration and
+	 * therefore wrong maxShutterSpeed, causing over/underexposure at
+	 * non-default sensor modes.
+	 */
+	libcamera.ControlList sensorLiveControls;
+	/*
+	 * Native sensor output width for the active mode — the hardware pixel
+	 * count per line including any overscan (e.g. 3280 for IMX219 at max
+	 * resolution, vs the capture-clamped 3264). Used with the live hblank
+	 * to compute the accurate line duration for every supported mode.
+	 */
+	uint32 nativeSensorWidth;
 	libcamera.ControlInfoMap ispControls;
 	IPAHwCapabilities hwCaps;
 };

@@ -93,13 +93,21 @@ protected:
 
 private:
 	void updateSessionConfiguration(const IPACameraSensorInfo &info,
-					const ControlInfoMap &sensorControls,
+					const ipa::microchip_isc::IPAConfigInfo &ipaConfig,
 					BayerFormat::Order bayerOrder);
 	void setSensorControls();
 	void setIspControls();
 
 	std::map<unsigned int, MappedFrameBuffer> buffers_;
 	ControlInfoMap sensorControls_;
+	/*
+	 * Hardware-negotiated native sensor output width for the active mode.
+	 * Stored at configure() from ipaConfig.nativeSensorWidth and used
+	 * in processStats() to recompute lineDuration from live hblank.
+	 * 0 means the pipeline handler did not provide a native width —
+	 * fall back to sensorInfo.outputSize.width in that case.
+	 */
+	uint32_t nativeSensorWidth_ = 0;
 	ControlInfoMap ispControls_;
 
 	std::unique_ptr<CameraSensorHelper> camHelper_;
@@ -132,8 +140,17 @@ int IPAMicrochipISC::init(const IPASettings &settings,
 	if (!camHelper_) {
 		LOG(ISC_IPA, Warning)
 			<< "No sensor helper for " << settings.sensorModel
-			<< ", using direct gain values";
+			<< ", using direct gain values and YAML/fallback black level";
 	}
+
+	/*
+	 * Expose camHelper_ to all algorithms via IPAContext so they can
+	 * read sensor-specific datasheet parameters (black level, gain formula)
+	 * without needing to access the IPA class directly.
+	 * Mirrors RkISP1 IPAContext which carries camHelper for the same reason.
+	 * The pointer is non-owning — camHelper_ owns the lifetime.
+	 */
+	context_.camHelper = camHelper_.get();
 
 	File file(settings.configurationFile);
 	if (!file.open(File::OpenModeFlag::ReadOnly)) {
@@ -221,39 +238,120 @@ void IPAMicrochipISC::stop()
 
 void IPAMicrochipISC::updateSessionConfiguration(
 	const IPACameraSensorInfo &info,
-	const ControlInfoMap &sensorControls,
+	const ipa::microchip_isc::IPAConfigInfo &ipaConfig,
 	BayerFormat::Order bayerOrder)
 {
 	context_.configuration.sensor.bayerOrder = bayerOrder;
 
 	/*
-	 * Compute lineDuration from the actual HBLANK default rather than
-	 * minLineLength.  minLineLength is the hardware minimum (e.g. ~3448
-	 * pixels for IMX219) but the sensor typically operates at a longer
-	 * default line (e.g. ~4196 pixels); using the minimum would give a
-	 * shorter lineDuration and therefore an incorrect flicker-avoidance
-	 * half-period in AGC (wrong number of lines per 1/100 s or 1/120 s).
-	 * Fall back to minLineLength when HBLANK is not available.
+	 * Compute lineDuration from the LIVE hblank value for the active
+	 * sensor mode, not the ControlInfoMap default. Different sensor modes
+	 * have different hblank values (e.g. IMX219: hblank=1640 at 1920x1080,
+	 * hblank=280 at 3264x2464). Using the default gives the wrong
+	 * lineDuration at non-default modes, causing incorrect maxShutterSpeed
+	 * and over/underexposure. The live value is in ipaConfig.sensorLiveControls,
+	 * populated by the pipeline handler immediately after sensor_->setFormat().
+	 *
+	 * Use nativeSensorWidth (hardware pixel count per line) not
+	 * info.outputSize.width (capture-clamped, may be smaller). For sensors
+	 * that snap to a wider native readout (e.g. IMX219 3264→3280), using
+	 * the clamped width understates the line length.
+	 *
+	 * Fall back to minLineLength when neither live hblank nor native width
+	 * is available (e.g. uncalibrated sensor, missing HBLANK control).
 	 */
 	uint32_t activeLineLength = info.minLineLength;
-	auto hblankIt = sensorControls.find(V4L2_CID_HBLANK);
-	if (hblankIt != sensorControls.end()) {
-		uint32_t hblank = static_cast<uint32_t>(
-			hblankIt->second.def().get<int32_t>());
-		activeLineLength = info.outputSize.width + hblank;
+	{
+		/*
+		 * Prefer live hblank (ipaConfig.sensorLiveControls) over the
+		 * ControlInfoMap default. The live ControlList is populated by
+		 * sensor_->getControls() after setFormat(), so it reflects the
+		 * actual mode-specific hblank.
+		 */
+		uint32_t liveHblank = 0;
+		bool haveHblank = false;
+
+		const auto &live = ipaConfig.sensorLiveControls;
+		if (live.contains(V4L2_CID_HBLANK)) {
+			int32_t raw = live.get(V4L2_CID_HBLANK).get<int32_t>();
+			if (raw >= 0) {
+				liveHblank = static_cast<uint32_t>(raw);
+				haveHblank = true;
+			} else {
+				LOG(ISC_IPA, Warning)
+					<< "Live HBLANK is negative (" << raw
+					<< "), ignoring";
+			}
+		} else {
+			/* Fall back to ControlInfoMap default */
+			auto hblankIt = ipaConfig.sensorControls.find(V4L2_CID_HBLANK);
+			if (hblankIt != ipaConfig.sensorControls.end()) {
+				int32_t raw = hblankIt->second.def().get<int32_t>();
+				if (raw >= 0) {
+					liveHblank = static_cast<uint32_t>(raw);
+					haveHblank = true;
+				}
+				LOG(ISC_IPA, Debug)
+					<< "Live hblank unavailable, using default: "
+					<< liveHblank;
+			}
+		}
+
+		if (haveHblank) {
+			/*
+			 * nativeSensorWidth > 0 means the pipeline handler
+			 * successfully read the hardware-negotiated sensor width.
+			 * Use it so the line length accounts for any overscan
+			 * pixels that are outside the capture window.
+			 */
+			uint32_t lineWidth = (ipaConfig.nativeSensorWidth > 0)
+						     ? ipaConfig.nativeSensorWidth
+						     : static_cast<uint32_t>(info.outputSize.width);
+			activeLineLength = lineWidth + liveHblank;
+		}
 	}
 
+	if (info.pixelRate <= 0.0) {
+		LOG(ISC_IPA, Error) << "Sensor pixelRate is zero or negative ("
+				    << info.pixelRate << "), cannot compute lineDuration";
+		return;
+	}
+	context_.configuration.sensor.pixelRate = info.pixelRate;
 	context_.configuration.sensor.lineDuration =
 		utils::Duration(static_cast<double>(activeLineLength) * 1e9 / info.pixelRate);
 
-	const ControlInfo &v4l2Exposure =
-		sensorControls.find(V4L2_CID_EXPOSURE)->second;
+	/*
+	 * Store nativeSensorWidth for processStats() lineDuration updates.
+	 * Fall back to outputSize.width when the pipeline handler does not
+	 * provide a native width (old pipeline handler versions, other platforms).
+	 */
+	nativeSensorWidth_ = (ipaConfig.nativeSensorWidth > 0)
+				     ? ipaConfig.nativeSensorWidth
+				     : static_cast<uint32_t>(info.outputSize.width);
+
+	LOG(ISC_IPA, Debug)
+		<< "lineDuration: lineLen=" << activeLineLength
+		<< " pixelRate=" << info.pixelRate
+		<< " nativeW=" << nativeSensorWidth_
+		<< " => " << context_.configuration.sensor.lineDuration.get<std::micro>()
+		<< " us/line";
+
+	auto expIt = ipaConfig.sensorControls.find(V4L2_CID_EXPOSURE);
+	if (expIt == ipaConfig.sensorControls.end()) {
+		LOG(ISC_IPA, Error) << "V4L2_CID_EXPOSURE missing from sensor controls";
+		return;
+	}
+	const ControlInfo &v4l2Exposure = expIt->second;
 	int32_t minExposure = v4l2Exposure.min().get<int32_t>();
 	int32_t maxExposure = v4l2Exposure.max().get<int32_t>();
 	int32_t defExposure = v4l2Exposure.def().get<int32_t>();
 
-	const ControlInfo &v4l2Gain =
-		sensorControls.find(V4L2_CID_ANALOGUE_GAIN)->second;
+	auto gainIt = ipaConfig.sensorControls.find(V4L2_CID_ANALOGUE_GAIN);
+	if (gainIt == ipaConfig.sensorControls.end()) {
+		LOG(ISC_IPA, Error) << "V4L2_CID_ANALOGUE_GAIN missing from sensor controls";
+		return;
+	}
+	const ControlInfo &v4l2Gain = gainIt->second;
 	int32_t minGain = v4l2Gain.min().get<int32_t>();
 	int32_t maxGain = v4l2Gain.max().get<int32_t>();
 
@@ -262,6 +360,14 @@ void IPAMicrochipISC::updateSessionConfiguration(
 	context_.configuration.agc.maxShutterSpeed =
 		maxExposure * context_.configuration.sensor.lineDuration;
 	context_.configuration.agc.defaultExposure = defExposure;
+
+	/*
+	 * Lux calibration fields are populated by agc::init() from YAML before
+	 * configure() is called. Do NOT reset them here — configure() runs
+	 * after init() and must not overwrite the values init() parsed.
+	 * They are only initialised to zero in the struct definition
+	 * (ipa_context.h) which runs once at object construction.
+	 */
 
 	if (camHelper_) {
 		context_.configuration.agc.minAnalogueGain =
@@ -284,7 +390,7 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	sensorControls_ = ipaConfig.sensorControls;
 	ispControls_ = ipaConfig.ispControls;
 
-	updateSessionConfiguration(info, ipaConfig.sensorControls,
+	updateSessionConfiguration(info, ipaConfig,
 				   static_cast<BayerFormat::Order>(bayerOrder));
 
 	/*
@@ -381,7 +487,11 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.activeState.cbc.brightness = 0;
 	context_.activeState.cbc.contrast =
 		static_cast<int32_t>(context_.configuration.hw.contrastUnityHw);
-	context_.activeState.cbc.saturation = 50;
+	/* Initialize to hardware unity saturation (16 for CBHS, not 50).
+	 * 50 would produce 50/16 = 3.125× saturation on the first frame
+	 * before Cbc::configure() sets the correct default from YAML. */
+	context_.activeState.cbc.saturation =
+		static_cast<int32_t>(context_.configuration.hw.contrastUnityHw);
 	context_.activeState.cbc.hue = 0;
 
 	/*
@@ -440,9 +550,19 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 
 		if (hblankIt != sensorControls_.end() &&
 		    vblankIt != sensorControls_.end()) {
-			uint32_t hblank = static_cast<uint32_t>(
-				hblankIt->second.def().get<int32_t>());
-			uint32_t lineLength = info.outputSize.width + hblank;
+			/*
+			 * Use live hblank from sensorLiveControls if available,
+			 * otherwise fall back to ControlInfoMap default.
+			 */
+			uint32_t hblank;
+			if (ipaConfig.sensorLiveControls.contains(V4L2_CID_HBLANK))
+				hblank = static_cast<uint32_t>(
+					ipaConfig.sensorLiveControls.get(V4L2_CID_HBLANK)
+						.get<int32_t>());
+			else
+				hblank = static_cast<uint32_t>(
+					hblankIt->second.def().get<int32_t>());
+			uint32_t lineLength = nativeSensorWidth_ + hblank;
 
 			const ControlInfo &v4l2VBlank = vblankIt->second;
 			std::array<uint32_t, 3> frameHeights = {
@@ -539,8 +659,18 @@ void IPAMicrochipISC::processStats(unsigned int request,
 {
 	IPAFrameContext &frameContext = context_.frameContexts.get(request);
 
-	const mchp_isc_stat_buffer *stats = reinterpret_cast<mchp_isc_stat_buffer *>(
-		buffers_.at(bufferId).planes()[0].data());
+	auto bufIt = buffers_.find(bufferId);
+	if (bufIt == buffers_.end()) {
+		LOG(ISC_IPA, Error) << "Stats buffer " << bufferId << " not mapped";
+		return;
+	}
+	auto *rawData = bufIt->second.planes()[0].data();
+	if (!rawData) {
+		LOG(ISC_IPA, Error) << "Stats buffer " << bufferId << " plane 0 is null";
+		return;
+	}
+	const mchp_isc_stat_buffer *stats =
+		reinterpret_cast<const mchp_isc_stat_buffer *>(rawData);
 
 	/*
 	 * Record what sensor controls were applied for this frame. The
@@ -562,6 +692,69 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	}
 
 	/*
+	 * Update lineDuration from the live HBLANK each stats cycle.
+	 *
+	 * This is the generic, resolution-agnostic approach used by the RPi
+	 * IPA (agc_channel.cpp line 1476): read hblank from the live sensor
+	 * ControlList rather than the ControlInfoMap default. This correctly
+	 * handles:
+	 *   1. Different sensor modes (each mode has a different hblank)
+	 *   2. Dynamic frame-rate control (vblank changes update lineDuration)
+	 *   3. Any sensor on any platform — no hardcoded defaults
+	 *
+	 * The lineDuration change is applied immediately so the AGC
+	 * maxShutterSpeed, minShutterSpeed, and flicker-avoidance period are
+	 * always consistent with the actual sensor timing in the current frame.
+	 *
+	 * nativeSensorWidth_ is stored at configure() time from the hardware-
+	 * negotiated sensor output width (e.g. 3280 for IMX219 at max-res).
+	 * It accounts for sensors that snap to a wider native readout than the
+	 * capture-clamped width passed via sensorInfo.outputSize.
+	 */
+	if (sensorControls.contains(V4L2_CID_HBLANK)) {
+		int32_t rawHblank = sensorControls.get(V4L2_CID_HBLANK).get<int32_t>();
+		if (rawHblank < 0) {
+			LOG(ISC_IPA, Warning)
+				<< "processStats: live HBLANK is negative (" << rawHblank
+				<< "), skipping lineDuration update";
+		} else {
+			uint32_t hblank = static_cast<uint32_t>(rawHblank);
+			uint32_t lineLen = nativeSensorWidth_ + hblank;
+			utils::Duration newLineDur(
+				static_cast<double>(lineLen) * 1e9 /
+				context_.configuration.sensor.pixelRate);
+
+			if (newLineDur != context_.configuration.sensor.lineDuration) {
+				LOG(ISC_IPA, Debug)
+					<< "lineDuration updated: "
+					<< context_.configuration.sensor.lineDuration.get<std::micro>()
+					<< " -> " << newLineDur.get<std::micro>()
+					<< " us (hblank=" << hblank
+					<< " nativeW=" << nativeSensorWidth_ << ")";
+				context_.configuration.sensor.lineDuration = newLineDur;
+
+				/*
+				 * Recompute the AGC shutter speed limits using the
+				 * updated lineDuration and the current V4L2 exposure
+				 * min/max. This ensures maxShutterSpeed is always
+				 * consistent with the actual sensor frame timing,
+				 * regardless of which sensor mode is active.
+				 */
+				auto &agcCfg = context_.configuration.agc;
+				auto expIt = sensorControls_.find(V4L2_CID_EXPOSURE);
+				if (expIt != sensorControls_.end()) {
+					agcCfg.minShutterSpeed =
+						expIt->second.min().get<int32_t>() *
+						newLineDur;
+					agcCfg.maxShutterSpeed =
+						expIt->second.max().get<int32_t>() *
+						newLineDur;
+				}
+			}
+		}
+	}
+
+	/*
 	 * Update per-channel histogram means and capture-frame attribution.
 	 *
 	 * The ISC cycles GR→R→GB→B (one Bayer channel per frame), but the
@@ -578,8 +771,35 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	if (context_.configuration.hw.statsAvailable &&
 	    stats->valid_channels == 0x0f) {
 		auto &hist = context_.activeState.histogram;
+		/*
+		 * The ISC histogram taps vp_data — the PFE output, which is
+		 * pre-DPC, pre-BLC and pre-WB raw sensor data. This is confirmed
+		 * empirically: toggling ISC_DPC_CFG.BLCEN has zero effect on
+		 * histogram means (tested 2026-04-16 on SAMA7G5EK with IMX219).
+		 *
+		 * The sensor black level pedestal (IMX219: 64 DN = 32 histogram
+		 * bins) is therefore present in every channel mean and must be
+		 * subtracted before AWB, AGC and lux calculations. Without it:
+		 *   - AWB grey-world gains have a ~3-4% error at mid-scene
+		 *   - AGC overestimates scene brightness by ~32 bins (~6%)
+		 *   - Lux estimator reference_Y is miscalibrated
+		 *
+		 * The histogram has 512 bins over 10-bit (0-1023) data:
+		 *   bin_index = pixel_value >> 1
+		 * so pedestal in histogram units = blackLevel / 2.
+		 * Clamp to 0: noise in a very dark scene can pull the mean
+		 * below the pedestal floor.
+		 *
+		 * All YAML threshold and target values (darkSceneThreshold,
+		 * target_brightness, lux_reference.reference_Y, y_target) are
+		 * calibrated against these pedestal-subtracted (net) means.
+		 */
+		float pedestal = static_cast<float>(
+					 context_.configuration.sensor.blackLevel) /
+				 2.0f;
 		for (unsigned int ch = 0; ch < 4; ch++) {
-			hist.channelMeans[ch] = calculateChannelMean(stats, ch);
+			float raw = calculateChannelMean(stats, ch);
+			hist.channelMeans[ch] = std::max(0.0f, raw - pedestal);
 			hist.captureFrame[ch] = stats->hist[ch].capture_frame;
 		}
 	}
@@ -612,17 +832,60 @@ void IPAMicrochipISC::processStats(unsigned int request,
 					       0.587f * meanG +
 					       0.114f * m[kHistChannelB];
 
-		frameContext.scene.spread = calculateHistogramSpread(stats);
+		/* Pass pedestal so spread is on same zero-point as means */
+		unsigned int pedestalBins =
+			context_.configuration.sensor.blackLevel / 2;
+		frameContext.scene.spread =
+			calculateHistogramSpread(stats, pedestalBins);
 		frameContext.scene.clipping = calculateClipping(stats);
 		frameContext.scene.isDark =
 			(frameContext.scene.luminance / kHistogramMax) < 0.02f;
 		frameContext.scene.isHighContrast = frameContext.scene.clipping > 0.02f;
+
+		/*
+		 * Estimate scene lux from current exposure, gain, and histogram
+		 * Y relative to a calibrated reference point in imx219.yaml.
+		 * Mirrors the RPi lux.cpp algorithm (BSD-2-Clause):
+		 *   lux = (refExposure/curExposure) * (refGain/curGain)
+		 *         * (curY/refY) * refLux
+		 *
+		 * The lux estimate is stored in activeState so the AGC y_target
+		 * PWL can adapt the brightness target to the light level —
+		 * preventing overexposure on dark scenes where CBC contrast boost
+		 * and high analogue gain compound to push the output too bright.
+		 *
+		 * Falls back to 400 lux (indoor office default) when reference
+		 * calibration is not set in YAML (refY == 0).
+		 */
+		const auto &luxCfg = context_.configuration.agc;
+		if (luxCfg.refLuxY > 0.0f) {
+			float lineDurUs =
+				context_.configuration.sensor.lineDuration
+					.get<std::micro>();
+			context_.activeState.lux.lux = estimateLux(
+				frameContext.scene.luminance,
+				frameContext.agc.exposure,
+				frameContext.agc.analogueGain,
+				lineDurUs,
+				luxCfg.refLuxY,
+				luxCfg.refLuxExposureUs,
+				luxCfg.refLuxGain,
+				luxCfg.refLux);
+			LOG(ISC_IPA, Debug)
+				<< "Lux estimate: " << context_.activeState.lux.lux
+				<< " (Y=" << frameContext.scene.luminance
+				<< " exp=" << frameContext.agc.exposure
+				<< " gain=" << frameContext.agc.analogueGain << ")";
+		} else {
+			context_.activeState.lux.lux = 400.0f;
+		}
 	} else {
 		frameContext.scene.luminance = 0.0f;
 		frameContext.scene.spread = 0.0f;
 		frameContext.scene.clipping = 0.0f;
 		frameContext.scene.isDark = true;
 		frameContext.scene.isHighContrast = false;
+		context_.activeState.lux.lux = 400.0f;
 	}
 
 	ControlList metadata(controls::controls);
