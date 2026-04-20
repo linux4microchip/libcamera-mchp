@@ -34,49 +34,29 @@ public:
 
 private:
 	/*
-	 * Static hardware brightness offset applied after gamma.
-	 * Range: [-1024, 1023] in hardware units (0 = no offset).
-	 * This is a one-time tuning offset, not a dynamic feedback loop:
-	 * AGC owns the luminance control loop; CBC brightness is a static
-	 * trim to correct residual sensor or pipeline offsets.
+	 * Tuning parameters — ALL set by init() from YAML.
+	 * No in-class initialisers for tuning values.
 	 */
-	int32_t defaultBrightness_ = 0;
 
-	/*
-	 * Contrast enhancement strength [0.0–1.0]. At 0.0 the contrast
-	 * register is left at unity (16). At 1.0 the full stretch-to-target
-	 * gain is applied. Values around 0.4 give natural-looking results.
-	 */
-	float contrastStrength_ = 0.4f;
+	/* Static brightness offset after gamma (YAML: default_brightness) */
+	int32_t defaultBrightness_ = 0; /* 0 = no static offset */
 
-	/*
-	 * Target P5–P95 spread as a fraction of the full histogram range.
-	 * When the scene spread is below this value the contrast is boosted
-	 * to make the scene fill the target fraction of the output range.
-	 */
-	float targetSpread_ = 0.65f;
+	/* Contrast enhancement strength [0-1] (YAML: contrast_strength) */
+	float contrastStrength_ = 0.4f; /* moderate enhancement */
 
-	/* Temporal smoothing factor [0.0–1.0]: higher = more damping. */
-	float smoothingFactor_ = 0.25f;
+	/* Target P5-P95 spread as fraction of histogram range (YAML: target_spread) */
+	float targetSpread_ = 0.65f; /* 65% of 511-bin range */
 
-	/*
-	 * Default hardware saturation level (0–100, unity = 16 on SAMA7G5).
-	 * Applied via V4L2_CID_SATURATION on SAMA7G5 (hasCbhs = true).
-	 * Values above 16 boost colour vividness; below 16 reduce it.
-	 */
-	int32_t defaultSaturation_ = 16;
+	/* Temporal smoothing factor (YAML: smoothing_factor) */
+	float smoothingFactor_ = 0.65f; /* prevents CBC brightness flicker */
 
-	/*
-	 * Default hue rotation in degrees (-180 to +180, neutral = 0).
-	 * Applied via V4L2_CID_HUE on SAMA7G5 (hasCbhs = true).
-	 */
-	int32_t defaultHue_ = 0;
+	/* Default hardware saturation (YAML: saturation) — unity=16, range 0-100 */
+	int32_t defaultSaturation_ = 60; /* slightly vivid */
 
-	/*
-	 * Maximum contrast gain applied by the histogram stretch algorithm.
-	 * Limits extreme corrections in near-zero spread scenes (e.g. lens cap).
-	 * Tunable via YAML contrast_max_gain (range 1.0–8.0, typical 3.0).
-	 */
+	/* Default hue rotation in degrees (YAML: hue) */
+	int32_t defaultHue_ = 0; /* no rotation */
+
+	/* Maximum contrast gain from histogram stretch (YAML: contrast_max_gain) */
 	float contrastMaxGain_ = 3.0f;
 };
 

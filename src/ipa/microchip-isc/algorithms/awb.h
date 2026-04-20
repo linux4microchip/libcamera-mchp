@@ -114,9 +114,25 @@ private:
 		float robertson; /* Robertson raw estimate in K */
 		float corrected; /* True CCT in K               */
 	};
+	std::vector<CtCorrectionPoint> ctCorrectionPwl_;
+
+	float applyCtCorrection(float rawCt) const;
+
 	/* ---- Runtime state — NOT tuning params ---- */
 	unsigned int awbFrameCount_ = 0;
 	bool awbStable_ = false;
+
+	/*
+	 * Counter for consecutive frames where the scene was too dark for
+	 * AWB to compute gains. After kDarkStableFrames consecutive dark
+	 * frames, the gains are considered stable (frozen at seed values
+	 * from reference_gains_table) and AwbLocked is set to true.
+	 * This matches RPi's approach: no AWB lock concept, but the IPA
+	 * should indicate convergence when gains are stable regardless of
+	 * whether they were computed or frozen.
+	 */
+	static constexpr unsigned int kDarkStableFrames = 5;
+	unsigned int darkFrameCount_ = 0;
 };
 
 } /* namespace ipa::microchip_isc */

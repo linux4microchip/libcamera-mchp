@@ -85,15 +85,48 @@ inline constexpr std::array<float, 9> kDefaultCtMatrix = {
 };
 
 float calculateChannelMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
-float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
+float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int channel,
+			     unsigned int pedestalBins = 0);
 void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			    std::array<float, 64> &lut_cdf);
-float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
-				 const std::array<float, kHistBins> &weights);
+			   std::array<float, 64> &lut_cdf,
+			   unsigned int pedestalBins = 0);
+
 float calculateClipping(const mchp_isc_stat_buffer *stats);
-float calculateHistogramSpread(const mchp_isc_stat_buffer *stats);
-float estimateColorTemperature(const mchp_isc_stat_buffer *stats);float estimateColorTemperature(float meanR, float meanG, float meanB,
+float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
+			       unsigned int pedestalBins = 0);
+/* Convenience overload: computes channel means internally from stats buffer */
+float estimateColorTemperature(const mchp_isc_stat_buffer *stats);
+float estimateColorTemperature(float meanR, float meanG, float meanB,
 			       const std::array<float, 9> *ctColorMatrix = nullptr);
+
+/**
+ * \brief Estimate scene illuminance in lux
+ * \param currentY       BT.601 luminance mean from pre-WB histogram (0–511)
+ * \param exposureLines  Current sensor exposure in line units
+ * \param analogueGain   Current sensor analogue gain (linear, e.g. 1.0–10.67)
+ * \param lineDurationUs Line duration in microseconds for the active mode
+ * \param refY           Reference histogram Y at known lux (calibration point)
+ * \param refExposureUs  Reference exposure time in microseconds
+ * \param refGain        Reference analogue gain (linear)
+ * \param refLux         Reference scene illuminance in lux (e.g. 400 for office)
+ * \return Estimated scene illuminance in lux, clamped to [1, 100000]
+ *
+ * Implements the Raspberry Pi lux estimator formula (lux.cpp):
+ *   lux = (refExposure/curExposure) * (refGain/curGain) * (curY/refY) * refLux
+ *
+ * The ratio curY/refY accounts for scene reflectance; the exposure and gain
+ * ratios normalise for the sensor operating point. The result is independent
+ * of the current gain or exposure — a brighter scene requires less exposure
+ * to reach the same Y, so the lux estimate correctly increases.
+ */
+float estimateLux(float currentY,
+		  uint32_t exposureLines,
+		  float analogueGain,
+		  float lineDurationUs,
+		  float refY,
+		  float refExposureUs,
+		  float refGain,
+		  float refLux);
 } /* namespace ipa::microchip_isc */
 
 } /* namespace libcamera */

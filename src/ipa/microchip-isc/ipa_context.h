@@ -8,6 +8,8 @@
 #pragma once
 
 #include <array>
+#include <memory>
+#include <optional>
 #include <stdint.h>
 
 #include <libcamera/base/utils.h>
@@ -16,6 +18,7 @@
 
 #include "libcamera/internal/bayer_format.h"
 
+#include <libipa/camera_sensor_helper.h>
 #include <libipa/fc_queue.h>
 
 namespace libcamera {
@@ -29,11 +32,24 @@ struct IPASessionConfiguration {
 		uint32_t defaultExposure;
 		float minAnalogueGain;
 		float maxAnalogueGain;
+		/*
+		 * Lux estimator calibration (RPi lux.cpp approach).
+		 * Measure once: point camera at a scene with known lux,
+		 * wait for AGC lock, record exposure/gain/histogramY and
+		 * measure with a handheld lux meter. Store in imx219.yaml.
+		 * refLuxY == 0 disables the lux estimator (default: 400 lux).
+		 */
+		float refLuxY = 0.0f; /* histogram BT.601 Y at reference; 0 = uncalibrated */
+		float refLuxExposureUs = 0.0f; /* exposure time in µs at reference point */
+		float refLuxGain = 1.0f; /* analogue gain at reference point */
+		float refLux = 400.0f; /* measured lux at reference point */
 	} agc;
 
 	struct {
 		BayerFormat::Order bayerOrder;
 		utils::Duration lineDuration;
+		/* Pixel rate in Hz — needed to recompute lineDuration from live hblank */
+		double pixelRate;
 		/*
 		 * Sensor black level in 10-bit units (e.g. 64 for IMX219).
 		 * Per-channel values fall back to blackLevel when absent in YAML.
@@ -97,24 +113,24 @@ struct IPASessionConfiguration {
 
 struct IPAActiveState {
 	struct {
-		uint32_t exposure;
-		float analogueGain;
-		bool autoEnabled;
-		int32_t exposureTimeMode; /* 0=auto, 1=manual (independent of gain) */
-		int32_t analogueGainMode; /* 0=auto, 1=manual (independent of exposure) */
+		uint32_t exposure = 0;
+		float analogueGain = 1.0f;
+		bool autoEnabled = true;
+		int32_t exposureTimeMode = 0; /* 0=auto, 1=manual (independent of gain) */
+		int32_t analogueGainMode = 0; /* 0=auto, 1=manual (independent of exposure) */
 		/*
 		 * EV compensation in stops [-2, +2]. Positive values increase
 		 * target brightness; negative values decrease it. Applied as a
 		 * multiplier (2^ev) to the YAML target_brightness each frame.
 		 */
-		float exposureValue;
+		float exposureValue = 0.0f;
 		/*
 		 * True once AGC has declared the exposure stable (luminance
 		 * within stabilityThreshold_ of the EV-adjusted target).
 		 * Read by CBC to inhibit its brightness correction while AGC
 		 * is actively converging, preventing the two loops from fighting.
 		 */
-		bool aeConverged;
+		bool aeConverged = false;
 	} agc;
 
 	struct {
@@ -147,6 +163,20 @@ struct IPAActiveState {
 	struct {
 		std::array<float, 9> matrix;
 		std::array<float, 3> offsets;
+		/*
+		 * Estimated saturation boost produced by the current CCM matrix,
+		 * expressed as a multiplier relative to unity (1.0 = no boost).
+		 * Computed by CCM from the off-diagonal magnitude: a matrix with
+		 * strong cross-channel corrections amplifies colour saturation as
+		 * a side effect. CBC reads this to apply a compensating reduction
+		 * to the CBHS saturation register so that the combined pipeline
+		 * saturation (CCM × CBHS) stays close to the user-intent value.
+		 *
+		 * Approximation: satBoost ≈ 1 + k * Σ|off_diagonals| / trace
+		 * where k = 0.25 (empirically calibrated on IMX219).
+		 * Initialised to 1.0 (no boost) until the first CCM update.
+		 */
+		float satBoost = 1.0f;
 	} ccm;
 
 	struct {
@@ -170,7 +200,35 @@ struct IPAActiveState {
 		 * Only applied on SAMA7G5 (hasCbhs = true) via V4L2_CID_HUE.
 		 */
 		int32_t hue;
+		/*
+		 * User-requested contrast multiplier from controls::Contrast.
+		 * Applied on top of the adaptive histogram contrast gain.
+		 * 1.0 = no user adjustment. Initialised to 1.0.
+		 */
+		float userContrastMultiplier = 1.0f;
+		/*
+		 * Effective contrast multiplier in linear gain units (1.0 = unity).
+		 * Set by CBC each frame from the blended histogram-derived gain.
+		 * Read by AGC to correct its effective target: when CBC will apply
+		 * contrast boost, the AGC must target a proportionally lower
+		 * pre-contrast luminance so the final output stays at the
+		 * photographic reference level after the full pipeline.
+		 * Initialised to 1.0 (no boost).
+		 */
+		float contrastGainLinear;
 	} cbc;
+
+	struct {
+		/*
+		 * Estimated scene illuminance in lux. Computed each stats
+		 * cycle from the current exposure, analogue gain and histogram
+		 * mean Y relative to a calibrated reference point.
+		 * Default 400 lux — typical indoor office lighting.
+		 * Used by the AGC y_target PWL to adapt the brightness target
+		 * to the scene light level, matching the RPi lux.cpp approach.
+		 */
+		float lux;
+	} lux;
 
 	struct {
 		/*
@@ -270,6 +328,15 @@ struct IPAContext {
 	FCQueue<IPAFrameContext> frameContexts;
 
 	ControlInfoMap::Map ctrlMap;
+
+	/*
+	 * Sensor helper — provides sensor-specific parameters compiled from
+	 * datasheets (black level, gain formula). Mirrors RkISP1 IPAContext
+	 * which also carries camHelper. Owned by the IPA instance; this is
+	 * a non-owning pointer valid for the IPA lifetime.
+	 * May be nullptr for sensors not registered in camera_sensor_helper.cpp.
+	 */
+	const ipa::CameraSensorHelper *camHelper = nullptr;
 };
 
 } /* namespace ipa::microchip_isc */

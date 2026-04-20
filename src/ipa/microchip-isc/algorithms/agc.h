@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include <array>
+#include <vector>
 
 #include "algorithm.h"
 #include "common.h"
@@ -21,6 +21,13 @@ class Agc : public Algorithm
 public:
 	Agc() = default;
 	~Agc() = default;
+
+	/* Public: used by interpolateYTarget() free function in agc.cpp */
+	struct YTargetPoint {
+		float lux;
+		float target; /* normalised [0,1], multiplied by kHistogramMax at use */
+	};
+
 	unsigned int priority() const override { return 10; }
 
 	int init(IPAContext &context, const YamlObject &tuningData) override;
@@ -35,55 +42,79 @@ public:
 		     ControlList &metadata) override;
 
 private:
-	/* Tuning parameters */
-	float targetBrightness_ = 128.0f;
-	float convergenceSpeed_ = 0.3f;
-	float stabilityThreshold_ = 10.0f;
-	unsigned int convergenceFrames_ = 0;
+	/*
+	 * Tuning parameters — ALL set by init() from YAML, never from here.
+	 * No in-class initialisers for tuning values: if a required key is
+	 * missing from YAML the behaviour must be deterministic and logged,
+	 * not silently fall back to a hidden .h constant. Safe fallbacks are
+	 * in init() as get<T>(fallback) arguments and documented in YAML.
+	 *
+	 * Runtime state (counters, flags) keeps its = 0 / = false initialiser.
+	 */
 
 	/*
-	 * Fraction of clipped pixels that triggers highlight anti-windup.
-	 * Above this threshold the control loop is prevented from increasing
-	 * exposure even when the luminance mean appears low (which occurs in
-	 * high-contrast outdoor scenes with large dark areas).
+	 * Tuning parameter defaults — values match imx219.yaml to ensure the
+	 * algorithm produces a sane image even when the YAML key is absent.
+	 * Pattern mirrors RPi agc_channel.h which uses constructor init-list,
+	 * and libipa AgcMeanLuminance which also initialises all members.
+	 * Using .get<float>(member_) as default is UB when member_ is
+	 * uninitialised — these initialisers fix that.
 	 */
+
+	/* Fallback fixed target when y_target table is absent (YAML: target_brightness) */
+	float targetBrightness_ = 60.0f; /* 18% grey net bins, bl=64 DN */
+
+	/* IIR convergence speed in steady state (YAML: convergence.speed) */
+	float convergenceSpeed_ = 0.2f; /* matches RPi agc_channel default */
+
+	/* Speed used for first startupFrames_ stats deliveries (YAML: convergence.startup_speed) */
+	float startupSpeed_ = 1.0f; /* instant jump on first frames */
+
+	/* Stats deliveries at startup speed (YAML: convergence.startup_frames) */
+	unsigned int startupFrames_ = 3;
+
+	/* Near-target band for sqrt(speed) accelerator (YAML: convergence.near_target_fraction) */
+	float nearTargetFraction_ = 0.2f; /* ±20% band — matches RPi */
+
+	/* Luminance stability band for AE lock (YAML: convergence.stability_threshold) */
+	float stabilityThreshold_ = 5.0f; /* histogram bins */
+
+	/* Backward-compat: minimum convergence rate = 1/frames (YAML: convergence.frames) */
+	unsigned int convergenceFrames_ = 0; /* 0 = disabled */
+
+	/* Consecutive stable deliveries required before AeStateConverged (YAML: convergence.lock_frames) */
+	unsigned int aeLockFrames_ = 3;
+
+	/* Fraction of clipped pixels triggering highlight anti-windup (YAML: clip_threshold) */
 	float clipThreshold_ = 0.02f;
 
-	/*
-	 * Exposure ratio clamp limits and highlight anti-windup cap.
-	 * ratioMin/Max bound the per-frame step size to prevent large
-	 * oscillations on scene changes. clipRatioCap is applied when
-	 * clipping exceeds clipThreshold_ to force a reduction.
-	 * All three are tunable via YAML ratio_clamp section.
-	 */
+	/* Per-frame brightness ratio limits (YAML: ratio_clamp.min/max/clip_cap) */
 	float ratioMin_ = 0.25f;
 	float ratioMax_ = 2.5f;
 	float clipRatioCap_ = 0.85f;
 
-	/*
-	 * Gain update thresholds. Gain is boosted only when exposure is maxed
-	 * AND ratio > gainBoostThreshold_; gain is pushed toward minimum when
-	 * ratio < gainReductionThreshold_. Tunable via YAML gain_thresholds.
-	 */
+	/* Gain step thresholds (YAML: gain_thresholds.boost/reduction) */
 	float gainBoostThreshold_ = 1.05f;
 	float gainReductionThreshold_ = 0.95f;
 
-	/*
-	 * Minimum luminance (histogram units) for AE stability check.
-	 * Below this floor the scene is treated as unstable regardless of
-	 * how close the mean is to targetBrightness_. Prevents false
-	 * convergence in near-black scenes where histogram noise dominates.
-	 * Tunable via YAML ae_luminance_floor.
-	 */
-	float aeLuminanceFloor_ = 0.5f;
+	/* Minimum scene luminance for AE stability check (YAML: ae_luminance_floor) */
+	float aeLuminanceFloor_ = 3.0f; /* net bins post-pedestal */
 
-	/*
-	 * Mains flicker avoidance: round exposure to the nearest multiple of
-	 * the mains half-period to prevent banding under 50 Hz / 60 Hz lighting.
-	 * 0 = disabled (default, suitable for outdoor or DC-lit environments).
-	 * Set to 50 or 60 via YAML flicker_hz to match local mains frequency.
-	 */
-	float flickerHz_ = 0.0f;
+	/* Mains flicker avoidance: 50.0 or 60.0 Hz, 0.0 = disabled (YAML: flicker_hz) */
+	float flickerHz_ = 0.0f; /* disabled by default */
+
+	/* Lux estimator calibration (YAML: lux_reference.*) — luxRefY_=0 disables */
+	float luxRefY_ = 0.0f; /* 0 = uncalibrated, use fallback lux */
+	float luxRefExposureUs_ = 0.0f;
+	float luxRefGain_ = 1.0f;
+	float luxRefLux_ = 400.0f; /* fallback indoor office lux */
+
+	/* Lux-adaptive brightness target table (YAML: y_target) */
+	std::vector<YTargetPoint> yTargetTable_;
+
+	/* ---- Runtime state — NOT tuning params, kept zero-initialised ---- */
+	unsigned int aeLockCount_ = 0;
+	unsigned int agcFrameCount_ = 0;
 };
 
 } /* namespace ipa::microchip_isc */
