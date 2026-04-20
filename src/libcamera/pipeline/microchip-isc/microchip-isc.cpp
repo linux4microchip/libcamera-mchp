@@ -394,12 +394,13 @@ void MicrochipISCCameraData::setIspControls(const ControlList &controls)
 
 	/*
 	 * WB gain registers (ISC_WB_*) are double-buffered in hardware.
-	 * The kernel ISC driver issues ISC_CTRL_UPPRO (profile update) inside
-	 * the histogram worker ISR which fires every 4 frames after HISDONE.
-	 * New gains written here take effect on the frame after the next
-	 * ISC_CTRL_UPPRO pulse — typically 1–4 frames of latency.
-	 * There is no V4L2 control to trigger ISC_CTRL_UPPRO directly from
-	 * userspace; this latency is inherent to the hardware architecture.
+	 * The kernel ISC driver calls isc_update_profile() from isc_s_ctrl()
+	 * on every V4L2 setControls ioctl. isc_update_profile() issues
+	 * ISC_CTRL_UPPRO and polls until the hardware double-buffer commits
+	 * before returning — gains are in hardware by the time the ioctl
+	 * returns. One pipeline frame is still needed for the committed gains
+	 * to propagate through the ISC processing pipeline and appear in the
+	 * DMA output.
 	 */
 	int ret = iscVideo_->setControls(&ispControls);
 	if (ret < 0)
@@ -1204,8 +1205,8 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	case V4L2_CID_CONTRAST: {
 		/*
 		 * libcamera publishes Brightness in the normalised range
-		 * [-1.0, +1.0] and Contrast in [0.0, 1.0] per the libcamera
-		 * control spec. The ISC V4L2 hardware uses integer ranges:
+		 * [-1.0, +1.0] and Contrast in [0.0, 128.0]. The ISC V4L2
+		 * hardware uses integer ranges:
 		 *   Brightness: V4L2_CID_BRIGHTNESS  [-1024, +1023] unity=0
 		 *   Contrast:   V4L2_CID_CONTRAST    [-2048, +2047] unity=16
 		 *

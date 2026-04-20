@@ -439,9 +439,9 @@ void Agc::process(IPAContext &context,
 
 	/*
 	 * Compute WB-corrected luminance, mirroring the RPi IPA approach in
-	 * agc_channel.cpp:computeInitialY() lines 682-692.
+	 * agc_channel.cpp:computeInitialY().
 	 *
-	 * The ISC histogram taps pre-WB Bayer data (vp_data, post-DPC).
+	 * The ISC histogram taps pre-WB Bayer data (vp_data, pre-DPC).
 	 * Channel means are raw sensor values unaffected by the WB block.
 	 * If we compare raw luminance directly to target_brightness we are
 	 * comparing pre-WB RAW to a post-WB target — they are different
@@ -630,11 +630,10 @@ void Agc::process(IPAContext &context,
 
 	/*
 	 * AE lock requires aeLockFrames_ consecutive frames within the
-	 * stability band (default 5, mirrors RPi lockCount/5 in
-	 * agc_channel.cpp:529). A single on-target frame is not enough —
-	 * the ISC 4-frame histogram latency means the sensor output may
-	 * still be slewing while the first stable stats arrive. The
-	 * consecutive count ensures the pipeline has fully settled.
+	 * stability band (default 5). A single on-target frame is not
+	 * enough — the ISC 4-frame histogram latency means the sensor
+	 * output may still be slewing while the first stable stats arrive.
+	 * The consecutive count ensures the pipeline has fully settled.
 	 * Lock is broken immediately if the scene shifts out of the band
 	 * by more than 1.5× the stability threshold (hysteresis), unless
 	 * the sensor is at its hardware limit (lock is sticky at the limit).
@@ -737,8 +736,8 @@ void Agc::process(IPAContext &context,
 				 * correction across both knobs — exposure handles
 				 * the portion up to maxExposure, gain covers the
 				 * rest. This avoids the multi-frame exposure-only
-				 * climb before gain is touched, cutting convergence
-				 * from ~15 frames to ~3 frames for typical scenes.
+				 * climb before gain is touched, significantly
+				 * cutting convergence time for typical scenes.
 				 */
 				float totalBrightness =
 					static_cast<float>(frameContext.agc.exposure) *

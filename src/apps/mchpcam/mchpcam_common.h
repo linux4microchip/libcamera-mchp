@@ -87,7 +87,7 @@ public:
 	 * Image controls — types and neutral values match libcamera spec.
 	 *
 	 *   Brightness : float  [−1.0,  +1.0],  neutral  0.0
-	 *   Contrast   : float  [ 0.0,  32.0],  neutral  1.0
+	 *   Contrast   : float  [ 0.0, 128.0],  neutral  1.0
 	 *   Gamma      : float  [ 0.1,  10.0],  typical  2.2
 	 *   Saturation : float  [ 0.0,  32.0],  neutral  1.0
 	 *   Hue        : float  [−180,  +180],  neutral  0.0  (degrees)
@@ -309,11 +309,6 @@ protected:
 	unsigned int maxFrames_;
 	unsigned int frameCount_ = 0;
 
-	/*
-	 * Post-lock settling counter. The ISC WB gain registers are
-	 * double-buffered; new values written by the IPA take effect only
-	 * after the next ISC_CTRL_UPPRO pulse (every 4 frames).
-	 */
 	unsigned int settleFrames_ = 0;
 	/*
 	 * Post-lock settling: ISC WB registers are double-buffered but

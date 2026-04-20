@@ -306,7 +306,7 @@ struct IPAFrameContext : public FrameContext {
 	 *
 	 * luminance:      BT.601-weighted mean from the pre-WB histogram
 	 *                 (histogram units 0–511). The ISC histogram taps
-	 *                 vp_data (pre-WB, post-DPC), so channel means are
+	 *                 vp_data (pre-DPC, pre-WB), so channel means are
 	 *                 raw sensor values independent of AWB gains. Used
 	 *                 by AGC, CBC, and Gamma.
 	 * spread:         P5–P95 inter-percentile range / 512 (0–1).
