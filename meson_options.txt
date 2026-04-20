@@ -16,6 +16,11 @@ option('cam',
         value : 'auto',
         description : 'Compile the cam test application')
 
+option('mchpcam',
+        type : 'feature',
+        value : 'auto',
+        description : 'Compile the mchpcam-still Microchip ISC capture application')
+
 option('documentation',
         type : 'feature',
         value : 'auto',

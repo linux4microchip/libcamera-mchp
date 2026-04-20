@@ -20,3 +20,5 @@ subdir('cam')
 subdir('qcam')
 
 subdir('ipa-verify')
+
+subdir('mchpcam')
