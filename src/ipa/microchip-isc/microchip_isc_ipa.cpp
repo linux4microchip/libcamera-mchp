@@ -801,6 +801,9 @@ void IPAMicrochipISC::processStats(unsigned int request,
 			float raw = calculateChannelMean(stats, ch);
 			hist.channelMeans[ch] = std::max(0.0f, raw - pedestal);
 			hist.captureFrame[ch] = stats->hist[ch].capture_frame;
+			/* Cache raw bin counts for IscHistogramBins calibration control. */
+			for (unsigned int i = 0; i < kHistBins; i++)
+				hist.bins[ch][i] = stats->hist[ch].hist_bins[i];
 		}
 	}
 

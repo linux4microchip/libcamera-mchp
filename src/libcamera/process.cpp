@@ -119,7 +119,20 @@ Process::Process()
 Process::~Process()
 {
 	kill();
-	/* \todo wait for child process to exit */
+	/*
+	 * Best-effort reap: if the child has already exited (SIGKILL delivered
+	 * synchronously) collect its exit status so it does not linger as a
+	 * zombie.  The EventNotifier-based reaping in onPidfdNotify() is the
+	 * primary mechanism; this is a fallback for the case where the event
+	 * loop is not running (e.g. the parent is being torn down after a
+	 * fatal signal).  Use WNOHANG — do not block if the child is still
+	 * running; the OS will reap it when its parent eventually exits.
+	 */
+	if (pid_ > 0) {
+		int status;
+		waitpid(pid_, &status, WNOHANG);
+		pid_ = -1;
+	}
 }
 
 /**

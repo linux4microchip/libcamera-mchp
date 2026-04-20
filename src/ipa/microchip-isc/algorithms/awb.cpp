@@ -328,12 +328,83 @@ void Awb::process(IPAContext &context,
 	 * Read per-channel means from activeState. All four channels are
 	 * always fresh — the ISC stats buffer delivers all four together once
 	 * per 4-frame cycle (isc_stats_isr() fires only after B completes).
+	 *
+	 * Per-channel exposure normalization:
+	 * The ISC measures each Bayer channel on a different frame within the
+	 * 4-frame cycle (GR on frame N, R on N+1, GB on N+2, B on N+3).
+	 * captureFrame[] records the actual frame sequence number for each
+	 * channel. When AGC is ramping, the exposure between frames N and N+3
+	 * may differ — computing rGain = meanGR / meanR directly would
+	 * introduce a systematic error proportional to the AGC step size.
+	 *
+	 * Normalize each channel mean to a common exposure reference (the GR
+	 * channel's frame) so that gains are computed at equivalent exposures.
+	 * Use the frameContexts ring buffer to look up the actual exposure and
+	 * gain applied when each channel was measured.
+	 *
+	 * Skip normalization when frameContexts history is shallow (first few
+	 * frames after stream-on) or when channels are measured on the same
+	 * frame (steady-state AGC — most common case, normalization is a no-op).
 	 */
 	const auto &hist = context.activeState.histogram;
 	float meanGR = hist.channelMeans[kHistChannelGR];
 	float meanR = hist.channelMeans[kHistChannelR];
 	float meanGB = hist.channelMeans[kHistChannelGB];
 	float meanB = hist.channelMeans[kHistChannelB];
+
+	/*
+	 * Normalize R, GB, B means to the GR frame's exposure.
+	 * ratio = (exposure_GR * gain_GR) / (exposure_ch * gain_ch)
+	 * Each channel mean is multiplied by this ratio so that all means
+	 * are expressed as if they were measured at the GR frame's exposure.
+	 *
+	 * If frameContexts doesn't have history far enough back, or the
+	 * frameContext lookup fails, fall through without normalization.
+	 */
+	{
+		const uint32_t grFrame = hist.captureFrame[kHistChannelGR];
+
+		auto getExpGain = [&](uint32_t frameSeq, float &expOut, float &gainOut) {
+			/* FCQueue::get() returns FrameContext & by reference.
+			 * If frameSeq is outside the ring buffer it returns an
+			 * uninitialised slot — guard with exposure != 0. */
+			try {
+				const auto &fc = static_cast<const IPAFrameContext &>(
+					context.frameContexts.get(frameSeq));
+				if (fc.agc.exposure == 0) {
+					expOut = context.activeState.agc.exposure;
+					gainOut = context.activeState.agc.analogueGain;
+					return false;
+				}
+				expOut = static_cast<float>(fc.agc.exposure);
+				gainOut = fc.agc.analogueGain;
+				return true;
+			} catch (...) {
+				expOut = context.activeState.agc.exposure;
+				gainOut = context.activeState.agc.analogueGain;
+				return false;
+			}
+		};
+
+		float grExp, grGain;
+		getExpGain(grFrame, grExp, grGain);
+		float grEV = grExp * grGain;
+
+		auto normalize = [&](float mean, unsigned int ch) -> float {
+			if (hist.captureFrame[ch] == grFrame)
+				return mean; /* same frame — no normalization needed */
+			float chExp, chGain;
+			getExpGain(hist.captureFrame[ch], chExp, chGain);
+			float chEV = chExp * chGain;
+			if (chEV < 1e-6f)
+				return mean;
+			return mean * (grEV / chEV);
+		};
+
+		meanR = normalize(meanR, kHistChannelR);
+		meanGB = normalize(meanGB, kHistChannelGB);
+		meanB = normalize(meanB, kHistChannelB);
+	}
 
 	/*
 	 * Guard against AWB updates in near-dark scenes. The check uses
@@ -558,6 +629,52 @@ void Awb::process(IPAContext &context,
 
 	if (awb.ct > 0)
 		metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
+
+	/*
+	 * Emit pre-WB histogram channel means as vendor metadata.
+	 *
+	 * The ISC histogram tap (ISC_HIS_CFG_RAR) is before the WB block so
+	 * these values are unaffected by the IPA gain registers. They represent
+	 * the raw scene illuminant chromaticity and are the primary data source
+	 * for the microchip_isc.py calibration tool.
+	 *
+	 * Exposing them here through the standard metadata path — rather than
+	 * relying on debug log scraping — provides a stable, versioned interface
+	 * that survives log format changes and log level suppression.
+	 *
+	 * Array order: [GR, R, GB, B] — matches ISC hardware channel indices
+	 * ISC_HIS_CFG_MODE_GR=0, R=1, GB=2, B=3.
+	 */
+	const auto &histState = context.activeState.histogram;
+	std::array<float, 4> histMeans = {
+		histState.channelMeans[kHistChannelGR],
+		histState.channelMeans[kHistChannelR],
+		histState.channelMeans[kHistChannelGB],
+		histState.channelMeans[kHistChannelB],
+	};
+	metadata.set(controls::microchip::IscHistogramMeans, histMeans);
+
+	/*
+	 * Emit full histogram bins every frame.
+	 * IscHistogramBins is channel-major: [GR[0..511], R[0..511], GB[0..511], B[0..511]].
+	 * 2048 int32 values (8 KB per frame).
+	 *
+	 * Emitted unconditionally — no opt-in control needed. The calibration
+	 * tool reads this for high-precision AWB (P10-P90 trimmed mean) and
+	 * CCM patch statistics. Normal users ignore it.
+	 */
+	{
+		std::array<int32_t, kIscHistChannels * kHistBins> bins;
+		const unsigned int channels[kIscHistChannels] = {
+			kHistChannelGR, kHistChannelR, kHistChannelGB, kHistChannelB
+		};
+		for (unsigned int ch = 0; ch < kIscHistChannels; ch++) {
+			const auto &raw = histState.bins[channels[ch]];
+			for (unsigned int i = 0; i < kHistBins; i++)
+				bins[ch * kHistBins + i] = static_cast<int32_t>(raw[i]);
+		}
+		metadata.set(controls::microchip::IscHistogramBins, bins);
+	}
 }
 
 /**

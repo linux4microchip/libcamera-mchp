@@ -241,6 +241,13 @@ struct IPAActiveState {
 		 */
 		std::array<float, 4> channelMeans;
 		/*
+		 * Full 512-bin histogram counts per channel (GR, R, GB, B).
+		 * Copied from the stats buffer in processStats() for use by
+		 * calibration metadata (IscHistogramBins) and AGC CDF queries.
+		 * Indexed [channel][bin], channel order matches kHistChannel*.
+		 */
+		std::array<std::array<uint32_t, 512>, 4> bins = {};
+		/*
 		 * Frame sequence number at which each channel's histogram was
 		 * measured (snapshotted in the kernel at HISDONE IRQ time).
 		 * Because each Bayer channel is measured on a different frame

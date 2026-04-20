@@ -85,4 +85,50 @@ controls:
       min: -180
       max: 180
       default: 0
+
+  - IscHistogramMeans:
+      type: float
+      direction: out
+      size: [4]
+      description: |
+        ISC pre-WB histogram channel means for the current frame, in
+        pedestal-subtracted net histogram bins (0–511 scale).
+
+        Emitted by the IPA on every processed frame. Array order matches
+        the ISC hardware histogram channel indices:
+          [0] = GR (green-red Bayer channel)
+          [1] = R  (red Bayer channel)
+          [2] = GB (green-blue Bayer channel)
+          [3] = B  (blue Bayer channel)
+
+        The ISC histogram tap point (ISC_HIS_CFG_RAR) is before the WB
+        block in the hardware pipeline, so these means are unaffected by
+        the IPA white balance gains. They represent the raw scene
+        illuminant chromaticity and are the primary input for AWB and
+        CCM calibration.
+
+        Used by the microchip_isc.py calibration tool to compute
+        per-illuminant channel ratios without requiring a pre-WB pixel
+        DMA output (which the ISC hardware does not provide).
+
+  - IscHistogramBins:
+      type: int32_t
+      direction: out
+      size: [2048]
+      description: |
+        ISC pre-WB histogram bin counts for the current frame.
+
+        Full 512-bin histogram for all 4 Bayer channels, flattened in
+        channel-major order: [GR[0..511], R[0..511], GB[0..511], B[0..511]].
+        Total 2048 int32 values.
+
+        Emitted every frame alongside IscHistogramMeans.
+
+        Bin index i corresponds to pixel value range [2i, 2i+1] in 10-bit
+        sensor units (bin = pixel >> 1). The ISC histogram tap is pre-WB so
+        values are unaffected by IPA white balance gains.
+
+        Used by microchip_isc.py to compute full spectral statistics
+        (P10-P90 trimmed means, spread, CDF) for CCM and AWB calibration
+        without requiring a RAW DMA output path.
 ...

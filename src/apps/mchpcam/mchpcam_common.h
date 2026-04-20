@@ -282,6 +282,7 @@ protected:
 
 	/* AWB */
 	bool awbEnabled_ = true;
+	/* Calibration mode: request IscHistogramBins vendor control. */
 	/* awbMode_: named AWB presets not supported by ISC IPA.
 	 * setAwbMode() simulates presets via ColourGains instead. */
 	bool manualColourGains_ = false;

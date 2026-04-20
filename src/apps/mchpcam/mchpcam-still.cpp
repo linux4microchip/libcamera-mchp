@@ -967,6 +967,7 @@ int main(int argc, char **argv)
 
 	signal(SIGINT, onSigTerm);
 	signal(SIGTERM, onSigTerm);
+	signal(SIGHUP, onSigTerm); /* SSH disconnect — treat as graceful stop */
 	signal(SIGUSR1, onSigUsr1);
 
 	static const struct option longOpts[] = {
