@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include <libcamera/base/log.h>
 
@@ -23,6 +24,46 @@ namespace libcamera {
 LOG_DEFINE_CATEGORY(ISC_AGC)
 
 namespace ipa::microchip_isc {
+
+/**
+ * \brief Interpolate y_target from a lux-indexed PWL table
+ * \param table  Vector of {lux, target} pairs, sorted ascending by lux
+ * \param lux    Current estimated scene illuminance
+ * \param fallback  Value to return when table is empty
+ * \return Interpolated brightness target in histogram units (0–511)
+ *
+ * Implements the same PWL evaluation as RPi agc_channel.cpp
+ * (Pwl::eval). Linear interpolation between adjacent table points;
+ * clamps to first/last entry outside the table range.
+ */
+static float interpolateYTarget(const std::vector<Agc::YTargetPoint> &table,
+				float lux,
+				float fallback)
+{
+	if (table.empty())
+		return fallback;
+
+	/* Below first point: return first target */
+	if (lux <= table.front().lux)
+		return table.front().target * kHistogramMax;
+
+	/* Above last point: return last target */
+	if (lux >= table.back().lux)
+		return table.back().target * kHistogramMax;
+
+	/* Find bounding segment and interpolate */
+	for (size_t i = 1; i < table.size(); i++) {
+		if (lux <= table[i].lux) {
+			float t = (lux - table[i - 1].lux) /
+				  (table[i].lux - table[i - 1].lux);
+			float target = table[i - 1].target +
+				       t * (table[i].target - table[i - 1].target);
+			return target * kHistogramMax;
+		}
+	}
+
+	return table.back().target * kHistogramMax;
+}
 
 /**
  * \brief Initialize AGC from YAML tuning data
@@ -48,8 +89,12 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	if (tuningData.contains("convergence")) {
 		const YamlObject &conv = tuningData["convergence"];
 		convergenceSpeed_ = conv["speed"].get<float>(convergenceSpeed_);
+		startupSpeed_ = conv["startup_speed"].get<float>(startupSpeed_);
+		startupFrames_ = conv["startup_frames"].get<unsigned int>(startupFrames_);
 		stabilityThreshold_ = conv["stability_threshold"].get<float>(stabilityThreshold_);
 		convergenceFrames_ = conv["frames"].get<unsigned int>(convergenceFrames_);
+		nearTargetFraction_ = conv["near_target_fraction"].get<float>(nearTargetFraction_);
+		aeLockFrames_ = conv["lock_frames"].get<unsigned int>(aeLockFrames_);
 	}
 
 	if (tuningData.contains("ratio_clamp")) {
@@ -65,12 +110,77 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		gainReductionThreshold_ = gt["reduction"].get<float>(gainReductionThreshold_);
 	}
 
+	/*
+	 * Lux estimator calibration. Measure once with a handheld lux meter:
+	 *   1. Point camera at a scene under known illumination
+	 *   2. Let AGC converge (AWB+AE locked)
+	 *   3. Record: histogram_Y, exposure_us, analogue_gain, lux reading
+	 *   4. Store in imx219.yaml [Agc] lux_reference block
+	 * If absent, lux estimation is disabled and y_target[1] is used as a
+	 * fixed target (backward-compatible with un-calibrated sensors).
+	 */
+	if (tuningData.contains("lux_reference")) {
+		const YamlObject &lr = tuningData["lux_reference"];
+		luxRefY_ = lr["reference_Y"].get<float>(0.0f);
+		luxRefExposureUs_ = lr["reference_exposure_us"].get<float>(0.0f);
+		luxRefGain_ = lr["reference_gain"].get<float>(1.0f);
+		luxRefLux_ = lr["reference_lux"].get<float>(400.0f);
+		/* Also push to session config so processStats() can access them */
+		context.configuration.agc.refLuxY = luxRefY_;
+		context.configuration.agc.refLuxExposureUs = luxRefExposureUs_;
+		context.configuration.agc.refLuxGain = luxRefGain_;
+		context.configuration.agc.refLux = luxRefLux_;
+	}
+
+	/*
+	 * y_target PWL table: maps lux → normalised brightness target [0,1].
+	 * Mirrors RPi agc_channel.cpp y_target (BSD-2-Clause):
+	 *   The target is normalised to kHistogramMax (511) when used.
+	 *   Lower lux → lower target because downstream CBC contrast boost
+	 *   and WB gain chain amplify dark scenes more than bright scenes.
+	 *   If absent, falls back to fixed targetBrightness_.
+	 */
+	if (tuningData.contains("y_target")) {
+		const auto &pts = tuningData["y_target"].asList();
+		for (auto it = pts.begin(); it != pts.end();) {
+			float lux = it->get<float>(0.0f);
+			++it;
+			if (it == pts.end())
+				break;
+			float target = it->get<float>(0.0f);
+			++it;
+			yTargetTable_.push_back({ lux, target });
+		}
+		/*
+		 * Sort ascending by lux so interpolateYTarget() binary search
+		 * is correct regardless of YAML entry order. Without this, an
+		 * out-of-order YAML table (e.g. 300K before 100K) causes the
+		 * first matching segment to be wrong and returns a biased target.
+		 */
+		std::sort(yTargetTable_.begin(), yTargetTable_.end(),
+			  [](const YTargetPoint &a, const YTargetPoint &b) {
+				  return a.lux < b.lux;
+			  });
+	}
+
+	/*
+	 * convergenceFrames_ is a backward-compat floor: raises convergenceSpeed_
+	 * to at least 1/N so convergence is guaranteed within N stats deliveries.
+	 * Applied unconditionally when present — an explicit speed= in YAML that
+	 * is faster than 1/frames is unaffected (the if-guard ensures we only
+	 * raise, never lower). If the intent is a maximum N-frame bound, set
+	 * frames= to N; if the intent is a specific speed, set speed= directly
+	 * and leave frames= absent. Do not rely on frames= to limit speed.
+	 */
 	if (convergenceFrames_ > 0) {
-		float frameSpeed = 1.0f / convergenceFrames_;
-		convergenceSpeed_ = std::max(convergenceSpeed_, frameSpeed);
+		float frameSpeed = 1.0f / static_cast<float>(convergenceFrames_);
+		if (frameSpeed > convergenceSpeed_)
+			convergenceSpeed_ = frameSpeed;
 	}
 
 	convergenceSpeed_ = std::clamp(convergenceSpeed_, 0.01f, 1.0f);
+	startupSpeed_ = std::clamp(startupSpeed_, 0.1f, 1.0f);
+	nearTargetFraction_ = std::clamp(nearTargetFraction_, 0.0f, 0.5f);
 	clipThreshold_ = std::clamp(clipThreshold_, 0.001f, 0.5f);
 	ratioMin_ = std::clamp(ratioMin_, 0.1f, 0.9f);
 	ratioMax_ = std::clamp(ratioMax_, 1.1f, 8.0f);
@@ -116,6 +226,10 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	LOG(ISC_AGC, Debug)
 		<< "AGC initialized: target=" << targetBrightness_
 		<< " speed=" << convergenceSpeed_
+		<< " startupSpeed=" << startupSpeed_
+		<< " startupFrames=" << startupFrames_
+		<< " nearTargetFraction=" << nearTargetFraction_
+		<< " lockFrames=" << aeLockFrames_
 		<< " threshold=" << stabilityThreshold_
 		<< " frames=" << convergenceFrames_
 		<< " clipThreshold=" << clipThreshold_
@@ -150,6 +264,12 @@ int Agc::configure(IPAContext &context,
 	 */
 	context.activeState.agc.exposure = agc.defaultExposure;
 	context.activeState.agc.analogueGain = agc.minAnalogueGain;
+
+	/* Initialise lux estimator reference from YAML — 0 means uncalibrated */
+	context.activeState.lux.lux = 400.0f;
+
+	/* Initialise CBC contrast gain to unity so AGC target is unmodified before first CBC cycle */
+	context.activeState.cbc.contrastGainLinear = 1.0f;
 
 	LOG(ISC_AGC, Debug)
 		<< "AGC configured: exposure=" << context.activeState.agc.exposure
@@ -305,6 +425,7 @@ void Agc::process(IPAContext &context,
 	 */
 	if (frame < 3) {
 		LOG(ISC_AGC, Debug) << "AGC warmup frame " << frame << ", skipping";
+		agcFrameCount_ = 0;
 		int32_t exposureUs = static_cast<int32_t>(
 			agcState.exposure *
 			context.configuration.sensor.lineDuration.get<std::micro>());
@@ -317,28 +438,218 @@ void Agc::process(IPAContext &context,
 	}
 
 	/*
-	 * Use the shared scene luminance pre-computed in processStats() from
-	 * the BT.601-weighted histogram means.  Only MeteringMatrix is
-	 * supported; the ISC histogram has no spatial information so
-	 * centre-weighted and spot modes read the same full-frame value.
+	 * Compute WB-corrected luminance, mirroring the RPi IPA approach in
+	 * agc_channel.cpp:computeInitialY() lines 682-692.
+	 *
+	 * The ISC histogram taps pre-WB Bayer data (vp_data, post-DPC).
+	 * Channel means are raw sensor values unaffected by the WB block.
+	 * If we compare raw luminance directly to target_brightness we are
+	 * comparing pre-WB RAW to a post-WB target — they are different
+	 * domains. The result is that the AGC drives to maximum gain to reach
+	 * a target that is correct in output space but applied to raw data,
+	 * causing severe overexposure (observed: mean Y=206 vs kernel Y=112).
+	 *
+	 * Fix: scale each channel mean by its WB gain before computing the
+	 * BT.601 luminance estimate. This gives a luminance value in the same
+	 * domain as the output image — post-WB, pre-gamma linear. The target
+	 * (target_brightness=92, representing 18% grey at 0.18×511≈92) then
+	 * correctly represents the desired output brightness, exactly as the
+	 * RPi agc_channel.cpp computes it when agcStatsPos == PreWb.
+	 *
+	 * Saturation guard: clamp each WB-scaled mean to kHistogramMax so
+	 * that a single overdriven channel (e.g. R in deep tungsten at 1800K
+	 * with rGain=4.2) cannot pull the luminance estimate above the
+	 * histogram range and cause the AGC to underexpose.
+	 *
+	 * If no AWB gains are available yet (first frame, gains at init
+	 * default 1.0) the correction is a no-op — correct behaviour since
+	 * WB has not been computed yet.
 	 */
-	float currentLuminance = frameContext.scene.luminance;
+	const auto &awb = context.activeState.awb;
+	float wbR = (awb.rGain > 0.0f) ? awb.rGain : 1.0f;
+	float wbGR = (awb.grGain > 0.0f) ? awb.grGain : 1.0f;
+	float wbGB = (awb.gbGain > 0.0f) ? awb.gbGain : 1.0f;
+	float wbB = (awb.bGain > 0.0f) ? awb.bGain : 1.0f;
 
 	/*
-	 * Apply EV compensation: shift the target brightness by 2^ev stops.
-	 * Positive EV brightens (e.g. +1 EV → 2× target); negative darkens.
-	 * Clamp to the valid histogram range [aeLuminanceFloor_, kHistogramMax].
+	 * Normalise WB gains to the minimum channel so the correction only
+	 * redistributes colour — it does not amplify overall brightness.
+	 * This mirrors RPi agc_channel.cpp lines 683-686:
+	 *   minColourGain = max(min(gainR, gainG, gainB, 1.0), 1.0)
+	 *   colourGains /= minColourGain
+	 * The division by minColourGain ensures the dimmest channel is
+	 * unchanged (gain=1×) and the brighter channels are boosted relative
+	 * to it, preserving luminance scale.
 	 */
-	float evScale = std::pow(2.0f, agcState.exposureValue);
-	float effectiveTarget = std::clamp(targetBrightness_ * evScale,
+	float minWb = std::max(std::min({ wbR, wbGR, wbGB, wbB }), 1.0f);
+	wbR /= minWb;
+	wbGR /= minWb;
+	wbGB /= minWb;
+	wbB /= minWb;
+
+	const auto &hist = context.activeState.histogram;
+	float meanR = std::min(hist.channelMeans[kHistChannelR] * wbR, kHistogramMax);
+	float meanGR = std::min(hist.channelMeans[kHistChannelGR] * wbGR, kHistogramMax);
+	float meanGB = std::min(hist.channelMeans[kHistChannelGB] * wbGB, kHistogramMax);
+	float meanB = std::min(hist.channelMeans[kHistChannelB] * wbB, kHistogramMax);
+	float meanG = (meanGR + meanGB) / 2.0f;
+
+	float currentLuminance = 0.299f * meanR + 0.587f * meanG + 0.114f * meanB;
+
+	/* Count frames from the first active stats delivery */
+	agcFrameCount_++;
+
+	/*
+	 * Two-phase convergence speed selection.
+	 *
+	 * Phase 1 — startup (agcFrameCount_ <= startupFrames_):
+	 *   Use startupSpeed_ (default 1.0) so exposure and gain jump
+	 *   directly to their target values in the first few frames.
+	 *   This matches the RPi IPA fast-start approach: reach roughly
+	 *   correct exposure before the stability lock check can fire,
+	 *   preventing false-convergence at the initial low luminance.
+	 *
+	 * Phase 2 — steady state (agcFrameCount_ > startupFrames_):
+	 *   Switch to convergenceSpeed_ (default 0.3) for smooth IIR
+	 *   tracking. This prevents overshooting and banding when the
+	 *   scene changes gradually after the initial climb.
+	 *
+	 * Clipping always overrides startup speed to avoid burning
+	 * highlights on a bright scene after a dark-to-bright cut.
+	 */
+	bool inStartup = (startupFrames_ > 0 && agcFrameCount_ <= startupFrames_);
+
+	/*
+	 * Determine the brightness target in pre-WB RAW histogram units.
+	 *
+	 * When a y_target PWL table is configured (imx219.yaml y_target block),
+	 * interpolate the target from the current lux estimate. This is the RPi
+	 * approach: the target adapts to scene brightness so the full pipeline
+	 * output stays close to the photographic reference level regardless of
+	 * light level, analogue gain, WB chain, or CBC contrast boost.
+	 *
+	 * The lux estimate is computed in processStats() from current exposure,
+	 * gain and histogram Y relative to the calibrated reference point.
+	 * A dim scene (low lux) → lower target → less gain → less CBC boost
+	 * → correct output brightness instead of overexposure.
+	 *
+	 * When no y_target table is configured (uncalibrated sensor), fall back
+	 * to the fixed targetBrightness_ from YAML/header default. This gives
+	 * the same behaviour as before on sensors without a lux calibration.
+	 *
+	 * Apply EV compensation on top of the lux-derived target.
+	 */
+	float currentLux = context.activeState.lux.lux;
+	float baseTarget = interpolateYTarget(yTargetTable_, currentLux,
+					      targetBrightness_);
+
+	/*
+	 * EV scale: 2^ev. Avoid std::pow() in the common case (ev=0) since
+	 * pow(2,0)=1 is trivially known and transcendental functions are
+	 * expensive on the Cortex-A7 without an FPU pow instruction.
+	 */
+	float evScale = (agcState.exposureValue == 0.0f)
+				? 1.0f
+				: std::pow(2.0f, agcState.exposureValue);
+	float effectiveTarget = std::clamp(baseTarget * evScale,
 					   aeLuminanceFloor_, kHistogramMax);
 
-	bool aeStable = currentLuminance >= aeLuminanceFloor_ &&
-			std::abs(effectiveTarget - currentLuminance) < stabilityThreshold_;
+	LOG(ISC_AGC, Debug)
+		<< "AGC target: lux=" << currentLux
+		<< " baseTarget=" << baseTarget
+		<< " evScale=" << evScale
+		<< " effectiveTarget=" << effectiveTarget;
+
+	/*
+	 * Three-region speed selection — mirrors RPi agc_channel.cpp filterExposure():
+	 *
+	 * 1. Startup (agcFrameCount_ <= startupFrames_):
+	 *    speed = startupSpeed_ (default 1.0 — direct jump).
+	 *    Bypasses IIR so exposure+gain reach target in 1–3 frames.
+	 *    Clipping exits startup early to prevent highlight burns.
+	 *
+	 * 2. Near-target (|error| < nearTargetFraction_ * target):
+	 *    speed = sqrt(convergenceSpeed_) — ~2× faster than steady state.
+	 *    Eliminates micro-oscillation near the stability boundary where
+	 *    the standard IIR rate leaves the loop hovering for many frames.
+	 *    RPi uses ±20% band (nearTargetFraction_ = 0.2).
+	 *
+	 * 3. Steady state:
+	 *    speed = convergenceSpeed_ (default 0.2) — smooth tracking.
+	 *    Prevents overshoot and fluorescent banding on gradual changes.
+	 */
+	float activeSpeed;
+	float error = std::abs(effectiveTarget - currentLuminance);
+	bool nearTarget = (nearTargetFraction_ > 0.0f && effectiveTarget > 0.0f &&
+			   error < nearTargetFraction_ * effectiveTarget);
+
+	if (inStartup)
+		activeSpeed = startupSpeed_;
+	else if (nearTarget)
+		activeSpeed = std::sqrt(convergenceSpeed_);
+	else
+		activeSpeed = convergenceSpeed_;
+
+	/* Guard against zero lineDuration (sensor not configured or pixelRate=0). */
+	if (context.configuration.sensor.lineDuration.get<std::nano>() <= 0) {
+		LOG(ISC_AGC, Warning) << "lineDuration is zero, skipping AGC compute";
+		return;
+	}
+
+	/*
+	 * Round rather than truncate: Duration::get<>() returns double.
+	 * Truncation would cap at N-1 lines when the true limit is N due to
+	 * floating-point representation, underexposing dark scenes by one line.
+	 */
+	uint32_t maxExposureLimit = static_cast<uint32_t>(
+		std::round(agcConfig.maxShutterSpeed.get<std::nano>() /
+			   context.configuration.sensor.lineDuration.get<std::nano>()));
+	/*
+	 * Hardware limit detection: true when both exposure and gain are at
+	 * (or very close to) their sensor maximums and cannot increase further.
+	 * The 95% threshold (not 99%) accounts for the IIR rounding and the
+	 * startup simultaneous-gain formula that may settle slightly below the
+	 * hardware ceiling without triggering the gain-boost path.
+	 */
+	bool atHardwareLimit = !exposureManual && !gainManual &&
+			       agcState.exposure >= maxExposureLimit &&
+			       agcState.analogueGain >= agcConfig.maxAnalogueGain * 0.95f;
+
+	/*
+	 * Stability check: frame is stable if luminance is within the
+	 * stability band OR if both sensor knobs are at their hardware
+	 * maximum and the startup phase is complete. In the latter case
+	 * the sensor has done everything it can — there is no point
+	 * waiting indefinitely for a target it physically cannot reach.
+	 * Mirrors the RPi pattern where frameCount > startupFrames + lockFrames
+	 * eventually forces a lock even on scenes beyond the sensor's range.
+	 */
+	bool frameStable = (currentLuminance >= aeLuminanceFloor_ &&
+			    error < stabilityThreshold_) ||
+			   (atHardwareLimit && !inStartup);
+
+	/*
+	 * AE lock requires aeLockFrames_ consecutive frames within the
+	 * stability band (default 5, mirrors RPi lockCount/5 in
+	 * agc_channel.cpp:529). A single on-target frame is not enough —
+	 * the ISC 4-frame histogram latency means the sensor output may
+	 * still be slewing while the first stable stats arrive. The
+	 * consecutive count ensures the pipeline has fully settled.
+	 * Lock is broken immediately if the scene shifts out of the band
+	 * by more than 1.5× the stability threshold (hysteresis), unless
+	 * the sensor is at its hardware limit (lock is sticky at the limit).
+	 */
+	if (frameStable) {
+		if (aeLockCount_ < aeLockFrames_)
+			aeLockCount_++;
+	} else if (!atHardwareLimit && error > stabilityThreshold_ * 1.5f) {
+		aeLockCount_ = 0;
+	}
+	bool aeStable = (aeLockCount_ >= aeLockFrames_);
 	agcState.aeConverged = aeStable;
 
 	if (!aeStable) {
-		float ratio = effectiveTarget / currentLuminance;
+		float ratio = effectiveTarget / std::max(currentLuminance, 1.0f);
 		ratio = std::clamp(ratio, ratioMin_, ratioMax_);
 
 		/*
@@ -348,27 +659,30 @@ void Agc::process(IPAContext &context,
 		 * already saturated. Without this guard the control loop boosts
 		 * exposure further, causing oscillation. Cap the ratio to force
 		 * a reduction whenever significant clipping is detected.
+		 * Also exit startup phase early when clipping is detected —
+		 * the scene is bright, no need for aggressive boost.
 		 */
 		float clipping = frameContext.scene.clipping;
 		if (clipping > clipThreshold_) {
 			ratio = std::min(ratio, clipRatioCap_);
+			inStartup = false;
+			activeSpeed = convergenceSpeed_;
 			LOG(ISC_AGC, Debug)
 				<< "Clipping " << clipping * 100.0f
 				<< "% > " << clipThreshold_ * 100.0f
 				<< "%, capping ratio=" << ratio;
 		}
 
-		uint32_t maxExposure = static_cast<uint32_t>(
-			agcConfig.maxShutterSpeed / context.configuration.sensor.lineDuration);
-		uint32_t minExposure = static_cast<uint32_t>(
-			agcConfig.minShutterSpeed / context.configuration.sensor.lineDuration);
+		uint32_t maxExposure = std::max(1u, maxExposureLimit);
+		uint32_t minExposure = std::max(1u, static_cast<uint32_t>(
+							    agcConfig.minShutterSpeed / context.configuration.sensor.lineDuration));
 
 		/* Update exposure if not in manual mode */
 		if (!exposureManual) {
 			float currentExposure = static_cast<float>(frameContext.agc.exposure);
 			float targetExposure = currentExposure * ratio;
-			float newExposure = convergenceSpeed_ * targetExposure +
-					    (1.0f - convergenceSpeed_) * currentExposure;
+			float newExposure = activeSpeed * targetExposure +
+					    (1.0f - activeSpeed) * currentExposure;
 
 			uint32_t exposure = std::clamp(static_cast<uint32_t>(newExposure),
 						       minExposure, maxExposure);
@@ -380,11 +694,13 @@ void Agc::process(IPAContext &context,
 			 * to prevent banding under fluorescent / LED lighting.
 			 * A half-period multiple ensures exposure is a symmetric
 			 * integral number of half-cycles for both 50 and 60 Hz.
+			 * Disabled during startup phase to avoid rounding errors
+			 * interfering with the initial coarse exposure jump.
 			 */
-			if (flickerHz_ > 0.0f) {
+			if (!inStartup && flickerHz_ > 0.0f) {
 				float lineDurationUs =
 					context.configuration.sensor.lineDuration
-					.get<std::micro>();
+						.get<std::micro>();
 				float halfPeriodLines =
 					(500000.0f / flickerHz_) / lineDurationUs;
 				if (halfPeriodLines >= 1.0f) {
@@ -412,16 +728,37 @@ void Agc::process(IPAContext &context,
 				 * current gain so the loop converges.
 				 */
 				analogueGain = agcState.analogueGain * ratio;
+			} else if (inStartup && ratio > gainBoostThreshold_) {
+				/*
+				 * Startup phase with significant underexposure:
+				 * move both exposure and gain simultaneously so
+				 * the scene reaches target brightness in the
+				 * minimum number of frames. Split the brightness
+				 * correction across both knobs — exposure handles
+				 * the portion up to maxExposure, gain covers the
+				 * rest. This avoids the multi-frame exposure-only
+				 * climb before gain is touched, cutting convergence
+				 * from ~15 frames to ~3 frames for typical scenes.
+				 */
+				float totalBrightness =
+					static_cast<float>(frameContext.agc.exposure) *
+					agcState.analogueGain * ratio;
+				float newGain = (maxExposure > 0)
+							? totalBrightness / static_cast<float>(maxExposure)
+							: agcConfig.maxAnalogueGain;
+				analogueGain = std::max(newGain, agcConfig.minAnalogueGain);
 			} else if (agcState.exposure >= maxExposure && ratio > gainBoostThreshold_) {
 				/*
 				 * Exposure is maxed and the scene is still
-				 * underexposed: boost gain proportionally to
-				 * the remaining brightness deficit.
+				 * underexposed: scale gain by the same ratio
+				 * used for exposure. Since exposure is clamped at
+				 * maxExposure and cannot move, all remaining
+				 * brightness correction falls to gain.
+				 * Use the current IPA gain (agcState.analogueGain)
+				 * not the sensor-applied value (frameContext) to
+				 * avoid stale-value drift after startup phase.
 				 */
-				float remaining =
-					(static_cast<float>(frameContext.agc.exposure) *
-					 ratio) / maxExposure;
-				analogueGain = agcConfig.minAnalogueGain * remaining;
+				analogueGain = agcState.analogueGain * ratio;
 			} else if (ratio < gainReductionThreshold_ &&
 				   agcState.exposure <= minExposure) {
 				/*
@@ -435,11 +772,11 @@ void Agc::process(IPAContext &context,
 				analogueGain = agcConfig.minAnalogueGain;
 			} else {
 				/*
-				 * Exposure is still converging or can be
-				 * reduced further: hold the current gain.
-				 * Let the exposure loop handle the correction;
-				 * adjusting gain simultaneously causes
-				 * oscillation and prevents stable convergence.
+				 * Steady state: exposure is converging or can
+				 * be reduced further. Hold the current gain
+				 * and let the exposure loop handle correction;
+				 * adjusting gain simultaneously in steady state
+				 * causes oscillation and prevents stable lock.
 				 */
 				analogueGain = agcState.analogueGain;
 			}
@@ -449,9 +786,9 @@ void Agc::process(IPAContext &context,
 						  agcConfig.maxAnalogueGain);
 
 			/* Temporal smoothing prevents sudden gain jumps */
-			analogueGain = convergenceSpeed_ * analogueGain +
-				       (1.0f - convergenceSpeed_) *
-				       frameContext.agc.analogueGain;
+			analogueGain = activeSpeed * analogueGain +
+				       (1.0f - activeSpeed) *
+					       frameContext.agc.analogueGain;
 
 			agcState.analogueGain = analogueGain;
 		}
@@ -461,14 +798,19 @@ void Agc::process(IPAContext &context,
 			<< " target=" << effectiveTarget
 			<< " ev=" << agcState.exposureValue
 			<< " ratio=" << ratio
+			<< " speed=" << activeSpeed
+			<< (inStartup ? " [startup]" : nearTarget ? " [near]"
+								  : "")
+			<< " lock=" << aeLockCount_ << "/" << aeLockFrames_
 			<< " -> exposure=" << agcState.exposure
 			<< " gain=" << agcState.analogueGain
-			<< (exposureManual ? " (exposure locked)" : "")
+			<< (exposureManual ? " (exp locked)" : "")
 			<< (gainManual ? " (gain locked)" : "");
 	} else {
 		LOG(ISC_AGC, Debug)
-			<< "AGC stable (luminance=" << currentLuminance
-			<< " target=" << effectiveTarget << ")";
+			<< "AGC stable: luminance=" << currentLuminance
+			<< " target=" << effectiveTarget
+			<< " lock=" << aeLockCount_ << "/" << aeLockFrames_;
 	}
 
 	int32_t exposureUs = static_cast<int32_t>(
