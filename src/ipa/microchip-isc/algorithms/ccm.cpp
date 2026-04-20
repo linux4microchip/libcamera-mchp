@@ -116,10 +116,19 @@ int Ccm::init([[maybe_unused]] IPAContext &context,
  * Resets lastCt_ so the first frame after configure() does not trigger a
  * spurious "large scene change" snap.
  */
-int Ccm::configure([[maybe_unused]] IPAContext &context,
+int Ccm::configure(IPAContext &context,
 		   [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
 {
-	lastCt_ = 0.0f;
+	/*
+	 * Initialize lastCt_ to the AWB's current CT estimate (or the fallback
+	 * if AWB hasn't run yet). Using 0.0 would cause |ct - 0| = ct ≈ 5500 K
+	 * on the first frame, triggering the ctSnapThreshold_ path and snapping
+	 * the CCM matrix unnecessarily even when the scene hasn't changed.
+	 */
+	unsigned int awbCt = context.activeState.awb.ct;
+	lastCt_ = (awbCt > 0) ? static_cast<float>(awbCt) : ctFallback_;
+	/* Initialise satBoost to unity so CBC does not over-correct on first frame */
+	context.activeState.ccm.satBoost = 1.0f;
 	return 0;
 }
 
@@ -177,6 +186,10 @@ void Ccm::interpolateMatrix(float ct,
 
 	/* Find bracketing profiles in MRD space and interpolate */
 	for (size_t i = 0; i < profiles_.size() - 1; i++) {
+		/* Guard: profiles_[i].ct == 0 would divide by zero; init()
+		 * filters ct=0 entries so this is defensive only. */
+		if (!profiles_[i].ct || !profiles_[i + 1].ct)
+			continue;
 		float mrdA = 1.0e6f / static_cast<float>(profiles_[i].ct);
 		float mrdB = 1.0e6f / static_cast<float>(profiles_[i + 1].ct);
 		/* mrdA < mrdB because profiles sorted descending CT */
@@ -282,9 +295,49 @@ void Ccm::process(IPAContext &context,
 	ccm.matrix = matrix;
 	ccm.offsets = offsets;
 
+	/*
+	 * Estimate the saturation boost introduced by this CCM matrix.
+	 * A colour correction matrix with large off-diagonal elements amplifies
+	 * colour saturation as a by-product of channel cross-talk correction.
+	 * The boost is approximated as:
+	 *
+	 *   satBoost = 1 + k * Σ|off_diagonals| / trace
+	 *
+	 * where k = 0.25 is empirically calibrated on IMX219 to produce a
+	 * compensation factor that keeps perceived saturation constant across
+	 * CCT (avoiding over-saturation at warm CTs where off-diagonals are
+	 * large). CBC reads this to scale down the CBHS saturation register
+	 * proportionally, so the combined pipeline saturation (CCM × CBHS)
+	 * stays close to the nominal value set by the user or YAML tuning.
+	 *
+	 * Row-major 3×3: diagonal at [0], [4], [8]; off-diagonals are the rest.
+	 */
+	{
+		constexpr float kSatBoostFactor = 0.25f;
+		float trace = matrix[0] + matrix[4] + matrix[8];
+		float offDiagSum = 0.0f;
+		for (size_t i = 0; i < 9; i++) {
+			if (i != 0 && i != 4 && i != 8)
+				offDiagSum += std::abs(matrix[i]);
+		}
+		/*
+		 * Guard against near-zero trace. A well-formed energy-preserving
+		 * CCM has trace ≈ 3. A pathological YAML (e.g. all-zero matrix)
+		 * gives trace=0 → division by zero. A very small trace (e.g.
+		 * trace=0.01 from a scale-only matrix) gives a huge satBoost
+		 * (~hundreds) which would drive CBHS saturation to near-zero —
+		 * visually identical to a full-desaturate. Guard with a generous
+		 * floor (0.5 = 1/6 of nominal 3.0) and fall back to no boost.
+		 */
+		ccm.satBoost = (trace >= 0.5f)
+				       ? 1.0f + kSatBoostFactor * offDiagSum / trace
+				       : 1.0f;
+	}
+
 	LOG(ISC_CCM, Debug)
 		<< "CCM: ct=" << ct
-		<< " diag=[" << matrix[0] << ", " << matrix[4] << ", " << matrix[8] << "]";
+		<< " diag=[" << matrix[0] << ", " << matrix[4] << ", " << matrix[8] << "]"
+		<< " satBoost=" << ccm.satBoost;
 }
 
 REGISTER_IPA_ALGORITHM(Ccm, "Ccm")
