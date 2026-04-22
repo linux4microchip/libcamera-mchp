@@ -202,7 +202,7 @@ def load_images(image_dir, macbeth_mode=False):
     isinstance(img, CalibCapture) or isinstance(img, IscImage).
     """
     calib_exts = {'.jpg', '.jpeg'}
-    raw_exts   = {'.dng', '.tiff', '.tif', '.raw'}
+    raw_exts   = {'.dng', '.tiff', '.tif', '.raw', '.pgm'}
     all_exts   = calib_exts | raw_exts
 
     paths = sorted(
@@ -212,7 +212,7 @@ def load_images(image_dir, macbeth_mode=False):
 
     if not paths:
         logger.error(f'No calibration images found in {image_dir} '
-                     f'(expected .jpg from calib.sh or .dng/.raw for CCM/BLC)')
+                     f'(expected .jpg from calib.sh or .pgm/.dng/.raw for CCM/BLC)')
         return []
 
     # Warn if images span more than 24 hours -- likely mixing sessions.
@@ -346,7 +346,7 @@ def run_ccm(images, data, yaml_inst, output_path):
         logger.error('No Ccm block in YAML')
         return
 
-    macbeth_images = [img for img in images if img.macbeth]
+    macbeth_images = [img for img in images if getattr(img, 'macbeth', False)]
     if not macbeth_images:
         logger.error('No images with Macbeth patch data. Run with --macbeth.')
         return

@@ -125,3 +125,109 @@ def calibrate_lux(images):
         'reference_gain': round(float(img.gain), 4),
         'reference_lux': float(img.lux),
     }
+
+
+def estimate_lux_from_exposure(images, reference_lux=None):
+    """
+    Estimate lux for images that have no measured lux value using the
+    exposure/gain relationship.
+
+    When no handheld lux meter is available, lux can be estimated if you
+    know the lux for at least one reference image. The formula is derived
+    from the lux runtime equation in agc.cpp:
+
+        lux = (refExposure / curExposure) * (refGain / curGain)
+              * (curY / refY) * refLux
+
+    Rearranging to estimate lux from a reference:
+
+        estimated_lux = refLux
+                        × (curExposure / refExposure)
+                        × (curGain / refGain)
+                        × (refY / curY)
+
+    Usage:
+        If you have ONE known-lux image (e.g. from a previous session or
+        a rough estimate), pass it as reference_lux. The tool will propagate
+        the lux estimate to all other images based on their exposure/gain.
+
+    Args:
+        images: list of CalibCapture objects
+        reference_lux: optional float to override the reference lux value.
+                       If None, the image with the highest existing lux
+                       value is used as reference.
+
+    Returns:
+        list of images with .lux populated (estimated where previously None)
+        Returns None if no reference image with lux>0 is found.
+    """
+    def _compute_y(img):
+        if img.hist is None:
+            return None
+        r  = float(img.hist.get('R',  0))
+        gr = float(img.hist.get('GR', 0))
+        gb = float(img.hist.get('GB', 0))
+        b  = float(img.hist.get('B',  0))
+        return 0.299 * r + 0.587 * ((gr + gb) / 2.0) + 0.114 * b
+
+    # Find reference image — one with known lux and valid exposure
+    ref = None
+    for img in images:
+        if img.lux is not None and img.lux > 0 and \
+           img.exposure_us and img.exposure_us > 0 and \
+           img.hist is not None:
+            if ref is None or img.lux > ref.lux:
+                ref = img
+
+    if ref is None:
+        if reference_lux is None:
+            logger.warning(
+                'estimate_lux_from_exposure: no reference image with known lux. '
+                'Pass reference_lux= or add lux<N> tag to at least one image.'
+            )
+            return None
+        # Use the first valid image as reference with the given lux value
+        for img in images:
+            if img.exposure_us and img.exposure_us > 0 and img.hist is not None:
+                img.lux = reference_lux
+                ref = img
+                logger.info(f'Using {img.name} as lux reference with lux={reference_lux}')
+                break
+        if ref is None:
+            return None
+
+    ref_y = _compute_y(ref)
+    if ref_y is None or ref_y < 1.0:
+        logger.warning('estimate_lux_from_exposure: reference image Y too low for estimation')
+        return None
+
+    n_estimated = 0
+    for img in images:
+        if img.lux is not None and img.lux > 0:
+            continue  # already has measured lux
+        if img.exposure_us is None or img.exposure_us <= 0:
+            continue
+        if img.hist is None:
+            continue
+
+        cur_y = _compute_y(img)
+        if cur_y is None or cur_y < 1.0:
+            continue
+
+        estimated = (ref.lux
+                     * (img.exposure_us  / ref.exposure_us)
+                     * (img.gain         / ref.gain)
+                     * (ref_y            / cur_y))
+
+        img.lux = round(estimated, 1)
+        n_estimated += 1
+        logger.info(f'Estimated lux for {img.name}: {img.lux:.1f} '
+                    f'(from ref={ref.name} lux={ref.lux} '
+                    f'using exp ratio={img.exposure_us/ref.exposure_us:.3f} '
+                    f'gain ratio={img.gain/ref.gain:.3f} '
+                    f'Y ratio={ref_y/cur_y:.3f})')
+
+    if n_estimated == 0:
+        logger.info('estimate_lux_from_exposure: all images already have lux values')
+
+    return images

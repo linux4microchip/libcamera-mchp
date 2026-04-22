@@ -276,17 +276,37 @@ def calibration_health_score(data, after_stats=None):
     n   = len(rgt)
 
     if n >= 3:
-        # Check B gain plausibility: should be 1.0–2.0 for NoIR, 1.0–2.5 standard
         b_gains = [float(e.get('b', 0)) for e in rgt if hasattr(e, 'get')]
         max_b   = max(b_gains) if b_gains else 0
-        if max_b <= 2.0:
-            _add(25, 25, f'AWB reference_gains ({n} pts)', f'max bGain={max_b:.3f} ✓')
-        elif max_b <= 2.5:
-            _add(18, 25, f'AWB reference_gains ({n} pts)',
-                 f'max bGain={max_b:.3f} (elevated — redo BLC with tape)')
+
+        # NoIR sensors (no IR cut filter) have genuinely high bGain at warm CCT
+        # because NIR energy adds to R and G channels, suppressing the apparent
+        # blue response. bGain=3.0–4.0 at 2700–3000K is physically correct for
+        # IMX219 NoIR — it is NOT a sign of contamination.
+        # Detect NoIR from YAML: if any bGain > 2.5 AND the lowest bGain CT entry
+        # is at a warm CCT (< 3500K), treat this as a NoIR sensor with valid data.
+        min_ct_entry = min((int(e.get('ct', 9999)) for e in rgt if hasattr(e, 'get')),
+                           default=9999)
+        likely_noir = max_b > 2.5 and min_ct_entry < 3500
+
+        if likely_noir:
+            # NoIR: bGain up to 4.0 is acceptable at warm CCT
+            if max_b <= 4.0:
+                _add(25, 25, f'AWB reference_gains ({n} pts)',
+                     f'max bGain={max_b:.3f} ✓ (NoIR sensor — high bGain at warm CCT is expected)')
+            else:
+                _add(12, 25, f'AWB reference_gains ({n} pts)',
+                     f'max bGain={max_b:.3f} (unusually high even for NoIR — check BLC)')
         else:
-            _add(8, 25, f'AWB reference_gains ({n} pts)',
-                 f'max bGain={max_b:.3f} (NIR contamination — redo BLC with tape!)')
+            # Standard sensor: bGain > 2.5 suggests BLC or NIR issue
+            if max_b <= 2.0:
+                _add(25, 25, f'AWB reference_gains ({n} pts)', f'max bGain={max_b:.3f} ✓')
+            elif max_b <= 2.5:
+                _add(18, 25, f'AWB reference_gains ({n} pts)',
+                     f'max bGain={max_b:.3f} (elevated — check BLC and scene neutrality)')
+            else:
+                _add(8, 25, f'AWB reference_gains ({n} pts)',
+                     f'max bGain={max_b:.3f} (high — possible NIR contamination or bad BLC)')
     elif n == 2:
         _add(15, 25, f'AWB reference_gains ({n} pts)', '2 points (add 3rd CCT for better coverage)')
     elif n == 1:

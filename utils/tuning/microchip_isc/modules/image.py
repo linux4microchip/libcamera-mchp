@@ -105,6 +105,8 @@ class IscImage:
             self._load_rawpy()
         elif suffix == '.raw':
             self._load_mchpcam_raw()
+        elif suffix == '.pgm':
+            self._load_pgm()
         else:
             raise ValueError(f'Unsupported format: {suffix}')
 
@@ -367,6 +369,116 @@ class IscImage:
         logger.info(f'  CT={self.ct}K  lux={self.lux}  '
                     f'exp={self.exposure}us  gain={self.again}')
         means = [float(ch.mean()) for ch in self.channels]
+        logger.debug(f'  Channel means (hist bins, pre-WB): '
+                     f'R={means[0]:.2f} GR={means[1]:.2f} '
+                     f'GB={means[2]:.2f} B={means[3]:.2f}')
+
+    def _load_pgm(self):
+        """
+        Load a 16-bit binary PGM produced by mchpcam-still --raw.
+
+        Format produced by savePgm():
+          - P5 header: "P5\\n<width> <height>\\n1023\\n"
+          - Pixel data: width × height × uint16 big-endian, 10-bit in [0,1023]
+          - Bayer pattern: RGGB  (IMX219 default, no flip, first pixel = R)
+
+        The ISC DMA path keeps WB_ENABLE active even for Bayer output
+        (bits_pipeline = WB_ENABLE, confirmed in kernel driver).  mchpcam-still
+        --raw forces unity WB gains (512 = 1.0× in ISC Q9 scale), making the
+        WB block a no-op.  The PGM pixels are therefore equivalent to true
+        pre-WB sensor data — no WB undo is needed.
+
+        Channel layout (GRBG 2×2 superpixel, top-left origin):
+          row 0: Gr B  Gr B  ...
+          row 1: R  Gb R  Gb ...
+          → channels = [R, GR, GB, B]  (matches IscImage convention)
+        """
+        raw_bytes = self.path.read_bytes()
+
+        # --- Parse PGM header ---
+        # Header is ASCII lines before the binary data.
+        # Lines: "P5", "<W> <H>", "<maxval>", then binary data.
+        pos = 0
+        lines = []
+        while len(lines) < 3:
+            end = raw_bytes.index(b'\n', pos)
+            line = raw_bytes[pos:end].decode('ascii').strip()
+            pos = end + 1
+            # Skip PGM comment lines (rare but spec-legal)
+            if line.startswith('#'):
+                continue
+            lines.append(line)
+
+        if lines[0] != 'P5':
+            raise ValueError(f'{self.path.name}: not a P5 PGM (got {lines[0]!r})')
+
+        width, height = map(int, lines[1].split())
+        maxval = int(lines[2])
+        if maxval != 1023:
+            logger.warning(f'{self.path.name}: PGM maxval={maxval}, expected 1023 '
+                           f'for 10-bit SGRBG10. Scaling will be incorrect.')
+
+        # --- Load pixel data ---
+        pixel_bytes = raw_bytes[pos:]
+        expected = width * height * 2
+        if len(pixel_bytes) != expected:
+            raise ValueError(f'{self.path.name}: expected {expected} pixel bytes, '
+                             f'got {len(pixel_bytes)}')
+
+        # Big-endian uint16 → float32
+        bayer = np.frombuffer(pixel_bytes, dtype='>u2').astype(np.float32)
+        bayer = bayer.reshape(height, width)
+
+        # --- Load JSON sidecar ---
+        json_path = self.path.with_suffix('.json')
+        meta = {}
+        if json_path.exists():
+            with open(json_path) as f:
+                meta = json.load(f)
+            logger.debug(f'Loaded sidecar: {json_path.name}')
+        else:
+            logger.warning(f'{self.name}: no JSON sidecar.')
+
+        # Populate metadata from sidecar (filename tags take priority)
+        if self.exposure is None:
+            v = meta.get('exposure_us')
+            self.exposure = float(v) if v is not None else None
+        if self.again is None:
+            self.again = float(meta.get('analogue_gain', 1.0))
+        if self.ct is None and 'true_ct' in meta:
+            self.ct = float(meta['true_ct'])
+        if self.lux is None and 'lux' in meta:
+            self.lux = float(meta['lux'])
+
+        # WB gains are unity by construction (--raw forces 512/512 = 1.0)
+        # Store them so downstream code that reads wb_r etc. sees 1.0.
+        self.wb_r = self.wb_gr = self.wb_gb = self.wb_b = 1.0
+
+        logger.info(f'Loading PGM: {self.path.name}  {width}x{height}  '
+                    f'SRGGB10 RGGB (unity WB, pre-WB equivalent)')
+
+        # --- Extract 4 Bayer channels from RGGB superpixel ---
+        # IMX219 default output: SRGGB10_1X10 (RGGB, no flip).
+        # Confirmed via kernel imx219_mbus_formats[0] = MEDIA_BUS_FMT_SRGGB10_1X10
+        # and media-ctl -p showing SRGGB10_1X10 on all pipeline pads.
+        #
+        # RGGB layout:
+        #   even rows: R(col0)  Gr(col1) R(col2)  Gr(col3) ...
+        #   odd  rows: Gb(col0) B(col1)  Gb(col2) B(col3)  ...
+        #
+        # Convert pixel values to histogram bin units: bin = pixel >> 1
+        # (512 bins cover the 10-bit range 0..1023; each bin spans 2 DN)
+        r  = bayer[0::2, 0::2] / 2.0   # even row, even col
+        gr = bayer[0::2, 1::2] / 2.0   # even row, odd  col
+        gb = bayer[1::2, 0::2] / 2.0   # odd  row, even col
+        b  = bayer[1::2, 1::2] / 2.0   # odd  row, odd  col
+
+        # channels order: [R, GR, GB, B]  (IscImage convention)
+        self.channels = [r, gr, gb, b]
+
+        means = [float(ch.mean()) for ch in self.channels]
+        logger.info(f'  CT={self.ct}K  lux={self.lux}  '
+                    f'exp={self.exposure}us  gain={self.again}')
         logger.debug(f'  Channel means (hist bins, pre-WB): '
                      f'R={means[0]:.2f} GR={means[1]:.2f} '
                      f'GB={means[2]:.2f} B={means[3]:.2f}')

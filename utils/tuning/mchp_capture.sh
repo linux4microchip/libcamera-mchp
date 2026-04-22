@@ -27,18 +27,22 @@
 #   -r, --resolution WxH  Capture resolution (default: 1920x1080)
 #       --no-awb          Disable AWB (use for colorchecker captures)
 #       --noir            Use NoIR tuning file (imx219_noir.yaml)
+#       --raw             Capture 10-bit Bayer PGM instead of JPEG.
+#                         Forces unity WB (512) — AE converges normally.
+#                         Use for CCM calibration (better accuracy than JPEG).
 #   -h, --help            Show this help
 #
 # Filename convention (parsed by microchip_isc.py):
 #   grey_card_ct2850K_lux2869_exp4500us_gain1.00_20260420_182043.jpg
-#   colorchecker_ct4450K_lux2939_exp4200us_gain1.00_20260420_183012.jpg
+#   grey_card_ct2850K_lux2869_exp4500us_gain1.00_20260420_182043_raw.pgm
+#   colorchecker_ct4450K_lux2939_exp4200us_gain1.00_20260420_183012_raw.pgm
 #
 # Examples:
-#   # Grey card at 2850K, lux meter reads 2869:
+#   # Grey card at 2850K (JPEG — for AWB/CT/Lux calibration):
 #   mchp_capture.sh -t grey_card -c 2850 -l 2869 --noir
 #
-#   # Macbeth chart at 4450K (AWB disabled):
-#   mchp_capture.sh -t colorchecker -c 4450 -l 2939 --no-awb --noir
+#   # Macbeth chart at 4450K RAW PGM (AWB+unity WB — for CCM calibration):
+#   mchp_capture.sh -t colorchecker -c 4450 -l 2939 --raw --noir
 #
 #   # All three CCT points in sequence:
 #   for CCT in 2850 4450 6400; do
@@ -59,6 +63,7 @@ WIDTH=1920
 HEIGHT=1080
 NO_AWB=0
 NOIR=0
+RAW=0
 TIMEOUT=60
 # Number of frames to capture per CCT point.
 # Multiple frames are averaged by the calibration tool for better SNR.
@@ -79,6 +84,7 @@ while [ $# -gt 0 ]; do
         -n|--frames)    N_FRAMES="$2"; shift 2 ;;
         --no-awb)       NO_AWB=1;     shift   ;;
         --noir)         NOIR=1;       shift   ;;
+        --raw)          RAW=1;        shift   ;;
         --timeout)      TIMEOUT="$2"; shift 2 ;;
         -h|--help)
             sed -n '3,50p' "$0" | sed 's/^# \{0,1\}//'
@@ -131,13 +137,19 @@ CT_TAG="ct${CCT}K"
 LUX_TAG=""
 [ -n "$LUX" ] && LUX_TAG="_lux${LUX}"
 
-# Temporary capture path (metadata not yet known)
-REMOTE_JPEG="${OUTDIR}/_calib_tmp.jpg"
+# Temporary capture path (metadata not yet known).
+# RAW mode outputs a PGM; JPEG mode outputs a JPG.
+if [ "$RAW" -eq 1 ]; then
+    REMOTE_JPEG="${OUTDIR}/_calib_tmp.pgm"
+else
+    REMOTE_JPEG="${OUTDIR}/_calib_tmp.jpg"
+fi
 REMOTE_META="${OUTDIR}/_calib_tmp.json"
 
 # ── Build mchpcam-still command ───────────────────────────────────────────────
 MCHP_CMD="mchpcam-still"
 [ "$NOIR" -eq 1 ] && MCHP_CMD="$MCHP_CMD --noir"
+[ "$RAW"  -eq 1 ] && MCHP_CMD="$MCHP_CMD --raw"
 MCHP_CMD="$MCHP_CMD --width=$WIDTH --height=$HEIGHT"
 MCHP_CMD="$MCHP_CMD --timeout=$TIMEOUT"
 # IscHistogramBins (512-bin full histogram per channel) is emitted
@@ -241,8 +253,14 @@ STEM="${TARGET}_${CT_TAG}${LUX_TAG}"
 [ -n "$EXP_US" ] && STEM="${STEM}_exp${EXP_US}us"
 [ -n "$GAIN"   ] && STEM="${STEM}_gain${GAIN}"
 STEM="${STEM}_${TS}"
+# Tag RAW captures so the calibration tool can distinguish them from JPEGs
+[ "$RAW" -eq 1 ] && STEM="${STEM}_raw"
 
-FINAL_JPEG="${OUTDIR}/${STEM}.jpg"
+if [ "$RAW" -eq 1 ]; then
+    FINAL_JPEG="${OUTDIR}/${STEM}.pgm"
+else
+    FINAL_JPEG="${OUTDIR}/${STEM}.jpg"
+fi
 FINAL_JSON="${OUTDIR}/${STEM}.json"
 
 # ── Move captured files to final names ───────────────────────────────────────
@@ -251,7 +269,7 @@ mv "$REMOTE_JPEG" "$FINAL_JPEG"
 # Write the calibration sidecar JSON (this is what microchip_isc.py reads)
 # CRITICAL: true_ct is always from the user (lightbox dial), NEVER from IPA.
 # Merge capture-time metadata (from SIDECAR_DATA) with provenance fields.
-python3 - "$FINAL_JSON" "$CCT" "${LUX:-0}" "$WIDTH" "$HEIGHT" "$SIDECAR_DATA" << 'PYEOF'
+python3 - "$FINAL_JSON" "$CCT" "${LUX:-0}" "$WIDTH" "$HEIGHT" "$SIDECAR_DATA" "$RAW" << 'PYEOF'
 import sys, json
 
 out_path  = sys.argv[1]
@@ -266,10 +284,13 @@ try:
 except Exception:
     meta = {}
 
+is_raw = sys.argv[7] == '1' if len(sys.argv) > 7 else False
+
 sidecar = {
     'width':            width,
     'height':           height,
-    'format':           'JPEG',
+    'format':           'PGM_SGRBG10' if is_raw else 'JPEG',
+    'raw':              is_raw,
     # Ground truth from operator — NEVER from IPA estimate
     'true_ct':          true_ct,
     'lux':              lux,
@@ -297,11 +318,135 @@ print(f'Sidecar: hist_means={bool("hist_means" in sidecar)} '
       f'hist_bins={bool("hist_bins" in sidecar)}')
 PYEOF
 
+# ── Post-capture validation ───────────────────────────────────────────────────
+# Run on-board quality check immediately after capture.
+# For grey_card:   verify R/G and B/G channel ratios are within ±30% of 1.0
+#                  and mean luminance is in [15%, 85%] of histogram range.
+# For colorchecker: verify frame is not clipped or completely dark.
+# Uses histogram means from the JSON sidecar — no image decoding needed.
+python3 - "$FINAL_JSON" "$TARGET" "$CCT" "$NOIR" << 'VALEOF'
+import sys, json, math
+
+json_path = sys.argv[1]
+target    = sys.argv[2]
+cct       = int(sys.argv[3])
+is_noir   = sys.argv[4] == '1' if len(sys.argv) > 4 else False
+
+try:
+    with open(json_path) as f:
+        s = json.load(f)
+except Exception as e:
+    print(f'  WARN: could not read sidecar for validation: {e}')
+    sys.exit(0)
+
+# ── Exposure / AE convergence ──────────────────────────────────────────────
+ae_ok = bool(s.get('ae_converged', False))
+awb_ok = bool(s.get('awb_locked', False))
+if not ae_ok:
+    print('  WARN: AE not converged at capture time. '
+          'Re-capture with a longer warmup (--timeout 90).')
+if not awb_ok and target == 'grey_card':
+    print('  WARN: AWB not locked at capture time. '
+          'Re-capture; AWB stability is required for reference_gains calibration.')
+
+# ── Histogram means check ──────────────────────────────────────────────────
+hist = s.get('hist_means')
+if not hist:
+    print('  WARN: No histogram means in sidecar. '
+          'Validation skipped. Ensure mchpcam-still --metadata is set.')
+    sys.exit(0)
+
+r  = float(hist.get('R',  0))
+gr = float(hist.get('GR', 0))
+gb = float(hist.get('GB', 0))
+b  = float(hist.get('B',  0))
+mean_lum = 0.299 * r + 0.587 * ((gr + gb) / 2) + 0.114 * b
+
+PASS = '\033[32mPASS\033[0m'
+WARN = '\033[33mWARN\033[0m'
+FAIL = '\033[31mFAIL\033[0m'
+ok = True
+
+# Luminance check: [15, 85]% of 511 bins
+lum_lo, lum_hi = 511 * 0.15, 511 * 0.85
+if mean_lum < lum_lo:
+    print(f'  {FAIL} Luminance {mean_lum:.1f} bins < {lum_lo:.0f} (too dark). '
+          f'Increase lightbox intensity or extend exposure (--timeout 90).')
+    ok = False
+elif mean_lum > lum_hi:
+    print(f'  {FAIL} Luminance {mean_lum:.1f} bins > {lum_hi:.0f} (clipping). '
+          f'Reduce lightbox intensity or add ND filter.')
+    ok = False
+else:
+    print(f'  {PASS} Luminance {mean_lum:.1f} bins  (range 0-511)')
+
+if target == 'grey_card':
+    # Grey-card flatness checks.
+    # Pre-WB histogram — gains not applied yet — ratios vary by CCT.
+    # NoIR sensors (no IR cut filter) have NIR energy adding to all channels
+    # but especially R, suppressing B/GR at warm CCT. Thresholds are relaxed
+    # for NoIR to avoid false positives on physically correct measurements.
+    if gr > 1e-3:
+        r_ratio  = r  / gr
+        b_ratio  = b  / gr
+        gb_ratio = gb / gr
+
+        # GR/GB check: both green channels, same spectral response.
+        # This is the most reliable BLC health indicator — NIR affects GR
+        # and GB nearly equally so GR/GB ≈ 1.0 even on NoIR sensors.
+        if abs(gb_ratio - 1.0) > 0.12:
+            print(f'  {FAIL} GR/GB={1/gb_ratio:.3f} deviates >{12}% from 1.0 '
+                  f'(GR={gr:.1f} GB={gb:.1f}). '
+                  f'Likely per-channel BLC error or non-neutral scene.')
+            ok = False
+        else:
+            print(f'  {PASS} GR/GB={1/gb_ratio:.3f}  (should be ~1.0)')
+
+        # R/GR: plausible range for all sensors and CCTs
+        if r_ratio < 0.3 or r_ratio > 3.5:
+            print(f'  {FAIL} R/GR={r_ratio:.3f} out of plausible range [0.3, 3.5]. '
+                  f'Verify grey card is neutral and scene has single illuminant.')
+            ok = False
+        else:
+            print(f'  {PASS} R/GR={r_ratio:.3f}')
+
+        # B/GR: NoIR sensors have low B at warm CCT due to NIR contamination
+        # in R and G channels. Standard lower bound 0.4 is a false positive.
+        # NoIR lower bound: 0.15 (covers bGain up to ~6.5× which is physically
+        # extreme but possible at 2700K on a sensor with no IR cut filter).
+        b_lo = 0.15 if is_noir else 0.4
+        if b_ratio < b_lo or b_ratio > 2.5:
+            print(f'  {FAIL} B/GR={b_ratio:.3f} out of plausible range [{b_lo}, 2.5].')
+            ok = False
+        else:
+            print(f'  {PASS} B/GR={b_ratio:.3f}')
+
+        # CCT sanity: warm → R/GR > 1 (even on NoIR, R is elevated at warm CCT)
+        # Cool → B/GR rising. For NoIR the CCT threshold for B/GR is lower
+        # because NIR suppresses the apparent blue channel even under cool light.
+        if cct < 3500 and r_ratio < 0.7:
+            print(f'  {WARN} At {cct}K (warm) expected R/GR > 0.7 but got {r_ratio:.3f}. '
+                  f'Check lightbox CCT setting.')
+        # NoIR: B/GR > 0.5 at cool CCT is acceptable (vs 0.8 for standard sensor)
+        cool_b_threshold = 0.5 if is_noir else 0.8
+        if cct > 5500 and b_ratio < cool_b_threshold:
+            print(f'  {WARN} At {cct}K (cool) expected B/GR > {cool_b_threshold} '
+                  f'but got {b_ratio:.3f}.'
+                  + (' (NoIR — NIR suppresses blue channel)' if is_noir else
+                     ' Check lightbox CCT setting.'))
+
+if ok:
+    print(f'  Capture quality: OK  (CT={cct}K target={target})')
+else:
+    print(f'  Capture quality: FAIL — review warnings above before proceeding.')
+    print(f'  Re-capture: /tmp/mchp_capture.sh -t {target} -c {cct} [options]')
+VALEOF
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Saved: $FINAL_JPEG"
 echo "       $FINAL_JSON"
 echo ""
 echo "When all CCT points are captured, copy to host:"
-echo "  scp root@<board-ip>:${OUTDIR}/*.jpg root@<board-ip>:${OUTDIR}/*.json /path/to/calib_images/"
+echo "  scp root@<board-ip>:${OUTDIR}/*.jpg root@<board-ip>:${OUTDIR}/*.pgm root@<board-ip>:${OUTDIR}/*.json /path/to/calib_images/"
 echo ""
