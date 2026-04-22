@@ -153,6 +153,10 @@ algorithms:
       hue: 0
       # Maximum contrast gain from histogram stretch (1.0=no stretch, 3.0=3x max).
       contrast_max_gain: 3.0
+      # Suppress CBC contrast stretch in very dark scenes. When AGC is at
+      # max gain, CBC stretch causes double-amplification → clipping.
+      # 0.03 normalised ≈ 15 pre-WB histogram bins ≈ 3% of full scale.
+      dark_scene_min_luminance: 0.03
 
   - Gamma:
       # Base gamma exponent for the power-law tone curve.

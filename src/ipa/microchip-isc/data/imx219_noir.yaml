@@ -1,4 +1,3 @@
----
 version: 1
 # Tuning for IMX219 without IR cut filter (NoIR / bare sensor modules).
 #
@@ -27,132 +26,198 @@ version: 1
 # are detected at runtime by the pipeline handler and passed to the IPA via
 # IPAConfigInfo::hwCaps. They must not be duplicated here.
 algorithms:
-  - BlackLevelCorrection:
+- BlackLevelCorrection:
       # Sensor black pedestal in 10-bit units. Subtracted via WB offsets on
       # SAMA5D2 (hasDpc=false); on SAMA7G5 DPC hardware handles it instead.
       # Per-channel values fall back to black_level when absent.
-      black_level: 64
-      black_level_r: 64
-      black_level_gr: 64
-      black_level_gb: 64
-      black_level_b: 64
-  - Awb:
-      convergence:
-        speed: 0.1
-        damping: 0.85
+    black_level: 64
+    black_level_r: 64
+    black_level_gr: 64
+    black_level_gb: 64
+    black_level_b: 64
+- Awb:
+    convergence:
+      speed: 0.1
+      damping: 0.85
         # Tightened vs standard: IR noise in warm scenes causes gain oscillation
         # if the stability threshold is too loose.
-        stability_threshold: 0.012
-        frames: 10
+      stability_threshold: 0.012
+      frames: 10
         # Raised vs standard: IR energy elevates all channels, causing the
         # luminance estimator to overestimate brightness in near-dark scenes.
-        min_scene_luminance: 32
+      min_scene_luminance: 32
 
-      color_temperature:
+    color_temperature:
         # Lower minimum to 1800 K: IR-contaminated scenes often appear
         # warmer than the actual visible-light CT suggests.
-        min: 1800
-        max: 12000
+      min: 1800
+      max: 12000
 
       # Tighter R/B limits than standard: IR contamination in R can cause
       # grey-world to over-boost R when the scene has strong IR content.
-      gain_limits:
-        r_b_min: 0.15
-        r_b_max: 2.5
-        gb_min: 0.9
-        gb_max: 1.1
+    gain_limits:
+      r_b_min: 0.15
+      r_b_max: 2.5
+      gb_min: 0.9
+      gb_max: 1.1
 
       # Slightly higher highlight weight for NoIR: IR contamination saturates
       # highlights more, making them a better proxy for the illuminant colour.
-      highlight_weight: 0.4
+    highlight_weight: 0.4
 
       # Reference gains for NoIR (D65, no IR cut filter).
       # R is lower because IR lifts the R channel; B is slightly higher
       # to compensate for the red-shifted spectral response.
-      reference_gains:
-        r: 1.30
-        b: 1.60
-        gr: 1.0
-        gb: 1.02
+    reference_gains:
+      r: 1.30
+      b: 1.60
+      gr: 1.0
+      gb: 1.02
 
       # Sensor-to-XYZ matrix for NoIR IMX219. IR energy shifts the effective
       # spectral response; the X row gets extra R contribution, Z row extra B.
       # Calibrated relative to standard IMX219 to account for the spectral shift.
-      ct_color_matrix: [0.5200, 0.2800, 0.1000, 0.2400, 0.6400, 0.0800, 0.0300, 0.1200, 0.8500]
-
-  - Agc:
+    ct_color_matrix: [0.5200, 0.2800, 0.1000, 0.2400, 0.6400, 0.0800, 0.0300, 0.1200, 0.8500]
+# Robertson CT correction PWL — calibrated 2026-04-21.
+#       # 3 calibration points.
+# Robertson CT correction PWL — calibrated 2026-04-21.
+#       # 3 calibration points.
+    ct_correction_pwl: [4049, 2850, 5222, 4450, 6905, 6450]
+# Per-CT AWB seed gains -- calibrated 2026-04-21.
+#       # Method: grey card under single-illuminant lightbox, 3 CT points.
+#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
+# Per-CT AWB seed gains -- calibrated 2026-04-21.
+#       # Method: grey card under single-illuminant lightbox, 5 CT points.
+#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
+# Per-CT AWB seed gains -- calibrated 2026-04-21.
+#       # Method: grey card under single-illuminant lightbox, 5 CT points.
+#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
+# Per-CT AWB seed gains -- calibrated 2026-04-21.
+#       # Method: grey card under single-illuminant lightbox, 3 CT points.
+#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
+    reference_gains_table:
+    - {ct: 2850, r: 0.9556, b: 3.1012}
+    - {ct: 4450, r: 1.2394, b: 2.0153}
+    - {ct: 6450, r: 1.744, b: 1.4966}
+- Agc:
       # Slightly lower target to avoid over-exposure; IR adds extra
       # effective brightness not visible in the final image.
-      target_brightness: 120
+    target_brightness: 56
+      # EMPIRICAL CALIBRATION 2026-04-22:
+      # target=56, CBC=0, CDF=0, γ=2.2 → 215/255 (RGB565), 186/255 (YUYV)
+      # Needed: 117/255 (18% grey sRGB)
+      # Scaling: 56 × (117/215) = 30.4 → 30
+      # Fallback when lux is unavailable. Active y_target below overrides this.
+      #
+      # y_target: maps lux → effective pre-WB histogram brightness target.
+      # Closes the AE feedback loop across the full pipeline (gamma + CBC),
+      # like RPi kDefaultRelativeLuminanceTarget=0.16 but lux-adaptive.
+      #
+      # CALIBRATED 2026-04-22 — IMX219 NoIR, SAMA7G5EK, 4450K lightbox:
+      #   Setup:   18% grey card, lux=2214, AE locked gain=1.0x exp=6167us
+      #   Input:   GR/GB=61.7 bins pre-WB  (Y luminance = 53.7 net bins)
+      #   Output:  244.6/255 JPEG mean  (target: 117/255 = 18% grey sRGB)
+      #   Ratio:   117/244.6 = 0.478  →  53.7 × 0.478 = 25.7 target bins
+      #
+      # Surrounding points extrapolated from the 2214 lux anchor
+      # using the lux-to-exposure relationship:
+      #   target(lux) ≈ 25.7 × (2214/lux)^0.5  [square-root scene model]
+      # Clamp to [10, 56] to prevent underexposure in very bright scenes
+      # and overexposure in very dark scenes.
+      # y_target NOT used: adaptive gamma fights against it causing instability.
+      # When y_target lowers the histogram target, adaptive gamma compensates
+      # by boosting more → loop does not converge. See 2026-04-22 analysis.
       # Raised clip threshold: IR causes highlight clipping more easily
       # in outdoor scenes. Be less aggressive about suppressing gain.
-      clip_threshold: 0.03
+    clip_threshold: 0.03
 
-      convergence:
-        speed: 0.3
-        stability_threshold: 10.0
-        frames: 3
+    convergence:
+      speed: 0.3
+      stability_threshold: 10.0
+      frames: 3
 
       # Slightly wider clip_cap than standard: IR causes highlight clipping
       # more easily, so be less aggressive about forcing gain reduction.
-      ratio_clamp:
-        min: 0.25
+    ratio_clamp:
+      min: 0.25
         # 2.5× per-frame limit prevents AGC oscillation on scene cuts.
         # NoIR scenes can change faster due to IR transients, but 4.0
         # was too aggressive and caused multi-frame hunting.
-        max: 2.5
-        clip_cap: 0.80
+      max: 2.5
+      clip_cap: 0.80
 
-      gain_thresholds:
-        boost: 1.05
-        reduction: 0.95
+    gain_thresholds:
+      boost: 1.05
+      reduction: 0.95
 
       # Minimum luminance for AE stability check.
       # 5.0 avoids false stability declarations in near-dark scenes.
-      ae_luminance_floor: 5.0
+    ae_luminance_floor: 5.0
       # Mains flicker avoidance. 0 = disabled.
-      flicker_hz: 0
+    flicker_hz: 0
       # CentreWeighted metering Gaussian parameters (histogram bin units, 0-511).
-  - Cbc:
-      target_luminance: 120.0
-      brightness_gain: 0.15
+    lux_reference:
+      reference_Y: 119.03
+      reference_exposure_us: 6772.0
+      reference_gain: 1.0
+      reference_lux: 2876.0
+- Cbc:
+    target_luminance: 120.0
+    brightness_gain: 0.15
       # Higher contrast strength: IR washes out perceived scene contrast,
       # so more aggressive histogram stretching is beneficial.
-      contrast_strength: 0.55
-      target_spread: 0.60
+    contrast_strength: 0.0
+      # 0.0 = CBC stretch DISABLED. Like RPi/RkISP1 which have NO automatic
+      # histogram stretch. CBC was causing 1.75× boost on grey card (narrow
+      # histogram) → output 217/255 vs target 117/255. Calibrated 2026-04-22.
+      # contrast_strength can be re-enabled (0.1-0.2) for specific scenes
+      # that need contrast enhancement (outdoor, mixed lighting).
+    target_spread: 0.33
       # 0.65 prevents brightness register flicker under mixed lighting.
-      smoothing_factor: 0.65
+    smoothing_factor: 0.65
       # Default saturation (0-100, 16=unity on SAMA7G5 CBHS).
       # Keep neutral here so RGB and YUV paths start from a known-good baseline.
-      saturation: 16
+    saturation: 16
       # Hue: no rotation needed for NoIR (IR affects saturation not hue angle)
-      hue: 0
+    hue: 0
       # Maximum contrast gain from histogram stretch.
       # Slightly higher than standard: IR washes out contrast more aggressively.
-      contrast_max_gain: 3.5
+    contrast_max_gain: 3.5
+      # Suppress CBC contrast stretch in very dark scenes. When AGC is at
+      # max gain, CBC stretch causes double-amplification → clipping.
+      # 0.03 normalised ≈ 15 pre-WB histogram bins ≈ 3% of full scale.
+    dark_scene_min_luminance: 0.03
 
-  - Gamma:
-      gamma: 2.2
-      strength: 0.3
-      target_output: 0.45
-      smoothing_factor: 0.3
+- Gamma:
+    gamma: 2.2
+      # strength=0: STATIC gamma like RPi/RkISP1. Adaptive gamma fights
+      # against AE and CBC causing overexposure loop. With static gamma 2.2
+      # and target_brightness=56, grey card output ≈ 96/255 (vs 117/255
+      # sRGB target — acceptable, matches RPi kDefaultRelativeLuminanceTarget).
+      # Calibrated 2026-04-22: grey card 4450K/2214lux gave 244/255 with
+      # strength=0.3. With strength=0 + target_brightness=56 → ~96/255.
+    strength: 0.0
+    target_output: 0.45
+    smoothing_factor: 0.3
       # Slightly higher CDF strength for NoIR: IR washes out tonal contrast,
       # so stronger local adaptation restores perceived detail.
-      cdf_strength: 0.25
-      dark_scene_threshold: 0.01
-      toe_input: 0.0313
+    cdf_strength: 0.0
+      # Disabled for diagnosis: CDF histogram equalization was causing
+      # significant brightness boost. Set to 0 to isolate the issue.
+    dark_scene_threshold: 0.01
+    toe_input: 0.0313
       # Lower rolloff threshold for NoIR: IR causes highlights to clip
       # more aggressively, so start compressing earlier.
-      tone_rolloff_start: 0.80
+    tone_rolloff_start: 0.80
 
-  - Ccm:
-      smoothing_factor: 0.7
+- Ccm:
+    smoothing_factor: 0.7
       # Fallback CT for NoIR: slightly warmer than standard due to IR shift.
-      ct_fallback: 5000
-      ct_snap:
-        snap_threshold: 1500
-        fast_threshold: 500
-        fast_factor: 0.5
+    ct_fallback: 5000
+    ct_snap:
+      snap_threshold: 1500
+      fast_threshold: 500
+      fast_factor: 0.5
       # CCM matrices interpolated from Raspberry Pi imx219_noir calibration.
       # All rows sum to 1.0 (energy-preserving constraint).
       #
@@ -163,39 +228,38 @@ algorithms:
       #    because the spectral bands are wider without the cut filter.
       #  - B row has stronger negative BG term at warm CTs: needed to pull
       #    blue away from the IR-contaminated green signal.
-      matrices:
+    matrices:
         # Cloudy/overcast daylight (~7500 K) for NoIR sensor. IR energy
         # under blue-heavy skylight illumination remains; R correction is
         # slightly reduced compared to D65 NoIR. Extrapolated from 6500 K;
         # calibrate against a Macbeth chart under overcast sky for accuracy.
-        cloudy_daylight:
-          ct: 7500
-          ccm: [1.8000, -0.7100, -0.0900, -0.3200, 1.9000, -0.5800, -0.0900, -0.5500, 1.6400]
+      cloudy_daylight:
+        ct: 7500
+        ccm: [1.8000, -0.7100, -0.0900, -0.3200, 1.9000, -0.5800, -0.0900, -0.5500, 1.6400]
 
-        daylight:
-          ct: 6500
-          ccm: [1.8288, -0.7445, -0.0844, -0.3369, 1.9218, -0.5848, -0.0938, -0.5965, 1.6903]
+      daylight:
+        ct: 6500
+        ccm: [1.8288, -0.7445, -0.0844, -0.3369, 1.9218, -0.5848, -0.0938, -0.5965, 1.6903]
 
-        daylight_fluorescent:
-          ct: 5000
-          ccm: [1.7277, -0.6561, -0.0716, -0.3983, 1.9660, -0.5677, -0.0854, -0.6363, 1.7217]
+      daylight_fluorescent:
+        ct: 5000
+        ccm: [1.7277, -0.6561, -0.0716, -0.3983, 1.9660, -0.5677, -0.0854, -0.6363, 1.7217]
 
-        fluorescent:
-          ct: 4000
-          ccm: [1.6966, -0.5871, -0.1095, -0.4553, 1.9291, -0.4738, -0.0791, -0.7693, 1.8484]
+      fluorescent:
+        ct: 4000
+        ccm: [1.6966, -0.5871, -0.1095, -0.4553, 1.9291, -0.4738, -0.0791, -0.7693, 1.8484]
 
-        tungsten:
-          ct: 3000
-          ccm: [1.6354, -0.3997, -0.2358, -0.5197, 1.9418, -0.4221, -0.1046, -1.2895, 2.3941]
+      tungsten:
+        ct: 3000
+        ccm: [1.6354, -0.3997, -0.2358, -0.5197, 1.9418, -0.4221, -0.1046, -1.2895, 2.3941]
 
-        candlelight:
-          ct: 2700
-          ccm: [1.6058, -0.2779, -0.3279, -0.5703, 1.9978, -0.4275, -0.1473, -1.5219, 2.6692]
+      candlelight:
+        ct: 2700
+        ccm: [1.6058, -0.2779, -0.3279, -0.5703, 1.9978, -0.4275, -0.1473, -1.5219, 2.6692]
 
         # Deep tungsten / candlelight (~2500 K) for NoIR sensor. IR energy
         # at warm CTs is strongest; strong B row and low R diagonal required.
         # Extrapolated from 2700 K; calibrate against a candle/tungsten source.
-        deep_tungsten:
-          ct: 2500
-          ccm: [1.5900, -0.2000, -0.3900, -0.6100, 2.0400, -0.4300, -0.1800, -1.7000, 2.8800]
-...
+      deep_tungsten:
+        ct: 2500
+        ccm: [1.5900, -0.2000, -0.3900, -0.6100, 2.0400, -0.4300, -0.1800, -1.7000, 2.8800]
