@@ -66,7 +66,8 @@ public:
 	MicrochipISCCameraData(PipelineHandler *pipe, std::shared_ptr<MediaDevice> media)
 		: Camera::Private(pipe), media_(media),
 		  statsEnabled_(false), statsStreaming_(false),
-		  videoStreaming_(false)
+		  videoStreaming_(false),
+		  startFailed_(false)
 	{
 		/*
 		 * ISC has a single DMA output — only one stream is ever active.
@@ -147,6 +148,15 @@ public:
 	bool statsEnabled_;
 	bool statsStreaming_;
 	bool videoStreaming_;
+	/*
+	 * startFailed_: set when VIDIOC_STREAMON returns an error.
+	 * Subsequent queueBuffer() calls return -EIO immediately rather than
+	 * retrying streamOn(), preventing the 4× EREMOTEIO log storm and
+	 * ensuring frameInfo_ does not accumulate multiple failed entries
+	 * that would each trigger the completeBuffer() ASSERT in stopDevice().
+	 * Cleared in startDevice() so the next camera open gets a clean slate.
+	 */
+	bool startFailed_;
 
 	struct FrameInfo {
 		Request *request = nullptr;
@@ -1065,6 +1075,9 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 {
 	MicrochipISCCameraData *data = cameraData(camera);
 
+	/* Reset start-failure flag so each new camera open gets a clean slate. */
+	data->startFailed_ = false;
+
 	LOG(MicrochipISC, Debug) << "Starting camera: " << camera->id();
 
 	data->frameInfo_.clear();
@@ -1861,12 +1874,26 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 	 * attempt streamOn (which would return -EPIPE on duplicate calls).
 	 * On failure, clear videoStreaming_ and return the error.
 	 */
+	/*
+	 * If a previous streamOn() call failed (EREMOTEIO from a hardware
+	 * fault or sensor reset requirement), do not retry on subsequent
+	 * queueBuffer() calls. Each retry queues another V4L2 buffer and
+	 * inserts another frameInfo_ entry — all of them will be orphaned —
+	 * causing multiple ASSERT(ret==1) failures in stopDevice()'s
+	 * completeBuffer() loop. Return -EIO immediately; the capture will
+	 * time out and the user will need to power-cycle the sensor.
+	 */
+	if (data->startFailed_)
+		return -EIO;
+
 	if (!data->videoStreaming_) {
 		data->videoStreaming_ = true; /* set first to prevent re-entry */
 		ret = data->iscVideo_->streamOn();
 		if (ret < 0) {
 			data->videoStreaming_ = false;
-			LOG(MicrochipISC, Error) << "Failed to start video streaming: " << ret;
+			data->startFailed_ = true;
+			LOG(MicrochipISC, Error) << "Failed to start video streaming: " << ret
+						 << " — sensor may need power-cycle";
 			return ret;
 		}
 		LOG(MicrochipISC, Debug) << "Video streamOn issued on first buffer";
@@ -2080,10 +2107,32 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 		if (!info.bufferDone) {
 			for (auto &[stream, buffer] : info.request->buffers()) {
 				buffer->_d()->cancel();
-				completeBuffer(info.request, buffer);
+				/*
+				 * Guard against double-complete: when streamOn()
+				 * fails with EREMOTEIO the ISC kernel driver may
+				 * dequeue buffers asynchronously (via the DMA
+				 * completion IRQ fired before the ioctl returns)
+				 * causing bufferReady() to call completeBuffer()
+				 * before stopDevice() runs. A second call here
+				 * would fire ASSERT(ret==1) in request.cpp:111.
+				 *
+				 * Check hasPendingBuffers() which reflects the
+				 * live pending_ set: if the buffer was already
+				 * completed by bufferReady(), pending_ is empty
+				 * and we must skip the duplicate call.
+				 */
+				if (info.request->hasPendingBuffers())
+					completeBuffer(info.request, buffer);
 			}
 		}
-		completeRequest(info.request);
+		/*
+		 * Only call completeRequest() if the request is still pending.
+		 * bufferReady() → tryCompleteRequest() may have already called
+		 * completeRequest() for this entry if all buffers completed
+		 * before stopDevice() ran (race with kernel IRQ delivery).
+		 */
+		if (info.request->status() == Request::RequestPending)
+			completeRequest(info.request);
 	}
 	data->frameInfo_.clear();
 
