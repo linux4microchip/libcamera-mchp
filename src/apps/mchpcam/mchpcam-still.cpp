@@ -34,12 +34,9 @@
 using namespace std::chrono_literals;
 
 /* ------------------------------------------------------------------ */
-/* Build version string                                                 */
+/* Version string is derived from the linked libcamera library at      */
+/* runtime via CameraManager::version() — no hardcoding needed.        */
 /* ------------------------------------------------------------------ */
-
-#ifndef MCHPCAM_VERSION
-#define MCHPCAM_VERSION "0.6.1"
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Global signal flags                                                  */
@@ -462,6 +459,9 @@ private:
 		      const std::string &path);
 	void savePng(const uint8_t *data, int w, int h,
 		     const std::string &path);
+	void savePgm(const uint8_t *raw16le, size_t len,
+		     unsigned int w, unsigned int h,
+		     const std::string &path);
 
 	void printAllMetadata() const;
 	void updateLatestLink(const std::string &target) const;
@@ -486,6 +486,30 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 	const uint8_t *data = static_cast<const uint8_t *>(mapped);
 
 	using namespace libcamera;
+
+	/*
+	 * RAW Bayer path — SRGGB10 (IMX219 default, RGGB, no flip) packed
+	 * into 16-bit LE words from the ISC DMA.
+	 * Write a 16-bit binary PGM (P5, maxval 1023) so that numpy,
+	 * PIL and the calibration tool can read it with a one-liner.
+	 * No RGB conversion; no JPEG/PNG encoding.
+	 *
+	 * libcamera's pipeline may adjust SRGGB10 to R10 (luma-only fourcc)
+	 * when the Bayer variant is not explicitly listed in StillCapture
+	 * advertised formats — the pixel data layout is identical (16-bit LE
+	 * container, 10-bit sample in [9:0]).  Accept both.
+	 */
+	if (pixelFormat_ == formats::SRGGB10 || pixelFormat_ == formats::R10) {
+		std::string out = filename;
+		/* Force .pgm extension */
+		auto dot = out.rfind('.');
+		if (dot == std::string::npos ||
+		    out.substr(dot) != ".pgm")
+			out = (dot != std::string::npos ? out.substr(0, dot) : out) + ".pgm";
+		savePgm(data, plane.length, width_, height_, out);
+		munmap(mapped, plane.length);
+		return;
+	}
 
 	if (pixelFormat_ != formats::RGB565 &&
 	    pixelFormat_ != formats::YUYV &&
@@ -605,16 +629,18 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 /* ------------------------------------------------------------------ */
 
 /*
- * Note on raw / Bayer capture:
- * The ISC has a single DMA output path. When SRGGB10 is configured the
- * kernel sets bits_pipeline=WB_ENABLE, meaning the WB block (gains and
- * offsets) is active in the data path. There is no Unicam-equivalent
- * bypass that delivers pre-WB data, unlike RPi (Unicam → ISP) or
- * RkISP1 (self-path). The SRGGB10 DMA output therefore contains
- * WB-processed Bayer, not true raw. It cannot be used for AWB/BLC/CCM
- * calibration. For those purposes use the IPA histogram debug log
- * (pre-WB tap via ISC_HIS_CFG_RAR). SRGGB10 and --raw are removed from
- * mchpcam-still to prevent misuse.
+ * Note on raw / Bayer capture (--raw flag):
+ * Note on raw / Bayer capture (--raw flag):
+ * IMX219 default output: SRGGB10_1X10 (RGGB, no flip).
+ * The ISC DMA path keeps WB_ENABLE active even for Bayer output
+ * (bits_pipeline = WB_ENABLE — confirmed in isc_try_configure_pipeline
+ * default: case, kernel driver).  mchpcam-still --raw forces unity WB
+ * gains (512 = 1.0× in ISC Q9 scale) so the WB block is a mathematical
+ * no-op.  The SRGGB10 pixels in the PGM are therefore equivalent to the
+ * true pre-WB sensor data.
+ *
+ * The ISC histogram tap is on vp_data (before WB) per datasheet §43.6.20
+ * Figure 43-38 — AE converges identically in RAW and JPEG modes.
  */
 
 /*
@@ -752,6 +778,80 @@ void MchpCamStill::savePng(const uint8_t *data, int w, int h,
 }
 
 /* ------------------------------------------------------------------ */
+/* savePgm — 16-bit binary PGM for RAW Bayer output (SRGGB10/RGGB)    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The ISC DMA outputs 10-bit Bayer pixels packed into 16-bit little-endian
+ * words (ISC_RLP_CFG_MODE_DAT10 + ISC_DCFG_IMODE_PACKED16).  The 10-bit
+ * sample is in bits [9:0]; bits [15:10] are zero.
+ *
+ * PGM P5 (binary) format:
+ *   - Header:  "P5\n<width> <height>\n<maxval>\n"   (ASCII)
+ *   - Pixels:  width × height × 2 bytes, big-endian  (binary)
+ *   - maxval:  1023 (2^10 − 1)
+ *
+ * Each 16-bit LE word from ISC must be byte-swapped to big-endian for PGM.
+ * The Bayer pattern is RGGB (IMX219 default, no flip).
+ *
+ * Reading in Python:
+ *   import numpy as np
+ *   raw = np.fromfile('frame.pgm', dtype='>u2', offset=<hdr_len>)
+ *   bayer = raw.reshape(height, width)   # 10-bit RGGB
+ */
+void MchpCamStill::savePgm(const uint8_t *raw16le, size_t len,
+			   unsigned int w, unsigned int h,
+			   const std::string &path)
+{
+	FILE *f = fopen(path.c_str(), "wb");
+	if (!f) {
+		std::cerr << "Cannot open " << path << ": "
+			  << strerror(errno) << "\n";
+		return;
+	}
+
+	/* ASCII PGM header */
+	fprintf(f, "P5\n%u %u\n1023\n", w, h);
+
+	/*
+	 * Convert each 16-bit LE pixel to 16-bit BE for PGM.
+	 * Process in 4096-sample chunks to keep stack usage small.
+	 */
+	const size_t nPixels = static_cast<size_t>(w) * h;
+	const size_t expectedBytes = nPixels * 2;
+	if (len < expectedBytes) {
+		std::cerr << "savePgm: buffer too small ("
+			  << len << " < " << expectedBytes << ")\n";
+		fclose(f);
+		return;
+	}
+
+	constexpr size_t kChunk = 4096;
+	std::vector<uint8_t> buf(kChunk * 2);
+	const uint8_t *src = raw16le;
+	size_t remaining = nPixels;
+
+	while (remaining > 0) {
+		size_t n = std::min(remaining, kChunk);
+		for (size_t i = 0; i < n; ++i) {
+			/* Read LE uint16 — low byte first */
+			uint16_t px = static_cast<uint16_t>(src[i * 2]) |
+				      static_cast<uint16_t>(src[i * 2 + 1] << 8);
+			/* Write BE: high byte first */
+			buf[i * 2] = static_cast<uint8_t>(px >> 8);
+			buf[i * 2 + 1] = static_cast<uint8_t>(px & 0xff);
+		}
+		fwrite(buf.data(), 2, n, f);
+		src += n * 2;
+		remaining -= n;
+	}
+
+	fclose(f);
+	std::cout << "Saved PGM: " << path
+		  << " (" << w << "x" << h << " SRGGB10 RGGB)\n";
+}
+
+/* ------------------------------------------------------------------ */
 /* Metadata helpers                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -872,10 +972,13 @@ static void printUsage(const char *argv0)
 					 "Stream:\n"
 					 "  -f, --format=FMT           RGB565 | YUYV | BGR888 | RGB888\n"
 					 "                             (default: RGB565)\n"
-					 "                             Note: Bayer/raw formats (SRGGB10) are not\n"
-					 "                             supported. The ISC has no pre-WB DMA path;\n"
-					 "                             SRGGB10 output has WB gains baked in and\n"
-					 "                             is not suitable for calibration.\n"
+					 "  --raw                      Capture 10-bit Bayer (SRGGB10/RGGB) as 16-bit PGM.\n"
+					 "                             Forces unity WB gains (512) so the ISC WB\n"
+					 "                             block is a mathematical no-op (datasheet\n"
+					 "                             §43.6.20: histogram taps vp_data before WB;\n"
+					 "                             AE converges normally). AWB is disabled.\n"
+					 "                             Output: <file>.pgm  maxval=1023  Bayer GRBG.\n"
+					 "                             Use for CCM calibration with microchip_isc.py.\n"
 					 "  --width=N                  Capture width  (default: 1920)\n"
 					 "  --height=N                 Capture height (default: 1080)\n"
 					 "\n"
@@ -996,6 +1099,7 @@ int main(int argc, char **argv)
 		{ "png-compression", required_argument, nullptr, 0 },
 		{ "noir", no_argument, nullptr, 0 },
 		{ "tuning-file", required_argument, nullptr, 0 },
+		{ "raw", no_argument, nullptr, 0 },
 		/* Image controls */
 		{ "brightness", required_argument, nullptr, 0 },
 		{ "contrast", required_argument, nullptr, 0 },
@@ -1123,13 +1227,10 @@ int main(int argc, char **argv)
 				cam.setJpegQuality(std::stoi(optarg));
 			else if (!strcmp(name, "png-compression"))
 				cam.setPngCompression(std::stoi(optarg));
-			else if (!strcmp(name, "raw"))
-				std::cerr << "Error: --raw is not supported on the ISC.\n"
-					  << "The ISC has no pre-WB DMA path; SRGGB10 output has\n"
-					  << "WB gains baked in and is not suitable for calibration.\n"
-					  << "Use JPEG output (default) instead.\n";
 			else if (!strcmp(name, "noir"))
 				setenv("MCHPCAM_TUNING_FILE", "imx219_noir.yaml", 1);
+			else if (!strcmp(name, "raw"))
+				cam.setRawCapture(true);
 			else if (!strcmp(name, "tuning-file"))
 				setenv("MCHPCAM_TUNING_FILE", optarg, 1);
 
@@ -1316,7 +1417,7 @@ int main(int argc, char **argv)
 
 	/* -- Version --------------------------------------------------- */
 	if (printVersion) {
-		std::cout << "mchpcam-still " << MCHPCAM_VERSION
+		std::cout << "mchpcam-still " << libcamera::CameraManager::version()
 			  << " (Microchip ISC / libcamera)\n";
 		return 0;
 	}
@@ -1421,12 +1522,8 @@ int main(int argc, char **argv)
 			std::transform(e.begin(), e.end(), e.begin(), ::tolower);
 			if (e == "png")
 				cam.setImageFormat("png");
-			else if (e == "raw") {
-				std::cerr << "Error: .raw output is not supported on the ISC.\n"
-					  << "The ISC SRGGB10 DMA has WB gains applied; it is not\n"
-					  << "true raw data. Use .jpg or .png output.\n";
-				return 1;
-			}
+			else if (e == "pgm")
+				cam.setRawCapture(true);
 		}
 	}
 

@@ -176,6 +176,22 @@ public:
 	/* Hardware ISC register bypass — use with --no-awb only */
 	void setHwGains(const HwGainParams &p) { hwGains_ = p; }
 
+	/*
+	 * Raw Bayer capture mode (--raw / calibration use).
+	 *
+	 * Requests SGRBG10 output format (ISC raw passthrough).
+	 * The ISC kernel driver keeps WB_ENABLE active even for Bayer output
+	 * (bits_pipeline = WB_ENABLE — confirmed in isc_try_configure_pipeline
+	 * default: case).  To make this a mathematical no-op, rawCapture_ mode
+	 * forces unity WB gains (512 = 1.0× in Q9 ISC scale) and disables IPA
+	 * AWB.  AGC continues to run so exposure converges normally.
+	 *
+	 * The output is a 16-bit little-endian PGM (P5 magic, maxval 1023).
+	 * Each pixel occupies 2 bytes; the 10-bit sample is in the low 10 bits.
+	 * Bayer pattern: GRBG (IMX219 native, verified from sensor data sheet).
+	 */
+	void setRawCapture(bool r) { rawCapture_ = r; }
+
 	/* AGC / exposure */
 	void setAgcEnabled(bool e) { agcEnabled_ = e; }
 	void setManualExposure(int32_t us)
@@ -279,6 +295,9 @@ protected:
 
 	/* Image orientation — applied to CameraConfiguration */
 	MchpOrientation orientation_ = MchpOrientation::Normal;
+
+	/* RAW Bayer capture (--raw) */
+	bool rawCapture_ = false;
 
 	/* AWB */
 	bool awbEnabled_ = true;

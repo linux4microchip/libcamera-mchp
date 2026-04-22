@@ -90,11 +90,8 @@ void MchpCamCommon::setFormat(const std::string &formatStr)
 	else if (formatStr == "RGB888")
 		pixelFormat_ = libcamera::formats::RGB888;
 	else if (formatStr == "SRGGB10" || formatStr == "SRGGB8") {
-		std::cerr << "Error: raw Bayer formats (SRGGB10, SRGGB8) are not supported.\n"
-			  << "Raw capture is disabled in mchpcam-still: the ISC bits_pipeline\n"
-			  << "excludes gamma/CBC when outputting Bayer, causing the AGC target\n"
-			  << "to be in the wrong domain and making captures unusable.\n"
-			  << "Use RGB565 (default) or JPEG output instead.\n";
+		std::cerr << "Error: use --raw instead of -f SRGGB10 for raw Bayer capture.\n"
+			  << "--raw enables unity WB gains so the ISC WB block is a no-op.\n";
 		return;
 	} else {
 		std::cerr << "Unknown format '" << formatStr
@@ -234,6 +231,34 @@ int MchpCamCommon::init(const std::string &cameraId)
 		return -EBUSY;
 	}
 
+	/*
+	 * Raw Bayer capture mode: override pixel format to SGRBG10 and force
+	 * unity WB gains so the ISC WB block (which cannot be disabled for
+	 * Bayer output — bits_pipeline = WB_ENABLE) is a mathematical no-op.
+	 * Unity = 512 in the ISC 0:4:9 fixed-point gain scale (1.0 × 512).
+	 * AWB is disabled so the IPA does not fight the forced gains.
+	 * AGC continues to run normally: the histogram tap is pre-WB on
+	 * vp_data (datasheet §43.6.20 / Figure 43-38), so AE converges
+	 * identically to JPEG mode.
+	 */
+	if (rawCapture_) {
+		/*
+		 * IMX219 default output: SRGGB10_1X10 (RGGB, no flip).
+		 * Confirmed via media-ctl -p: imx219→CSI2DC→ISC all negotiate
+		 * SRGGB10_1X10.  SGRBG10 only appears with hflip=1,vflip=0.
+		 */
+		pixelFormat_ = libcamera::formats::SRGGB10;
+		awbEnabled_ = false;
+		hwGains_.redGain = 512;
+		hwGains_.blueGain = 512;
+		hwGains_.greenRedGain = 512;
+		hwGains_.greenBlueGain = 512;
+		hwGains_.redOffset = 0;
+		hwGains_.blueOffset = 0;
+		hwGains_.greenRedOffset = 0;
+		hwGains_.greenBlueOffset = 0;
+	}
+
 	/* Stream configuration */
 	config_ = camera_->generateConfiguration({ StreamRole::StillCapture });
 	if (!config_) {
@@ -308,12 +333,15 @@ int MchpCamCommon::init(const std::string &cameraId)
 	camera_->requestCompleted.connect(this, &MchpCamCommon::requestComplete);
 
 	/* Status summary */
+	if (rawCapture_)
+		std::cout << "Mode: RAW Bayer (SRGGB10 RGGB, unity WB, PGM output)\n";
 	std::cout << "AWB:  " << (awbEnabled_ ? "auto (IPA)" : "disabled") << "\n";
 	if (manualColourGains_)
 		std::cout << "ColourGains: R=" << colourGainR_
 			  << " B=" << colourGainB_ << " (IPA manual)\n";
 	if (hwGains_.hasAny())
-		std::cout << "HW register WB bypass active\n";
+		std::cout << "HW register WB bypass active"
+			  << (rawCapture_ ? " (unity — WB is no-op)" : "") << "\n";
 	std::cout << "AGC:  " << (agcEnabled_ ? "auto" : "manual") << "\n";
 	std::cout << "CCM:  " << (ccmEnabled_ ? "on" : "off") << "\n";
 	std::cout << "Warmup frames: " << warmupFrames_ << "\n";
