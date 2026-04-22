@@ -58,6 +58,16 @@ private:
 
 	/* Maximum contrast gain from histogram stretch (YAML: contrast_max_gain) */
 	float contrastMaxGain_ = 3.0f;
+
+	/*
+	 * Dark scene luminance threshold (normalised, 0-1) below which CBC
+	 * contrast stretch is suppressed. When scene luminance is below this
+	 * threshold the AGC is already at or near max gain; applying a
+	 * contrast stretch on top causes double-amplification → clipping.
+	 * Set to slightly above the AGC min_scene_luminance (8 bins / 511 ≈ 0.016).
+	 * (YAML: dark_scene_min_luminance)
+	 */
+	float darkSceneMinLuminance_ = 0.03f;
 };
 
 } /* namespace ipa::microchip_isc */

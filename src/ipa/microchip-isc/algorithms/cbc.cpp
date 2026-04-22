@@ -39,6 +39,7 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 	defaultSaturation_ = tuningData["saturation"].get<int32_t>(defaultSaturation_);
 	defaultHue_ = tuningData["hue"].get<int32_t>(defaultHue_);
 	contrastMaxGain_ = tuningData["contrast_max_gain"].get<float>(contrastMaxGain_);
+	darkSceneMinLuminance_ = tuningData["dark_scene_min_luminance"].get<float>(darkSceneMinLuminance_);
 
 	defaultBrightness_ = std::clamp(defaultBrightness_,
 					static_cast<int32_t>(kBrightnessMin),
@@ -242,14 +243,46 @@ void Cbc::process(IPAContext &context,
 	 */
 	float spread = frameContext.scene.spread;
 	float contrastGain = 1.0f;
+	float lumNorm = frameContext.scene.luminance / 511.0f;
 
-	if (spread > 0.01f && spread < targetSpread_) {
+	/*
+	 * Dark scene guard: suppress contrast stretch when scene luminance
+	 * is below darkSceneMinLuminance_.
+	 *
+	 * When the scene is very dark the AGC pushes analogue gain to its
+	 * maximum to reach target_brightness.  Applying a contrast stretch
+	 * on top of already-maxed AGC causes double amplification:
+	 *
+	 *   AGC:  10× analogue gain (sensor noise amplified)
+	 *   CBC:  contrast_max_gain (histogram stretch on noisy input)
+	 *   Net:  10× × 3.5× = 35× effective gain → clipping at 242/255 mean
+	 *
+	 * Below this threshold the scene is too dark for histogram stretch
+	 * to add any useful contrast — it only amplifies sensor noise and
+	 * causes the output to clip.  Keep contrast at unity (= 1.0) and
+	 * let the AGC manage luminance alone.
+	 *
+	 * Threshold: 0.03 normalised ≈ 15 histogram bins ≈ 3% of full scale.
+	 * This is slightly above AGC min_scene_luminance (8 bins / 511 ≈ 0.016)
+	 * to prevent the stretch from engaging just as AE reaches its limit.
+	 */
+	bool darkScene = (lumNorm < darkSceneMinLuminance_);
+
+	if (!darkScene && spread > 0.01f && spread < targetSpread_) {
 		/*
 		 * Scene does not fill the target spread: stretch contrast.
 		 * Clamp to avoid extreme corrections in near-zero spread
 		 * scenes (e.g. lens cap on).
 		 */
 		contrastGain = std::clamp(targetSpread_ / spread, 1.0f, contrastMaxGain_);
+	}
+
+	if (darkScene) {
+		LOG(ISC_CBC, Debug)
+			<< "Dark scene (lum=" << frameContext.scene.luminance
+			<< " lumNorm=" << lumNorm
+			<< " < " << darkSceneMinLuminance_
+			<< ") — contrast stretch suppressed";
 	}
 
 	/*
