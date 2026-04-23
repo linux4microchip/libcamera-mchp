@@ -45,7 +45,7 @@ algorithms:
       frames: 10
         # Raised vs standard: IR energy elevates all channels, causing the
         # luminance estimator to overestimate brightness in near-dark scenes.
-      min_scene_luminance: 32
+      min_scene_luminance: 8
 
     color_temperature:
         # Lower minimum to 1800 K: IR-contaminated scenes often appear
@@ -103,10 +103,14 @@ algorithms:
       # Slightly lower target to avoid over-exposure; IR adds extra
       # effective brightness not visible in the final image.
     target_brightness: 56
-      # EMPIRICAL CALIBRATION 2026-04-22:
-      # target=56, CBC=0, CDF=0, γ=2.2 → 215/255 (RGB565), 186/255 (YUYV)
-      # Needed: 117/255 (18% grey sRGB)
-      # Scaling: 56 × (117/215) = 30.4 → 30
+      # EMPIRICAL CALIBRATION — SAMA7G5 + IMX219 NoIR:
+      # AGC uses normalised-WB-corrected BT.601 luminance (RPi method).
+      # Histogram tap is pre-WB, pre-DPC (confirmed by BLCEN toggle test).
+      # 18% grey requires ≈195 lines exposure at 4450K.
+      # At 195 lines: GR_net ≈ 22 net bins in the pre-WB histogram.
+      # The normalised-WB luminance at target=22 → correct 18% grey output.
+      # Verified: v4l2-ctl at 195 lines + unity WB → G=115/255 ≈ 117 target.
+      # Recalibrate: mchpcam-still --noir → measure → adjust.
       # Fallback when lux is unavailable. Active y_target below overrides this.
       #
       # y_target: maps lux → effective pre-WB histogram brightness target.
@@ -133,7 +137,7 @@ algorithms:
 
     convergence:
       speed: 0.3
-      stability_threshold: 10.0
+      stability_threshold: 3.0
       frames: 3
 
       # Slightly wider clip_cap than standard: IR causes highlight clipping
@@ -162,10 +166,12 @@ algorithms:
       reference_gain: 1.0
       reference_lux: 2876.0
 - Cbc:
-    target_luminance: 120.0
-    brightness_gain: 0.15
       # Higher contrast strength: IR washes out perceived scene contrast,
       # so more aggressive histogram stretching is beneficial.
+      # contrast_strength=0.0: stretch DISABLED (like RPi/RkISP1).
+      # CBC was causing 1.75x boost on grey card → 217/255 vs 117/255.
+      # Re-enable (0.1-0.2) only for outdoor/mixed scenes after validating
+      # that AGC CBC-feedback loop closes correctly first.
     contrast_strength: 0.0
       # 0.0 = CBC stretch DISABLED. Like RPi/RkISP1 which have NO automatic
       # histogram stretch. CBC was causing 1.75× boost on grey card (narrow
@@ -255,11 +261,11 @@ algorithms:
 
       candlelight:
         ct: 2700
-        ccm: [1.6058, -0.2779, -0.3279, -0.5703, 1.9978, -0.4275, -0.1473, -1.5219, 2.6692]
+        ccm: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 
         # Deep tungsten / candlelight (~2500 K) for NoIR sensor. IR energy
         # at warm CTs is strongest; strong B row and low R diagonal required.
         # Extrapolated from 2700 K; calibrate against a candle/tungsten source.
       deep_tungsten:
         ct: 2500
-        ccm: [1.5900, -0.2000, -0.3900, -0.6100, 2.0400, -0.4300, -0.1800, -1.7000, 2.8800]
+        ccm: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]

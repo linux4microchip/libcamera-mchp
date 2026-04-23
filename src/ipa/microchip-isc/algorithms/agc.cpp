@@ -568,10 +568,31 @@ void Agc::process(IPAContext &context,
 	float effectiveTarget = std::clamp(baseTarget * evScale,
 					   aeLuminanceFloor_, kHistogramMax);
 
+	/*
+	 * CBC feedback: if CBC is applying a contrast boost (contrastGainLinear
+	 * > 1.0), the post-CBC output is brighter than the pre-CBC histogram
+	 * that AGC measures. Divide the histogram target by contrastGainLinear
+	 * so AGC exposes to a lower raw level — exactly enough that after CBC
+	 * stretches it, the final output hits the intended brightness.
+	 *
+	 * Without this, CBC-boosted scenes (flat histograms like grey cards)
+	 * are permanently overexposed: AGC locks at a raw level that looks
+	 * correct pre-CBC, but the downstream CBC gain makes it too bright.
+	 *
+	 * contrastGainLinear is initialised to 1.0 in configure() and updated
+	 * by CBC::process() every frame, so on the first few frames before CBC
+	 * runs this is a safe no-op.
+	 */
+	float cbcGain = context.activeState.cbc.contrastGainLinear;
+	if (cbcGain > 1.0f)
+		effectiveTarget = std::clamp(effectiveTarget / cbcGain,
+					     aeLuminanceFloor_, kHistogramMax);
+
 	LOG(ISC_AGC, Debug)
 		<< "AGC target: lux=" << currentLux
 		<< " baseTarget=" << baseTarget
 		<< " evScale=" << evScale
+		<< " cbcGain=" << cbcGain
 		<< " effectiveTarget=" << effectiveTarget;
 
 	/*

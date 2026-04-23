@@ -127,12 +127,6 @@ algorithms:
         reduction: 0.95
 
   - Cbc:
-      # Target scene luminance in histogram units (0-511).
-      # The brightness register corrects residual error after AGC.
-      target_luminance: 128.0
-      # Fraction of residual luminance error applied as brightness offset.
-      # Keep below 0.25 to avoid fighting the AGC control loop.
-      brightness_gain: 0.15
       # Contrast enhancement strength (0=none, 1=full histogram stretch).
       # Lower values give subtle enhancement; 0.4 works well for outdoor scenes.
       contrast_strength: 0.4
