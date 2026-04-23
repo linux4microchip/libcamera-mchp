@@ -22,173 +22,76 @@ namespace ipa::microchip_isc {
 
 /**
  * \brief Calculate the weighted mean of a histogram channel
- * \param[in] bins Pointer to 512-bin histogram data
- * \param[in] totalPixels Total pixel count for normalization
- * \return Weighted mean value (0.0-511.0 range)
- *
- * Computes the weighted average of histogram bin values. Each bin's
- * contribution is weighted by its index (intensity level) and count.
+ * \param[in] stats Pointer to ISC statistics buffer
+ * \param[in] channel Bayer channel index (kHistChannelGR/R/GB/B)
+ * \return Weighted mean bin value (0.0–511.0 range)
  */
-float calculateChannelMean(const isc_stat_buffer *stats, unsigned int channel)
+float calculateChannelMean(const mchp_isc_stat_buffer *stats, unsigned int channel)
 {
-	std::array<uint32_t, kHistBins> bins;
-	memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
-	Histogram hist(bins);
-	uint64_t totalPixels = hist.total();
-	if (totalPixels == 0)
+	if (channel >= 4)
 		return 0.0f;
 
-	if (totalPixels > kMaxHistPixels) {
-		LOG(ISC_Common, Warning)
-			<< "Histogram channel " << channel
-			<< " total " << totalPixels
-			<< " exceeds limit; stats buffer may be corrupt";
-		return 0.0f;
-	}
-
+	uint64_t total = 0;
 	uint64_t weightedSum = 0;
-	Span<const uint64_t> cumulative = hist.data();
+
 	for (unsigned int i = 0; i < kHistBins; i++) {
-		uint64_t bin = cumulative[i + 1] - cumulative[i];
-		weightedSum += bin * i;
+		uint32_t count = stats->hist[channel].hist_bins[i];
+		total += count;
+		weightedSum += static_cast<uint64_t>(count) * i;
 	}
 
-	return static_cast<float>(weightedSum) / totalPixels;
+	if (total == 0 || total > kMaxHistPixels)
+		return 0.0f;
+
+	return static_cast<float>(weightedSum) / static_cast<float>(total);
 }
 
 /**
  * \brief Calculate the mean intensity of the top 20% brightest pixels
  * \param[in] stats Pointer to ISC statistics buffer
- * \param[in] channel Bayer channel index (kHistChannelGR/R/GB/B)
+ * \param[in] channel Bayer channel index
+ * \param[in] pedestalBins Number of pedestal bins to skip (blackLevel/2)
  * \return Mean intensity of the top 20% pixels (0.0–511.0 range)
- *
- * Near-saturated pixels in a scene are most likely reflecting or emitting
- * near-white light and therefore provide a better estimate of the scene
- * illuminant colour than the full-frame mean, which is biased by scene
- * content. This is used by the AWB algorithm to blend a highlight-based
- * illuminant estimate with the grey-world estimate, improving accuracy in
- * high-saturation scenes (sky, foliage, skin tones).
- *
- * Returns 0 if the histogram is empty or has fewer than 10% of pixels in
- * the top quantile (indicating a very dark or uniform scene where the
- * highlight estimate would be unreliable).
  */
-float calculateHighlightMean(const isc_stat_buffer *stats, unsigned int channel)
+float calculateHighlightMean(const mchp_isc_stat_buffer *stats,
+			     unsigned int channel,
+			     unsigned int pedestalBins)
 {
-	std::array<uint32_t, kHistBins> bins;
-	memcpy(bins.data(), stats->hist[channel].hist_bins, kHistBins * sizeof(uint32_t));
-	Histogram hist(bins);
-
-	if (hist.total() == 0)
+	if (channel >= 4)
 		return 0.0f;
 
-	if (hist.total() > kMaxHistPixels) {
-		LOG(ISC_Common, Warning)
-			<< "Histogram channel " << channel
-			<< " total " << hist.total()
-			<< " exceeds limit; stats buffer may be corrupt";
+	uint64_t total = 0;
+	for (unsigned int i = pedestalBins; i < kHistBins; i++)
+		total += stats->hist[channel].hist_bins[i];
+
+	if (total == 0 || total > kMaxHistPixels)
 		return 0.0f;
-	}
 
-	return static_cast<float>(hist.interQuantileMean(0.8, 1.0));
-}
-
-/**
- * \brief Compute a 64-point normalised luminance CDF aligned to LUT entries
- * \param[in] stats Pointer to ISC statistics buffer
- * \param[out] lut_cdf 64-element array filled with CDF values in [0, 1]
- *
- * Builds a combined luminance histogram by weighting the four Bayer channels
- * with BT.601 coefficients (same as calculateHistogramSpread), then computes
- * the normalised cumulative distribution function (CDF) at the midpoint of
- * each of the 64 gamma LUT input ranges.
- *
- * The ISC gamma LUT has 64 entries; entry i covers the 10-bit input range
- * [i*16 .. (i+1)*16 - 1].  The ISC histogram has 512 bins; bin k represents
- * input values [k*2 .. k*2+1].  Therefore LUT entry i corresponds to
- * histogram bins [i*8 .. (i+1)*8 - 1].  The CDF is sampled at the midpoint
- * bin i*8 + 4, giving the fraction of pixels with luminance below the
- * centre of that LUT entry's input range.
- *
- * lut_cdf[j] = fraction of pixels with intensity ≤ (j*16 + 8) / 1023
- *
- * When blended with a power-law tone curve in computeLut(), a cdf_strength
- * of 1.0 produces full histogram equalisation (uniform output distribution),
- * while 0.0 leaves the power law unchanged.  Intermediate values give a
- * locally-adaptive curve that stretches low-contrast histogram regions.
- *
- * Degenerate case (all bins zero): fills lut_cdf with a linear ramp [0..1]
- * so computeLut() degenerates gracefully to the pure power-law path.
- */
-void calculateLuminanceCdf(const isc_stat_buffer *stats,
-			   std::array<float, 64> &lut_cdf)
-{
-	/* BT.601 channel weights: GR=0.2935, R=0.299, GB=0.2935, B=0.114 */
-	static constexpr float kWeights[4] = { 0.2935f, 0.299f, 0.2935f, 0.114f };
-
-	std::array<float, kHistBins> combined = {};
-	float total = 0.0f;
-
-	for (unsigned int ch = 0; ch < 4; ch++) {
-		float w = kWeights[ch];
-		for (unsigned int i = 0; i < kHistBins; i++) {
-			float v = w * static_cast<float>(stats->hist[ch].hist_bins[i]);
-			combined[i] += v;
-			total += v;
+	/* Find P80 bin threshold */
+	uint64_t p80target = total * 80 / 100;
+	uint64_t cumulative = 0;
+	unsigned int p80bin = kHistBins - 1;
+	for (unsigned int i = pedestalBins; i < kHistBins; i++) {
+		cumulative += stats->hist[channel].hist_bins[i];
+		if (cumulative >= p80target) {
+			p80bin = i;
+			break;
 		}
 	}
 
-	if (total < 1.0f) {
-		/* Degenerate: produce a linear ramp so the power-law takes over */
-		for (unsigned int j = 0; j < 64; j++)
-			lut_cdf[j] = static_cast<float>(j) / 63.0f;
-		return;
+	/* Mean of bins from P80 to P100 */
+	uint64_t hlTotal = 0;
+	uint64_t hlSum = 0;
+	for (unsigned int i = p80bin; i < kHistBins; i++) {
+		uint32_t count = stats->hist[channel].hist_bins[i];
+		hlTotal += count;
+		hlSum += static_cast<uint64_t>(count) * i;
 	}
 
-	/*
-	 * Build cumulative sum, then sample at midpoint of each LUT entry.
-	 * LUT entry j midpoint → histogram bin j*8 + 4.
-	 */
-	float cumulative = 0.0f;
-	unsigned int histBin = 0;
-	for (unsigned int j = 0; j < 64; j++) {
-		unsigned int midBin = j * 8 + 4;
-		/* Accumulate up to (and including) the midpoint bin */
-		while (histBin <= midBin && histBin < kHistBins) {
-			cumulative += combined[histBin];
-			histBin++;
-		}
-		lut_cdf[j] = cumulative / total;
-	}
-}
-
-/**
- * \brief Calculate overall scene luminance from all histogram channels
- * \param[in] stats Pointer to ISC statistics buffer
- * \return Estimated luminance (0.0-511.0 range)
- *
- * Uses ITU-R BT.601 coefficients applied to the Bayer channel means:
- * L = 0.299 * R + 0.587 * (GR + GB) / 2 + 0.114 * B
- */
-float calculateLuminance(const isc_stat_buffer *stats)
-{
-	float meanGR = calculateChannelMean(stats, kHistChannelGR);
-	float meanR = calculateChannelMean(stats, kHistChannelR);
-	float meanGB = calculateChannelMean(stats, kHistChannelGB);
-	float meanB = calculateChannelMean(stats, kHistChannelB);
-
-	if (hist.total() == 0)
+	if (hlTotal == 0)
 		return 0.0f;
 
-	if (hist.total() > kMaxHistPixels) {
-		LOG(ISC_Common, Warning)
-			<< "Histogram channel " << channel
-			<< " total " << hist.total()
-			<< " exceeds limit; stats buffer may be corrupt";
-		return 0.0f;
-	}
-
-	return static_cast<float>(hist.interQuantileMean(0.8, 1.0));
+	return static_cast<float>(hlSum) / static_cast<float>(hlTotal);
 }
 
 /**
@@ -250,7 +153,8 @@ static void buildCombinedLuminanceHistogram(const mchp_isc_stat_buffer *stats,
  * so computeLut() degenerates gracefully to the pure power-law path.
  */
 void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			   std::array<float, 64> &lut_cdf)
+			   std::array<float, 64> &lut_cdf,
+			   [[maybe_unused]] unsigned int pedestalBins)
 {
 	std::array<float, kHistBins> combined;
 	float total;
@@ -344,7 +248,8 @@ float calculateClipping(const mchp_isc_stat_buffer *stats)
  * uses the full dynamic range; a low spread (e.g. 0.2) indicates a flat or
  * foggy scene where contrast enhancement is beneficial.
  */
-float calculateHistogramSpread(const mchp_isc_stat_buffer *stats)
+float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
+			       [[maybe_unused]] unsigned int pedestalBins)
 {
 	std::array<float, kHistBins> combined;
 	float total;
@@ -412,152 +317,8 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
 		 * No pixels fell in the metering zone (e.g. spot bins 192–320
 		 * when the scene is fully clipped or black). Fall back to the
 		 * full-frame average using the already-built combined histogram
-		 * rather than rebuilding it via calculateLuminance().		 */ LOG(ISC_Common, Debug)
-			<< "calculateWeightedLuminance: no pixels in metering "
-			   "zone, falling back to full-frame average";
-		if (total < 1.0f)
-			return 0.0f;
-		float sum = 0.0f;
-		for (unsigned int i = 0; i < kHistBins; i++)
-			sum += combined[i] * static_cast<float>(i);
-		return sum / total;
-	}
-	return weightedIntensitySum / weightedCountSum;
-}
-
-/**
- * \brief Calculate the fraction of highlight-clipped pixels
- * \param[in] stats Pointer to ISC statistics buffer
- * \return Fraction of pixels in the top 4 histogram bins (0.0–1.0)
- *
- * Examines the top 4 bins (508–511 of 512) across all four Bayer channels.
- * A non-zero return value indicates highlight saturation. Values above
- * ~0.02 (2%) reliably indicate that the scene is overexposed regardless
- * of what the luminance mean reports, which can appear low in high-contrast
- * scenes where large shadow areas drag down the average.
- *
- * Uses the driver-provided hist_max to fast-path the no-clipping case:
- * if all channels have hist_max below the clip threshold, no bins in the
- * clipping range can have pixels and 0.0 is returned immediately without
- * iterating the 512-bin arrays.
- */
-float calculateClipping(const isc_stat_buffer *stats)
-{
-	static constexpr unsigned int kClipBins = 4;
-	static constexpr unsigned int kClipThreshold = kHistBins - kClipBins;
-
-	/*
-	 * Fast-path: if no channel has any pixel above bin kClipThreshold-1,
-	 * hist_max < kClipThreshold for all channels, so clipping is zero.
-	 */
-	bool anyAboveThreshold = false;
-	for (unsigned int ch = 0; ch < 4; ch++) {
-		if (stats->hist[ch].hist_max >= kClipThreshold) {
-			anyAboveThreshold = true;
-			break;
-		}
-	}
-	if (!anyAboveThreshold)
-		return 0.0f;
-
-	uint64_t total = 0;
-	uint64_t clipped = 0;
-
-	for (unsigned int ch = 0; ch < 4; ch++) {
-		std::array<uint32_t, kHistBins> bins;
-		std::memcpy(bins.data(), stats->hist[ch].hist_bins, kHistBins * sizeof(uint32_t));
-		Histogram hist(bins);
-		Span<const uint64_t> cum = hist.data();
-		total += hist.total();
-		clipped += cum[kHistBins] - cum[kHistBins - kClipBins];
-	}
-
-	if (total == 0)
-		return 0.0f;
-
-	return static_cast<float>(clipped) / static_cast<float>(total);
-}
-
-/**
- * \brief Calculate the P5-to-P95 spread of the scene luminance histogram
- * \param[in] stats Pointer to ISC statistics buffer
- * \return Spread as a fraction of the full 512-bin range (0.0–1.0)
- *
- * Builds a luminance-weighted histogram by combining all four Bayer channels
- * with BT.601 coefficients, then returns the distance between the 5th and
- * 95th percentiles normalised to [0, 1]. A spread near 1.0 means the scene
- * uses the full dynamic range; a low spread (e.g. 0.2) indicates a flat or
- * foggy scene where contrast enhancement is beneficial.
- */
-float calculateHistogramSpread(const mchp_isc_stat_buffer *stats)
-{
-	std::array<float, kHistBins> combined;
-	float total;
-	buildCombinedLuminanceHistogram(stats, combined, total);
-
-	if (total == 0.0f)
-		return 0.0f; /* empty histogram: no spread, no contrast enhancement */
-
-	float p5target = total * 0.05f;
-	float p95target = total * 0.95f;
-
-	unsigned int p5 = 0;
-	unsigned int p95 = kHistBins - 1;
-	float cumulative = 0.0f;
-	bool foundP5 = false;
-
-	for (unsigned int i = 0; i < kHistBins; i++) {
-		cumulative += combined[i];
-		if (!foundP5 && cumulative >= p5target) {
-			p5 = i;
-			foundP5 = true;
-		}
-		if (cumulative >= p95target) {
-			p95 = i;
-			break;
-		}
-	}
-
-	return static_cast<float>(p95 - p5) / static_cast<float>(kHistBins);
-}
-
-/**
- * \brief Calculate scene luminance weighted by per-bin intensity weights
- * \param[in] stats Pointer to ISC statistics buffer
- * \param[in] weights 512-element per-bin weight array (should sum to ~1.0)
- * \return Estimated luminance (0.0–511.0 range)
- *
- * Builds a combined luminance histogram using BT.601 channel weights, then
- * computes the weighted mean using the supplied per-bin weight array. This
- * implements exposure metering modes (matrix, centre-weighted, spot) by
- * assigning different importance to low, mid-tone, and highlight bins.
- */
-float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
-				 const std::array<float, kHistBins> &weights)
-{
-	/*
-	 * Build the combined luminance histogram once (channel-outer, bin-inner
-	 * for cache efficiency), then apply the per-bin metering weights in a
-	 * single pass over the contiguous combined array.
-	 */
-	std::array<float, kHistBins> combined;
-	float total;
-	buildCombinedLuminanceHistogram(stats, combined, total);
-	float weightedIntensitySum = 0.0f;
-	float weightedCountSum = 0.0f;
-
-	for (unsigned int i = 0; i < kHistBins; i++) {
-		float w = weights[i] * combined[i];
-		weightedCountSum += w;
-		weightedIntensitySum += w * static_cast<float>(i);
-	}
-
-	if (weightedCountSum < 1.0f) {
-		/*
-		 * No pixels fell in the metering zone (e.g. spot bins 192–320
-		 * when the scene is fully clipped or black). Fall back to the
-		 * full-frame average using the already-built combined histogram
-		 * rather than rebuilding it via calculateLuminance().		 */
+		 * rather than rebuilding it via calculateLuminance().
+		 */
 		LOG(ISC_Common, Debug)
 			<< "calculateWeightedLuminance: no pixels in metering "
 			   "zone, falling back to full-frame average";
@@ -568,27 +329,7 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
 			sum += combined[i] * static_cast<float>(i);
 		return sum / total;
 	}
-
 	return weightedIntensitySum / weightedCountSum;
-}
-
-/**
- * \brief Estimate color temperature from Bayer channel statistics
- * \param[in] stats Pointer to ISC statistics buffer
- * \return Estimated color temperature in Kelvin
- *
- * Uses full three-channel RGB means for CCT estimation via Robertson's
- * method. Returns 5500 K as default for neutral or near-dark scenes.
- */
-float estimateColorTemperature(const isc_stat_buffer *stats)
-{
-	float meanR = calculateChannelMean(stats, kHistChannelR);
-	float meanG = (calculateChannelMean(stats, kHistChannelGR) +
-		       calculateChannelMean(stats, kHistChannelGB)) /
-		      2.0f;
-	float meanB = calculateChannelMean(stats, kHistChannelB);
-
-	return estimateColorTemperature(meanR, meanG, meanB, nullptr);
 }
 
 /*
@@ -724,6 +465,50 @@ float estimateColorTemperature(float meanR, float meanG, float meanB,
 
 	/* No sign change found: query point outside table range */
 	return 5500.0f;
+}
+
+/**
+ * \brief Convenience overload: estimate CT directly from stats buffer means
+ */
+float estimateColorTemperature(const mchp_isc_stat_buffer *stats)
+{
+	float meanR = calculateChannelMean(stats, kHistChannelR);
+	float meanG = (calculateChannelMean(stats, kHistChannelGR) +
+		       calculateChannelMean(stats, kHistChannelGB)) /
+		      2.0f;
+	float meanB = calculateChannelMean(stats, kHistChannelB);
+	return estimateColorTemperature(meanR, meanG, meanB, nullptr);
+}
+
+/**
+ * \brief Estimate scene illuminance in lux
+ *
+ * Implements the Raspberry Pi lux estimator formula (lux.cpp):
+ *   lux = (refExposure/curExposure) * (refGain/curGain) * (curY/refY) * refLux
+ */
+float estimateLux(float currentY,
+		  uint32_t exposureLines,
+		  float analogueGain,
+		  float lineDurationUs,
+		  float refY,
+		  float refExposureUs,
+		  float refGain,
+		  float refLux)
+{
+	if (refY < 1.0f || currentY < 1.0f || exposureLines == 0 ||
+	    analogueGain < 0.001f || lineDurationUs < 0.001f)
+		return 400.0f;
+
+	float curExposureUs = static_cast<float>(exposureLines) * lineDurationUs;
+	if (curExposureUs < 0.001f)
+		return 400.0f;
+
+	float lux = refLux *
+		    (refExposureUs / curExposureUs) *
+		    (refGain / analogueGain) *
+		    (currentY / refY);
+
+	return std::clamp(lux, 1.0f, 100000.0f);
 }
 
 } /* namespace ipa::microchip_isc */

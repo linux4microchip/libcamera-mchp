@@ -442,28 +442,58 @@ void Agc::process(IPAContext &context,
 	 * agc_channel.cpp:computeInitialY().
 	 *
 	 * The ISC histogram taps pre-WB Bayer data (vp_data, pre-DPC).
-	 * Channel means are raw sensor values unaffected by the WB block.
-	 * If we compare raw luminance directly to target_brightness we are
-	 * comparing pre-WB RAW to a post-WB target — they are different
-	 * domains. The result is that the AGC drives to maximum gain to reach
-	 * a target that is correct in output space but applied to raw data,
-	 * causing severe overexposure (observed: mean Y=206 vs kernel Y=112).
+	 * Luminance metering: pre-WB histogram with normalised WB correction.
 	 *
-	 * Fix: scale each channel mean by its WB gain before computing the
-	 * BT.601 luminance estimate. This gives a luminance value in the same
-	 * domain as the output image — post-WB, pre-gamma linear. The target
-	 * (target_brightness=92, representing 18% grey at 0.18×511≈92) then
-	 * correctly represents the desired output brightness, exactly as the
-	 * RPi agc_channel.cpp computes it when agcStatsPos == PreWb.
+	 * This mirrors the RPi IPA agc_channel.cpp computeInitialY() when
+	 * agcStatsPos == AgcStatsPos::PreWb (lines 682-690):
 	 *
-	 * Saturation guard: clamp each WB-scaled mean to kHistogramMax so
-	 * that a single overdriven channel (e.g. R in deep tungsten at 1800K
-	 * with rGain=4.2) cannot pull the luminance estimate above the
-	 * histogram range and cause the AGC to underexpose.
+	 *   double minColourGain = std::min(gainR, gainG, gainB, 1.0);
+	 *   minColourGain = std::max(minColourGain, 1.0);
+	 *   colourGains /= minColourGain;          // normalise to lowest gain
+	 *   sum *= colourGains;                    // apply normalised gains
+	 *   ySum = rec601LuminanceFromRGB(sum);    // BT.601 luminance
 	 *
-	 * If no AWB gains are available yet (first frame, gains at init
-	 * default 1.0) the correction is a no-op — correct behaviour since
-	 * WB has not been computed yet.
+	 * WHY NORMALISED GAINS (not raw grey-world gains):
+	 *
+	 * The ISC histogram is pre-WB (SAMA7G5 datasheet §43.6.20 fig. 43-38,
+	 * ISC_HIS_CFG_RAR tap confirmed pre-WB).  Dividing all gains by the
+	 * minimum (= the highest-signal channel, GR/GB ≈ 1.0) ensures:
+	 *   1. The reference channel (GR, gain=1.0) is unchanged.
+	 *   2. Lower-signal channels (R, B) are scaled UP to match GR.
+	 *   3. Lowering exposure scales ALL histogram means proportionally,
+	 *      so normalised-WB-corrected luminance drops linearly — the AE
+	 *      feedback loop closes correctly.
+	 *
+	 * CONTRAST WITH PURE GREY-WORLD (previous bug):
+	 *   Pure grey-world gains (GR/B ratio) are EXPOSURE-DEPENDENT:
+	 *   at low exposure, B_net ≈ 5-10 bins for NoIR at 4450K (B near
+	 *   noise floor) → bGain = GR/B spikes to 3-5× instead of the
+	 *   calibrated 2.0× → WB-corrected luminance over-estimates the
+	 *   scene brightness → AE drives higher exposure to compensate →
+	 *   the loop diverges instead of converging.
+	 *
+	 * With the AWB now using CT-based reference_gains_table (not
+	 * grey-world), the gains are stable across exposure levels, so
+	 * the normalised correction here accurately predicts the post-WB
+	 * output luminance regardless of exposure setting.
+	 *
+	 * TARGET CALIBRATION (SAMA7G5 + IMX219 NoIR):
+	 *   18% grey → pixel DN = 0.18 × 1023 = 184.
+	 *   Pedestal = 64 DN (IMX219 datasheet).
+	 *   Net histogram bin = (184 - 64) / 2 = 60 net bins.
+	 *   For a neutral scene after WB, all channels ≈ 60 net bins.
+	 *   Normalised-WB luminance = 60 × (0.299 + 0.587 + 0.114) = 60.
+	 *   → target_brightness = 60 for 18% grey sRGB output.
+	 */
+	const auto &hist = context.activeState.histogram;
+	float meanR = hist.channelMeans[kHistChannelR];
+	float meanGR = hist.channelMeans[kHistChannelGR];
+	float meanGB = hist.channelMeans[kHistChannelGB];
+	float meanB = hist.channelMeans[kHistChannelB];
+	/*
+	 * Apply normalised AWB gains: divide all channel gains by the
+	 * minimum gain so the reference channel stays at 1× and weaker
+	 * channels are scaled up.  This matches RPi agc_channel.cpp.
 	 */
 	const auto &awb = context.activeState.awb;
 	float wbR = (awb.rGain > 0.0f) ? awb.rGain : 1.0f;
@@ -471,30 +501,14 @@ void Agc::process(IPAContext &context,
 	float wbGB = (awb.gbGain > 0.0f) ? awb.gbGain : 1.0f;
 	float wbB = (awb.bGain > 0.0f) ? awb.bGain : 1.0f;
 
-	/*
-	 * Normalise WB gains to the minimum channel so the correction only
-	 * redistributes colour — it does not amplify overall brightness.
-	 * This mirrors RPi agc_channel.cpp lines 683-686:
-	 *   minColourGain = max(min(gainR, gainG, gainB, 1.0), 1.0)
-	 *   colourGains /= minColourGain
-	 * The division by minColourGain ensures the dimmest channel is
-	 * unchanged (gain=1×) and the brighter channels are boosted relative
-	 * to it, preserving luminance scale.
-	 */
 	float minWb = std::max(std::min({ wbR, wbGR, wbGB, wbB }), 1.0f);
-	wbR /= minWb;
-	wbGR /= minWb;
-	wbGB /= minWb;
-	wbB /= minWb;
+	float nR = std::min(meanR * (wbR / minWb), kHistogramMax);
+	float nGR = std::min(meanGR * (wbGR / minWb), kHistogramMax);
+	float nGB = std::min(meanGB * (wbGB / minWb), kHistogramMax);
+	float nB = std::min(meanB * (wbB / minWb), kHistogramMax);
+	float nG = (nGR + nGB) / 2.0f;
 
-	const auto &hist = context.activeState.histogram;
-	float meanR = std::min(hist.channelMeans[kHistChannelR] * wbR, kHistogramMax);
-	float meanGR = std::min(hist.channelMeans[kHistChannelGR] * wbGR, kHistogramMax);
-	float meanGB = std::min(hist.channelMeans[kHistChannelGB] * wbGB, kHistogramMax);
-	float meanB = std::min(hist.channelMeans[kHistChannelB] * wbB, kHistogramMax);
-	float meanG = (meanGR + meanGB) / 2.0f;
-
-	float currentLuminance = 0.299f * meanR + 0.587f * meanG + 0.114f * meanB;
+	float currentLuminance = 0.299f * nR + 0.587f * nG + 0.114f * nB;
 
 	/* Count frames from the first active stats delivery */
 	agcFrameCount_++;

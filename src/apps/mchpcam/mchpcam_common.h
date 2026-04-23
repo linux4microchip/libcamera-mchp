@@ -341,7 +341,7 @@ protected:
 	 * minimum, covering any frame-boundary race between the ioctl and
 	 * the start of the next frame's exposure.
 	 */
-	static constexpr unsigned int kPostLockSettleFrames = 4;
+	static constexpr unsigned int kPostLockSettleFrames = 8;
 
 	std::atomic<bool> awbLocked_{ false };
 	std::atomic<bool> aeLocked_{ false };

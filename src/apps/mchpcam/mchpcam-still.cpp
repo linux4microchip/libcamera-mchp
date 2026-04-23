@@ -485,6 +485,93 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 
 	const uint8_t *data = static_cast<const uint8_t *>(mapped);
 
+	/*
+	 * RAW BUFFER PIXEL DUMP — overexposure debug.
+	 *
+	 * Sample the centre 100×100 pixel region of the DMA buffer BEFORE any
+	 * format conversion or JPEG encoding.  This tells us whether the
+	 * overexposure (+96/255 vs v4l2-ctl) is already present in the raw
+	 * DMA buffer, or is introduced by the RGB conversion / encode path.
+	 *
+	 * Compare output with simultaneous:
+	 *   v4l2-ctl -d /dev/video0 --stream-mmap --stream-count=1 \
+	 *            --stream-to=/tmp/raw.bin
+	 * then decode at same pixel coordinates.
+	 *
+	 * Enabled only when MCHPCAM_PIXEL_DUMP env var is set.
+	 */
+	if (getenv("MCHPCAM_PIXEL_DUMP")) {
+		unsigned int cx = width_ / 2;
+		unsigned int cy = height_ / 2;
+		unsigned int half = 50; /* 100×100 centre crop */
+		unsigned int x0 = (cx > half) ? cx - half : 0;
+		unsigned int y0 = (cy > half) ? cy - half : 0;
+		unsigned int x1 = std::min(cx + half, width_);
+		unsigned int y1 = std::min(cy + half, height_);
+
+		double sumR = 0, sumG = 0, sumB = 0;
+		uint64_t n = 0;
+
+		if (pixelFormat_ == libcamera::formats::RGB565) {
+			for (unsigned int y = y0; y < y1; ++y) {
+				for (unsigned int x = x0; x < x1; ++x) {
+					size_t idx = (y * width_ + x) * 2;
+					uint16_t px = static_cast<uint16_t>(data[idx]) |
+						      static_cast<uint16_t>(data[idx + 1] << 8);
+					uint8_t r5 = (px >> 11) & 0x1f;
+					uint8_t g6 = (px >> 5) & 0x3f;
+					uint8_t b5 = px & 0x1f;
+					/* Expand to 8-bit (same as JPEG path) */
+					sumR += (r5 << 3) | (r5 >> 2);
+					sumG += (g6 << 2) | (g6 >> 4);
+					sumB += (b5 << 3) | (b5 >> 2);
+					++n;
+				}
+			}
+		} else if (pixelFormat_ == libcamera::formats::YUYV) {
+			for (unsigned int y = y0; y < y1; ++y) {
+				for (unsigned int x = x0; x < x1; x += 2) {
+					size_t idx = (y * width_ + x) * 2;
+					sumR += data[idx]; /* Y0 as proxy */
+					sumG += data[idx];
+					sumB += data[idx];
+					++n;
+				}
+			}
+		} else if (pixelFormat_ == libcamera::formats::RGB888 ||
+			   pixelFormat_ == libcamera::formats::BGR888) {
+			bool bgr = (pixelFormat_ == libcamera::formats::BGR888);
+			for (unsigned int y = y0; y < y1; ++y) {
+				for (unsigned int x = x0; x < x1; ++x) {
+					size_t idx = (y * width_ + x) * 3;
+					sumR += bgr ? data[idx + 2] : data[idx + 0];
+					sumG += data[idx + 1];
+					sumB += bgr ? data[idx + 0] : data[idx + 2];
+					++n;
+				}
+			}
+		}
+
+		if (n > 0) {
+			double mR = sumR / n;
+			double mG = sumG / n;
+			double mB = sumB / n;
+			double mL = 0.299 * mR + 0.587 * mG + 0.114 * mB;
+			std::cerr << "[PIXEL_DUMP] RAW DMA BUFFER (before encode)\n"
+				  << "[PIXEL_DUMP]   format : "
+				  << pixelFormat_.toString() << "\n"
+				  << "[PIXEL_DUMP]   region : centre "
+				  << (x1 - x0) << "x" << (y1 - y0) << " pixels\n"
+				  << "[PIXEL_DUMP]   mean R : " << mR << " / 255\n"
+				  << "[PIXEL_DUMP]   mean G : " << mG << " / 255\n"
+				  << "[PIXEL_DUMP]   mean B : " << mB << " / 255\n"
+				  << "[PIXEL_DUMP]   mean L : " << mL << " / 255\n"
+				  << "[PIXEL_DUMP]   target : 117 / 255 (sRGB 18% grey)\n"
+				  << "[PIXEL_DUMP]   gap    : " << (mL - 117.0)
+				  << " / 255\n";
+		}
+	}
+
 	using namespace libcamera;
 
 	/*

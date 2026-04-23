@@ -1214,24 +1214,13 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 	}
 
 	switch (cid) {
-	case V4L2_CID_BRIGHTNESS:
-	case V4L2_CID_CONTRAST: {
+	case V4L2_CID_BRIGHTNESS: {
 		/*
-		 * libcamera publishes Brightness in the normalised range
-		 * [-1.0, +1.0] and Contrast in [0.0, 128.0]. The ISC V4L2
-		 * hardware uses integer ranges:
-		 *   Brightness: V4L2_CID_BRIGHTNESS  [-1024, +1023] unity=0
-		 *   Contrast:   V4L2_CID_CONTRAST    [-2048, +2047] unity=16
+		 * libcamera Brightness: [-1.0, +1.0], unity = 0.0
+		 * ISC hardware:         [-1024, +1023], unity = 0
 		 *
-		 * Scale the normalised float to the full hardware range so that
-		 * setting Brightness=0.5 maps to ~512 (half-scale boost) rather
-		 * than 1 (barely perceptible). The V4L2 info map supplies the
-		 * authoritative [min, max] for the clamp.
-		 *
-		 * Scaling formula (matches RkISP1 and IPU3 patterns):
-		 *   val = round(fval * (max - min) / 2.0 + (max + min) / 2.0)
-		 * For symmetric ranges (min == -max) this simplifies to:
-		 *   val = round(fval * max)
+		 * Linear scale: Brightness=0.5 → +512 (half-scale boost).
+		 * Formula: val = round(fval * (max - min) / 2 + (max + min) / 2)
 		 */
 		float fval = value.get<float>();
 		int32_t val = static_cast<int32_t>(std::lroundf(fval));
@@ -1241,7 +1230,6 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 			if (it != infoMap->end()) {
 				int32_t min = it->second.min().get<int32_t>();
 				int32_t max = it->second.max().get<int32_t>();
-				/* Scale normalised float to hardware integer range */
 				float mid = (static_cast<float>(max) +
 					     static_cast<float>(min)) /
 					    2.0f;
@@ -1250,6 +1238,38 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 					     2.0f;
 				val = static_cast<int32_t>(
 					std::lroundf(fval * half + mid));
+				val = std::clamp(val, min, max);
+			}
+		}
+		controls->set(cid, val);
+		break;
+	}
+	case V4L2_CID_CONTRAST: {
+		/*
+		 * libcamera Contrast: [0.0, 128.0], unity = 1.0
+		 * ISC hardware:       [-2048, +2047], unity = 16
+		 *
+		 * The correct mapping is: hw = round(fval * kContrastUnityHw)
+		 *   Contrast=1.0  → hw=16  (unity, no change)
+		 *   Contrast=2.0  → hw=32  (2× contrast boost)
+		 *   Contrast=0.5  → hw=8   (reduced contrast)
+		 *   Contrast=128  → hw=2048 → clamped to 2047
+		 *
+		 * The generic brightness formula (fval * half + mid) is WRONG
+		 * for contrast: it maps unity (1.0) to the hardware MAXIMUM
+		 * (2047) instead of the hardware unity (16), causing permanent
+		 * 128× contrast boost → overexposed output.
+		 */
+		static constexpr float kContrastUnityHw = 16.0f;
+		float fval = value.get<float>();
+		int32_t val = static_cast<int32_t>(
+			std::lroundf(fval * kContrastUnityHw));
+		const ControlInfoMap *infoMap = controls->infoMap();
+		if (infoMap) {
+			auto it = infoMap->find(cid);
+			if (it != infoMap->end()) {
+				int32_t min = it->second.min().get<int32_t>();
+				int32_t max = it->second.max().get<int32_t>();
 				val = std::clamp(val, min, max);
 			}
 		}

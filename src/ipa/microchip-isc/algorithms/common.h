@@ -94,6 +94,8 @@ void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 float calculateClipping(const mchp_isc_stat_buffer *stats);
 float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
 			       unsigned int pedestalBins = 0);
+float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
+				 const std::array<float, kHistBins> &weights);
 /* Convenience overload: computes channel means internally from stats buffer */
 float estimateColorTemperature(const mchp_isc_stat_buffer *stats);
 float estimateColorTemperature(float meanR, float meanG, float meanB,
