@@ -96,6 +96,23 @@ float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
 			       unsigned int pedestalBins = 0);
 float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
 				 const std::array<float, kHistBins> &weights);
+
+/**
+ * \brief Return the histogram bin at a given percentile of the luminance CDF
+ * \param[in] stats  ISC statistics buffer (Bayer histogram, pre-WB)
+ * \param[in] pct    Percentile in [0.0, 1.0] (e.g. 0.85 = P85)
+ * \return Luminance histogram bin [0, kHistBins-1] at that percentile
+ *
+ * Uses the same BT.601-weighted combined luminance histogram as
+ * calculateHistogramSpread().  The returned bin is in the same
+ * [0, 511] space as the histogram means (net, after pedestal subtraction).
+ *
+ * Used by the AGC highlight-protection metering mode:
+ *   float p85 = calculateHistogramPercentile(stats, 0.85f);
+ *   if (p85 > threshold_bins) { effectiveTarget *= threshold_bins / p85; }
+ */
+float calculateHistogramPercentile(const mchp_isc_stat_buffer *stats,
+				   float pct);
 /* Convenience overload: computes channel means internally from stats buffer */
 float estimateColorTemperature(const mchp_isc_stat_buffer *stats);
 float estimateColorTemperature(float meanR, float meanG, float meanB,
@@ -129,6 +146,18 @@ float estimateLux(float currentY,
 		  float refExposureUs,
 		  float refGain,
 		  float refLux);
+
+/* Highlight-avoidance metering weights for calculateWeightedLuminance().
+ * strength=0=uniform, 1=full highlight de-emphasis (mobile-like AE). */
+void buildHighlightAvoidanceWeights(std::array<float, kHistBins> &weights,
+				    float strength);
+
 } /* namespace ipa::microchip_isc */
 
 } /* namespace libcamera */
+
+/* Inter-quantile mean: mean of pixels between qLo and qHi quantiles.
+ * iqm(0.02, 0.98) = robust midtone AE metering (ignores extremes).
+ * iqm(0.98, 1.0)  = brightest 2%: used for highlight constraint. */
+float calculateInterQuantileMean(const mchp_isc_stat_buffer *stats,
+				 float qLo, float qHi);

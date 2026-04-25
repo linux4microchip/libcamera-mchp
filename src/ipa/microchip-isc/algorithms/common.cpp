@@ -282,6 +282,143 @@ float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
 }
 
 /**
+ * \brief Return the histogram bin at a given percentile of the luminance CDF
+ */
+float calculateHistogramPercentile(const mchp_isc_stat_buffer *stats, float pct)
+{
+	std::array<float, kHistBins> combined;
+	float total;
+	buildCombinedLuminanceHistogram(stats, combined, total);
+
+	if (total == 0.0f)
+		return 0.0f;
+
+	float target = total * std::clamp(pct, 0.0f, 1.0f);
+	float cumulative = 0.0f;
+	for (unsigned int i = 0; i < kHistBins; i++) {
+		cumulative += combined[i];
+		if (cumulative >= target)
+			return static_cast<float>(i);
+	}
+	return static_cast<float>(kHistBins - 1);
+}
+
+/**
+ * \brief Compute the CDF bin index at a given quantile of the histogram
+ * \param[in] combined  Combined BT.601 luminance histogram (512 bins)
+ * \param[in] total     Total pixel count
+ * \param[in] quantile  Quantile in [0.0, 1.0]
+ * \return Fractional bin index corresponding to that quantile
+ *
+ * Mirrors libipa Histogram::quantile() (BSD-2-Clause, Raspberry Pi Ltd).
+ */
+static float histQuantile(const std::array<float, kHistBins> &combined,
+			  float total, float quantile)
+{
+	float target = quantile * total;
+	float cumulative = 0.0f;
+	for (unsigned int i = 0; i < kHistBins; i++) {
+		float prev = cumulative;
+		cumulative += combined[i];
+		if (cumulative >= target) {
+			/* Linear interpolation within the bin */
+			float frac = combined[i] > 0.0f
+					     ? (target - prev) / combined[i]
+					     : 0.0f;
+			return static_cast<float>(i) + frac;
+		}
+	}
+	return static_cast<float>(kHistBins - 1);
+}
+
+/**
+ * \brief Compute the mean of histogram bins between two fractional bin indices
+ * \param[in] combined  BT.601 luminance histogram
+ * \param[in] binLo     Lower fractional bin index
+ * \param[in] binHi     Upper fractional bin index
+ * \return Weighted mean bin value in [binLo, binHi]
+ *
+ * Mirrors libipa Histogram::interBinMean() (BSD-2-Clause, Raspberry Pi Ltd).
+ */
+static float histInterBinMean(const std::array<float, kHistBins> &combined,
+			      float binLo, float binHi)
+{
+	float sumBinFreq = 0.0f, cumulFreq = 0.0f;
+	for (float binNext = std::floor(binLo) + 1.0f;
+	     binNext <= std::ceil(binHi);
+	     binLo = binNext, binNext += 1.0f) {
+		int bin = static_cast<int>(std::floor(binLo));
+		if (bin < 0 || bin >= static_cast<int>(kHistBins))
+			break;
+		float weight = std::min(binNext, binHi) - binLo;
+		float freq = combined[bin] * weight;
+		sumBinFreq += static_cast<float>(bin) * freq;
+		cumulFreq += freq;
+	}
+	return cumulFreq > 0.0f ? (sumBinFreq / cumulFreq + 0.5f)
+				: binHi;
+}
+
+/**
+ * \brief Inter-quantile mean of the combined BT.601 luminance histogram
+ * \param[in] stats   ISC statistics buffer
+ * \param[in] qLo     Lower quantile [0.0, 1.0]  e.g. 0.02
+ * \param[in] qHi     Upper quantile [0.0, 1.0]  e.g. 0.98
+ * \return Mean luminance bin of the pixels between qLo and qHi
+ *
+ * Returns the mean of the middle (qHi-qLo) fraction of the luminance
+ * distribution, ignoring the darkest qLo fraction and the brightest
+ * (1-qHi) fraction.  This is the core metering primitive used by the
+ * Raspberry Pi and libipa AGC implementations to achieve robust AE
+ * that is insensitive to small bright objects or dark corners.
+ *
+ * iqm(0.02, 0.98) ignores the darkest 2% and brightest 2% of pixels,
+ * targeting exposure at the genuine midtone content of the scene.
+ * iqm(0.98, 1.0)  measures only the brightest 2%: used by the
+ * highlight-constraint mode to clamp gain and prevent clipping.
+ */
+float calculateInterQuantileMean(const mchp_isc_stat_buffer *stats,
+				 float qLo, float qHi)
+{
+	std::array<float, kHistBins> combined;
+	float total;
+	buildCombinedLuminanceHistogram(stats, combined, total);
+	if (total == 0.0f)
+		return 0.0f;
+
+	float pLo = histQuantile(combined, total, qLo);
+	float pHi = histQuantile(combined, total, qHi);
+	if (pHi <= pLo)
+		return pLo;
+
+	return histInterBinMean(combined, pLo, pHi);
+}
+
+/**
+ * \brief Build highlight-avoidance metering weights for the luminance histogram
+ * \param[out] weights   512-element weight array to fill
+ * \param[in]  strength  0.0=flat/uniform  1.0=full highlight-avoidance
+ *
+ * Exponentially-decaying weights that give full weight to shadow/mid-tone
+ * bins and progressively less weight to bright bins — mirrors mobile-phone
+ * highlight-priority AE:
+ *   bin 0   (black):  weight=1.0
+ *   bin 256 (50%):    weight~0.47  (strength=1.0)
+ *   bin 460 (90%):    weight~0.05
+ *
+ * Result: AGC targets exposure so mid-tones are correct; highlights may
+ * clip slightly but shadows/mid-tones are never washed out.
+ */
+void buildHighlightAvoidanceWeights(std::array<float, kHistBins> &weights,
+				    float strength)
+{
+	for (unsigned int i = 0; i < kHistBins; i++) {
+		float n = static_cast<float>(i) / static_cast<float>(kHistBins);
+		weights[i] = std::exp(-strength * 3.5f * n * n);
+	}
+}
+
+/**
  * \brief Calculate scene luminance weighted by per-bin intensity weights
  * \param[in] stats Pointer to ISC statistics buffer
  * \param[in] weights 512-element per-bin weight array (should sum to ~1.0)
