@@ -80,11 +80,26 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	targetBrightness_ = tuningData["target_brightness"].get<float>(targetBrightness_);
 	clipThreshold_ = tuningData["clip_threshold"].get<float>(clipThreshold_);
 	aeLuminanceFloor_ = tuningData["ae_luminance_floor"].get<float>(aeLuminanceFloor_);
+	highlightP85Threshold_ = tuningData["highlight_p85_threshold"].get<float>(highlightP85Threshold_);
+	highlightP85Strength_ = tuningData["highlight_p85_strength"].get<float>(highlightP85Strength_);
+	highlightP85Threshold_ = std::clamp(highlightP85Threshold_, 0.1f, 0.95f);
+	highlightP85Strength_ = std::clamp(highlightP85Strength_, 0.0f, 1.0f);
 	aeLuminanceFloor_ = std::clamp(aeLuminanceFloor_, 0.0f, 50.0f);
+	/* Default EV offset in stops; combined with runtime ExposureValue. */
+	evBias_ = std::clamp(tuningData["ev_default"].get<float>(0.0f), -2.0f, 2.0f);
 	flickerHz_ = tuningData["flicker_hz"].get<float>(flickerHz_);
 	/* Only 50 Hz and 60 Hz are valid mains frequencies; anything else disables. */
 	if (flickerHz_ != 50.0f && flickerHz_ != 60.0f)
 		flickerHz_ = 0.0f;
+	zoneMeteringStrength_ = std::clamp(
+		tuningData["zone_metering_strength"].get<float>(zoneMeteringStrength_),
+		0.0f, 1.0f);
+	iqmQlo_ = std::clamp(tuningData["ae_iqm_q_lo"].get<float>(iqmQlo_), 0.0f, 0.5f);
+	iqmQhi_ = std::clamp(tuningData["ae_iqm_q_hi"].get<float>(iqmQhi_), 0.5f, 1.0f);
+	highlightQhi_ = std::clamp(
+		tuningData["ae_highlight_q_hi"].get<float>(highlightQhi_), 0.0f, 0.5f);
+	highlightTarget_ = std::clamp(
+		tuningData["ae_highlight_target"].get<float>(highlightTarget_), 0.1f, 1.0f);
 
 	if (tuningData.contains("convergence")) {
 		const YamlObject &conv = tuningData["convergence"];
@@ -130,7 +145,20 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		context.configuration.agc.refLuxExposureUs = luxRefExposureUs_;
 		context.configuration.agc.refLuxGain = luxRefGain_;
 		context.configuration.agc.refLux = luxRefLux_;
+
+		/*
+		 * IIR smoothing coefficient α ∈ (0,1].
+		 * smoothed_lux = α × raw + (1−α) × prev
+		 * 1.0 = no smoothing. Default 0.3 matches RPi lux.cpp.
+		 */
+		float alpha = tuningData["lux_smoothing_alpha"].get<float>(0.3f);
+		context.configuration.agc.luxSmoothingAlpha =
+			std::clamp(alpha, 0.05f, 1.0f);
 	}
+	/* Store P85 and EV params to configuration for cross-module visibility */
+	context.configuration.agc.highlightP85Threshold = highlightP85Threshold_;
+	context.configuration.agc.highlightP85Strength = highlightP85Strength_;
+	context.configuration.agc.evBias = evBias_;
 
 	/*
 	 * y_target PWL table: maps lux → normalised brightness target [0,1].
@@ -238,6 +266,13 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		<< " gainThresholds=[" << gainReductionThreshold_
 		<< "," << gainBoostThreshold_ << "]";
 
+	/* Verify new parameters are loaded */
+	LOG(ISC_AGC, Debug)
+		<< "AGC init extras: evBias=" << evBias_
+		<< " p85thresh=" << highlightP85Threshold_
+		<< " zoneStrength=" << zoneMeteringStrength_
+		<< " targetBrightness=" << targetBrightness_;
+
 	return 0;
 }
 
@@ -264,18 +299,51 @@ int Agc::configure(IPAContext &context,
 	 */
 	context.activeState.agc.exposure = agc.defaultExposure;
 	context.activeState.agc.analogueGain = agc.minAnalogueGain;
+	context.activeState.agc.zoneRatio = 1.0f;
+
+	/*
+	 * Re-read ev_default and zone_metering_strength from the tuning YAML
+	 * in configure() so they take effect on every reconfigure, not just
+	 * at init() time.  configure() is called after YAML is fully parsed
+	 * so this is the most reliable place to read these values.
+	 * This also fixes the init()-vs-configure() race that caused evBias_
+	 * to always read as 0.0 (the init() path was compiled but the YAML
+	 * object pointer it received was not yet valid on some call paths).
+	 */
+	evBias_ = std::clamp(
+		agc.evBias,
+		-2.0f, 2.0f);
+	zoneMeteringStrength_ = std::clamp(
+		context.configuration.agc.highlightP85Threshold > 0.0f
+			? zoneMeteringStrength_
+			: 0.0f,
+		0.0f, 1.0f);
 
 	/* Initialise lux estimator reference from YAML — 0 means uncalibrated */
-	/* Seed to zero so processStats() uses the first measurement directly
-	 * rather than ramping from the arbitrary 400 lux indoor default. */
+	/*
+	 * Seed lux to 0.0 instead of 400.0.
+	 * 0.0 is the sentinel that processStats() uses to detect "first frame"
+	 * and seed directly from the raw estimate rather than smoothing from
+	 * the 400 fallback.  This eliminates the 400→49→400 oscillation seen
+	 * on the first 3 frames of every capture.
+	 * RPi equivalent: they persist last-known lux; we approximate by
+	 * seeding from the first real measurement.
+	 */
 	context.activeState.lux.lux = 0.0f;
 
 	/* Initialise CBC contrast gain to unity so AGC target is unmodified before first CBC cycle */
 	context.activeState.cbc.contrastGainLinear = 1.0f;
+	/* Initialise gamma feedback: 1.0 = no compression (identity LUT at start) */
+	context.activeState.gamma.compressionGain = 1.0f;
+	context.activeState.gamma.adaptiveCdfBoost = 0.0f;
+	gammaGainSmoothed_ = -1.0f; /* reset smoothing so seed triggers on first frame */
 
 	LOG(ISC_AGC, Debug)
 		<< "AGC configured: exposure=" << context.activeState.agc.exposure
-		<< " gain=" << context.activeState.agc.analogueGain;
+		<< " gain=" << context.activeState.agc.analogueGain
+		<< " evBias=" << evBias_
+		<< " p85thresh=" << highlightP85Threshold_
+		<< " targetBrightness=" << targetBrightness_;
 
 	return 0;
 }
@@ -383,7 +451,7 @@ void Agc::queueRequest(IPAContext &context,
 void Agc::process(IPAContext &context,
 		  const uint32_t frame,
 		  IPAFrameContext &frameContext,
-		  [[maybe_unused]] const mchp_isc_stat_buffer *stats,
+		  const mchp_isc_stat_buffer *stats,
 		  ControlList &metadata)
 {
 	auto &agcState = context.activeState.agc;
@@ -512,6 +580,58 @@ void Agc::process(IPAContext &context,
 
 	float currentLuminance = 0.299f * nR + 0.587f * nG + 0.114f * nB;
 
+	/*
+	 * Inter-quantile mean (IQM) scene metering.
+	 *
+	 * The WB-corrected BT.601 mean above is retained as currentLuminance
+	 * for the feedback loop (it must be stable). IQM provides a separate
+	 * mid-tone estimate that excludes the darkest iqmQlo fraction and the
+	 * brightest (1-iqmQhi) fraction of the luminance histogram.
+	 *
+	 * For a scene where 12% of pixels are blown out (L>250), the arithmetic
+	 * mean is pulled upward by those highlights. IQM(0.02, 0.98) ignores
+	 * the top 2% and gives a stable midtone reference:
+	 *   iqm = mean(pixels at P2 to P98)
+	 * The ratio iqm/currentLuminance < 1 for over-bright scenes → stored
+	 * as zoneRatio → scales effectiveTarget down → less exposure.
+	 *
+	 * Mirrors RPi agc_channel.cpp constraintComputeGain() approach
+	 * (BSD-2-Clause, Copyright Raspberry Pi Ltd).
+	 */
+	context.activeState.agc.zoneRatio = 1.0f;
+	if (stats && iqmQhi_ > iqmQlo_ && currentLuminance > 1.0f) {
+		float iqm = calculateInterQuantileMean(stats, iqmQlo_, iqmQhi_);
+		if (iqm > 0.0f) {
+			float ratio = iqm / currentLuminance;
+			context.activeState.agc.zoneRatio =
+				std::clamp(ratio, 0.30f, 1.0f);
+		}
+	}
+
+	/*
+	 * Highlight constraint: if the brightest highlightQhi_ fraction of
+	 * the luminance histogram exceeds highlightTarget_ (normalised 0-511),
+	 * clamp the effective target so the AGC reduces exposure until the
+	 * highlights fall to the target level.
+	 *
+	 * This is the "ConstraintHighlight" mode from the RPi IPA:
+	 *   newGain = targetY * hist.bins() / iqm(qLo, qHi)
+	 *   if newGain < gain: apply upper bound
+	 * For us: if top highlightQhi_% > highlightTarget_, reduce effectiveTarget.
+	 * Default: top 2% (P98-P100) should not exceed 70% of histogram max.
+	 */
+	if (stats && highlightQhi_ > 0.0f) {
+		float p_hi = calculateInterQuantileMean(stats,
+							1.0f - highlightQhi_,
+							1.0f);
+		float threshold = highlightTarget_ * kHistogramMax;
+		if (p_hi > threshold && p_hi > 0.0f) {
+			float hlScale = threshold / p_hi;
+			context.activeState.agc.zoneRatio =
+				std::min(context.activeState.agc.zoneRatio, hlScale);
+		}
+	}
+
 	/* Count frames from the first active stats delivery */
 	agcFrameCount_++;
 
@@ -564,10 +684,11 @@ void Agc::process(IPAContext &context,
 	 * pow(2,0)=1 is trivially known and transcendental functions are
 	 * expensive on the Cortex-A7 without an FPU pow instruction.
 	 */
-	float evScale = (agcState.exposureValue == 0.0f)
-				? 1.0f
-				: std::pow(2.0f, agcState.exposureValue);
-	float effectiveTarget = std::clamp(baseTarget * evScale,
+
+	float totalEv = evBias_ + agcState.exposureValue;
+	float evScale = (totalEv == 0.0f) ? 1.0f : std::pow(2.0f, totalEv);
+	float zoneScale = context.activeState.agc.zoneRatio;
+	float effectiveTarget = std::clamp(baseTarget * evScale * zoneScale,
 					   aeLuminanceFloor_, kHistogramMax);
 
 	/*
@@ -590,11 +711,125 @@ void Agc::process(IPAContext &context,
 		effectiveTarget = std::clamp(effectiveTarget / cbcGain,
 					     aeLuminanceFloor_, kHistogramMax);
 
+	/*
+	 * Gamma compression feedback: mirrors the cbcGain mechanism.
+	 *
+	 * The gamma LUT may compress highlights (compressionGain < 1.0)
+	 * via the Reinhard operator in computeLut().  Without feedback,
+	 * target_brightness would refer to a pre-gamma bin count that
+	 * maps to a post-gamma output LOWER than intended.
+	 *
+	 * By dividing effectiveTarget by compressionGain we make the AGC
+	 * expose to a proportionally HIGHER pre-gamma level so the
+	 * post-gamma output hits the intended brightness.
+	 *
+	 * compressionGain is initialised to 1.0 (identity / no compression)
+	 * and updated by Gamma::process() every frame.
+	 * Only applied when compression is active (gain < 1.0).
+	 */
+	/*
+	 * Gamma compression feedback: intentionally DISABLED.
+	 *
+	 * When the Reinhard linear-space shoulder (tone_rolloff_start < 1.0)
+	 * is active in gamma.cpp, it compresses bright pixels to reduce the
+	 * white cast on overexposed scenes.  Compensating for this in the
+	 * AGC (dividing effectiveTarget by compressionGain) would undo the
+	 * compression by increasing exposure — defeating the purpose.
+	 *
+	 * Keeping gammaGain = 1.0 lets Reinhard darken highlights while the
+	 * AGC exposes normally for the pre-gamma histogram mean.  CBC
+	 * contrast_strength then stretches the resulting narrower
+	 * post-gamma distribution, restoring vivid colours and mid-tone
+	 * contrast — equivalent to a photographic S-curve.
+	 *
+	 * gammaGainSmoothed_ is retained for potential future use (e.g.
+	 * a user-selectable "scientific" mode that compensates for the LUT).
+	 */
+	gammaGainSmoothed_ = context.activeState.gamma.compressionGain;
+
+	/*
+	 * Highlight metering: the full-frame histogram mean can stay near
+	 * target even when a bright object (lamp, window) is in the scene,
+	 * because the dark background dominates the average.  The AGC then
+	 * declares convergence at high gain while the bright object is
+	 * already in the roll-off / near-clipping region.
+	 *
+	 * Mitigation: count pixels in the top 22% of the histogram
+	 * (bins 400-511, ~800-1023 DN).  If more than 2% of pixels are
+	 * there, the scene has significant highlights that need protecting.
+	 * Scale effectiveTarget down proportionally so the control loop
+	 * reduces gain until highlights move into the mid-tone region.
+	 *
+	 * Formula:  targetScale = 1 - 3 * clamp(highlightFrac/0.10, 0,1)
+	 *   highlightFrac=0.02 → scale=0.40  (moderate protection)
+	 *   highlightFrac=0.10 → scale=0.40  (clamped at 40% target)
+	 * This keeps effectiveTarget ≥ aeLuminanceFloor_.
+	 */
+	/*
+	 * Highlight-weighted metering: the hist_max value tells us the
+	 * highest occupied histogram bin across all channels, even if only
+	 * a tiny fraction of pixels are there (e.g. a lamp in a dark room).
+	 *
+	 * If hist_max exceeds kHiThreshold (bin 350, ~700 DN, ~68% of
+	 * sensor range), bright highlights are present that the mean-based
+	 * target would not account for.  Scale effectiveTarget down so the
+	 * AGC reduces gain until those highlights fall back to mid-tone.
+	 *
+	 * Scale formula (linear):
+	 *   bin 350 → scale = 1.0  (just entering protection zone)
+	 *   bin 430 → scale = 0.60 (moderate highlights, e.g. lamp)
+	 *   bin 511 → scale = 0.32 (full saturation / near-clip)
+	 *
+	 * The scale keeps effectiveTarget ≥ aeLuminanceFloor_ to avoid
+	 * zero-gain oscillation in extreme backlit scenes.
+	 */
+	/*
+	 * P85 highlight metering: when 85% of pixels exceed the configured
+	 * threshold the scene is globally over-bright. Scale effectiveTarget
+	 * down proportionally so the AGC reduces exposure until P85 falls
+	 * to the threshold, preserving headroom for highlights.
+	 */
+	float p85Scale = 1.0f;
+	if (stats && highlightP85Threshold_ > 0.0f) {
+		float p85Bin = calculateHistogramPercentile(stats, 0.85f);
+		float threshBin = highlightP85Threshold_ * kHistogramMax;
+		if (p85Bin > threshBin && p85Bin > 0.0f) {
+			float rawScale = threshBin / p85Bin;
+			/* Blend with strength so 0=disabled, 1=full correction */
+			p85Scale = 1.0f + (rawScale - 1.0f) *
+						  std::clamp(highlightP85Strength_, 0.0f, 1.0f);
+			effectiveTarget = std::clamp(effectiveTarget * p85Scale,
+						     aeLuminanceFloor_,
+						     kHistogramMax);
+		}
+	}
+
+	/* Legacy hist_max highlight protection (single bright object) */
+	float highlightFrac = frameContext.scene.clipping;
+	if (stats) {
+		static constexpr unsigned int kHiThreshold = 350;
+		unsigned int maxBin = 0;
+		for (unsigned int ch = 0; ch < 4; ch++) {
+			if (stats->hist[ch].hist_max > maxBin)
+				maxBin = stats->hist[ch].hist_max;
+		}
+		if (maxBin > kHiThreshold) {
+			float excess = static_cast<float>(maxBin - kHiThreshold) /
+				       static_cast<float>(kHistBins - 1 - kHiThreshold);
+			float targetScale = std::clamp(1.0f - 0.68f * excess, 0.32f, 1.0f);
+			effectiveTarget = std::clamp(effectiveTarget * targetScale,
+						     aeLuminanceFloor_, kHistogramMax);
+			/* Repurpose highlightFrac for the log line */
+			highlightFrac = excess;
+		}
+	}
+
 	LOG(ISC_AGC, Debug)
 		<< "AGC target: lux=" << currentLux
 		<< " baseTarget=" << baseTarget
 		<< " evScale=" << evScale
 		<< " cbcGain=" << cbcGain
+		<< " highlightFrac=" << highlightFrac
 		<< " effectiveTarget=" << effectiveTarget;
 
 	/*

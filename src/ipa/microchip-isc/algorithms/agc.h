@@ -115,6 +115,20 @@ private:
 	/* ---- Runtime state — NOT tuning params, kept zero-initialised ---- */
 	unsigned int aeLockCount_ = 0;
 	unsigned int agcFrameCount_ = 0;
+	/* IIR-smoothed gamma compression gain for AGC feedback.
+	 * -1.0 = not yet seeded (first frame will seed directly). */
+	float gammaGainSmoothed_ = -1.0f;
+	/* P85 highlight-protection metering */
+	float highlightP85Threshold_ = 0.55f;  // fraction of HIST_MAX [0,1]
+	float highlightP85Strength_  = 1.0f;
+	float evBias_ = 0.0f;  // YAML default EV bias
+	float zoneMeteringStrength_ = 0.7f;
+	/* IQM quantile range for midtone metering */
+	float iqmQlo_ = 0.02f;
+	float iqmQhi_ = 0.98f;
+	/* Highlight constraint: top fraction and normalised target */
+	float highlightQhi_ = 0.02f;
+	float highlightTarget_ = 0.70f; // normalised highlight target [0,1]
 };
 
 } /* namespace ipa::microchip_isc */
