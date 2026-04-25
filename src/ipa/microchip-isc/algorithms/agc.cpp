@@ -266,7 +266,9 @@ int Agc::configure(IPAContext &context,
 	context.activeState.agc.analogueGain = agc.minAnalogueGain;
 
 	/* Initialise lux estimator reference from YAML — 0 means uncalibrated */
-	context.activeState.lux.lux = 400.0f;
+	/* Seed to zero so processStats() uses the first measurement directly
+	 * rather than ramping from the arbitrary 400 lux indoor default. */
+	context.activeState.lux.lux = 0.0f;
 
 	/* Initialise CBC contrast gain to unity so AGC target is unmodified before first CBC cycle */
 	context.activeState.cbc.contrastGainLinear = 1.0f;

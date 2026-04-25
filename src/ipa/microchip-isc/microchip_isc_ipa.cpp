@@ -35,6 +35,10 @@
 #include "ipa_context.h"
 #include "isc_controls.h"
 
+/* Lux value used when lux_reference is not calibrated in the YAML.
+ * 400 lux is a typical indoor office illuminance. */
+static constexpr float kLuxUncalibrated = 400.0f;
+
 namespace libcamera {
 
 LOG_DEFINE_CATEGORY(ISC_IPA)
@@ -794,9 +798,16 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		 * target_brightness, lux_reference.reference_Y, y_target) are
 		 * calibrated against these pedestal-subtracted (net) means.
 		 */
+		/*
+		 * Gain-aware pedestal: IMX219 applies analogue gain to the
+		 * full pixel (signal + pedestal). After DPC subtracts a
+		 * fixed pedestal, a residual of pedestal*(gain-1) remains.
+		 * Scale by actual gain so the net histogram = true signal.
+		 */
+		float analogueGain = std::max(1.0f, frameContext.agc.analogueGain);
 		float pedestal = static_cast<float>(
-					 context_.configuration.sensor.blackLevel) /
-				 2.0f;
+					 context_.configuration.sensor.blackLevel) *
+				 analogueGain / 2.0f;
 		for (unsigned int ch = 0; ch < 4; ch++) {
 			float raw = calculateChannelMean(stats, ch);
 			hist.channelMeans[ch] = std::max(0.0f, raw - pedestal);
@@ -848,7 +859,7 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		/*
 		 * Estimate scene lux from current exposure, gain, and histogram
 		 * Y relative to a calibrated reference point in imx219.yaml.
-		 * Mirrors the RPi lux.cpp algorithm (BSD-2-Clause):
+		 * Lux is estimated from the proportionality:
 		 *   lux = (refExposure/curExposure) * (refGain/curGain)
 		 *         * (curY/refY) * refLux
 		 *
@@ -865,7 +876,7 @@ void IPAMicrochipISC::processStats(unsigned int request,
 			float lineDurUs =
 				context_.configuration.sensor.lineDuration
 					.get<std::micro>();
-			context_.activeState.lux.lux = estimateLux(
+			float rawLux = estimateLux(
 				frameContext.scene.luminance,
 				frameContext.agc.exposure,
 				frameContext.agc.analogueGain,
@@ -874,13 +885,35 @@ void IPAMicrochipISC::processStats(unsigned int request,
 				luxCfg.refLuxExposureUs,
 				luxCfg.refLuxGain,
 				luxCfg.refLux);
+
+			/*
+			 * IIR smoothing: smoothed = alpha * raw + (1-alpha) * prev.
+			 * Seed directly from the first measurement (lux == 0 or
+			 * the uncalibrated fallback) to avoid the AGC spending
+			 * several frames converging away from an arbitrary default.
+			 */
+			float prev = context_.activeState.lux.lux;
+			float alpha = luxCfg.luxSmoothingAlpha;
+			bool seedDirectly = (prev <= 0.0f || prev == kLuxUncalibrated);
+			if (seedDirectly)
+				context_.activeState.lux.lux = rawLux;
+			else
+				context_.activeState.lux.lux =
+					alpha * rawLux + (1.0f - alpha) * prev;
+			/* Clamp: never allow lux to drop below 1 (avoids
+			 * extreme y_target fractions in dim conditions) */
+			context_.activeState.lux.lux =
+				std::max(1.0f, context_.activeState.lux.lux);
+
 			LOG(ISC_IPA, Debug)
-				<< "Lux estimate: " << context_.activeState.lux.lux
+				<< "Lux raw=" << rawLux
+				<< " smoothed=" << context_.activeState.lux.lux
+				<< " alpha=" << alpha
 				<< " (Y=" << frameContext.scene.luminance
 				<< " exp=" << frameContext.agc.exposure
 				<< " gain=" << frameContext.agc.analogueGain << ")";
 		} else {
-			context_.activeState.lux.lux = 400.0f;
+			context_.activeState.lux.lux = kLuxUncalibrated;
 		}
 	} else {
 		frameContext.scene.luminance = 0.0f;
@@ -888,7 +921,7 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		frameContext.scene.clipping = 0.0f;
 		frameContext.scene.isDark = true;
 		frameContext.scene.isHighContrast = false;
-		context_.activeState.lux.lux = 400.0f;
+		context_.activeState.lux.lux = kLuxUncalibrated;
 	}
 
 	ControlList metadata(controls::controls);
@@ -971,11 +1004,29 @@ void IPAMicrochipISC::setIspControls()
 	ctrls.set(V4L2_CID_ISC_WB_GB_GAIN,
 		  static_cast<int32_t>(std::round(awb.gbGain * kWbGainScale)));
 
-	/* AWB offsets */
-	ctrls.set(V4L2_CID_ISC_WB_R_OFFSET, awb.rOffset);
-	ctrls.set(V4L2_CID_ISC_WB_B_OFFSET, awb.bOffset);
-	ctrls.set(V4L2_CID_ISC_WB_GR_OFFSET, awb.grOffset);
-	ctrls.set(V4L2_CID_ISC_WB_GB_OFFSET, awb.gbOffset);
+	/*
+	 * AWB offsets with gain-aware pedestal correction.
+	 *
+	 * The IMX219 analogue gain amplifies the full pixel including
+	 * the black-level pedestal: pixel = (signal + pedestal) × gain.
+	 * The ISC DPC subtracts a FIXED pedestal (not gain-scaled), leaving
+	 * a residual of pedestal × (gain - 1) in every pixel.
+	 *
+	 * The WB offset registers are applied PRE-gain (hardware subtracts
+	 * offset before the WB multiplication), so adding the residual
+	 * pedestal as a negative offset removes it from the signal path.
+	 *
+	 * Without this, at gain=5×: floor = pedestal×4 = 256 DN → L≈164/255
+	 * floor that no target_brightness adjustment can overcome.
+	 */
+	float sensorGain = std::max(1.0f, context_.activeState.agc.analogueGain);
+	int32_t pedestalResidual = static_cast<int32_t>(
+		std::round(context_.configuration.sensor.blackLevel * (sensorGain - 1.0f)));
+
+	ctrls.set(V4L2_CID_ISC_WB_R_OFFSET, awb.rOffset - pedestalResidual);
+	ctrls.set(V4L2_CID_ISC_WB_B_OFFSET, awb.bOffset - pedestalResidual);
+	ctrls.set(V4L2_CID_ISC_WB_GR_OFFSET, awb.grOffset - pedestalResidual);
+	ctrls.set(V4L2_CID_ISC_WB_GB_OFFSET, awb.gbOffset - pedestalResidual);
 
 	/* CCM: convert float (1.0=unity) to hardware scale (256=1.0x) */
 	const auto &ccm = context_.activeState.ccm;
