@@ -43,6 +43,10 @@ struct IPASessionConfiguration {
 		float refLuxExposureUs = 0.0f; /* exposure time in µs at reference point */
 		float refLuxGain = 1.0f; /* analogue gain at reference point */
 		float refLux = 400.0f; /* measured lux at reference point */
+		float luxSmoothingAlpha = 0.3f; /* IIR alpha for lux estimate smoothing */
+		float highlightP85Threshold = 0.55f; /* P85 highlight metering threshold */
+		float highlightP85Strength = 1.0f; /* P85 correction strength */
+		float evBias = 0.0f; /* YAML default EV bias, -0.5 = mobile-like */
 	} agc;
 
 	struct {
@@ -131,6 +135,8 @@ struct IPAActiveState {
 		 * is actively converging, preventing the two loops from fighting.
 		 */
 		bool aeConverged = false;
+		/* Zone metering scale: <1 reduces exposure for bright scenes. */
+		float zoneRatio = 1.0f;
 	} agc;
 
 	struct {
@@ -278,6 +284,10 @@ struct IPAActiveState {
 		 * prevent sending an all-zero table on the first frame.
 		 */
 		bool lutValid;
+		/* Gamma LUT compression vs pure gamma 2.2. 1.0=identity. */
+		float compressionGain;
+		/* Adaptive CDF boost applied this frame (0=none). */
+		float adaptiveCdfBoost;
 	} gamma;
 };
 
