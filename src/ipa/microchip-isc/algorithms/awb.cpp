@@ -485,16 +485,50 @@ void Awb::process(IPAContext &context,
 			&context.configuration.sensor.ctColorMatrix);
 
 		/*
-		 * Multiplicative grey-world correction for post-WB histogram.
-		 * target = current_gain * (meanGR / channel_mean)
-		 *        = current_gain * (GR_raw / (current_gain * ch_raw))
-		 *        = GR_raw / ch_raw = K  (constant regardless of gain)
-		 * Converges monotonically to K. A direct ratio gives sqrt(K).
+		 * CT-based gain lookup: interpolate the calibrated R/B gains
+		 * from reference_gains_table at the current estimated CT.
+		 *
+		 * This mirrors the RPi IPA (awb.cpp lines 157-161):
+		 *   gainR = 1.0 / ctR.eval(temperatureK)
+		 *   gainB = 1.0 / ctB.eval(temperatureK)
+		 * and libipa/awb_grey.cpp gainsFromColourTemperature():
+		 *   gains = colourGainCurve_->getInterpolated(colourTemperature)
+		 *
+		 * WHY NOT pure grey-world (GR/B ratio):
+		 *   For a NoIR sensor under warm illumination (4450K), the B
+		 *   channel has inherently low signal (B_net ≈ 10-25 bins at
+		 *   the correct exposure).  The SAMA7G5 histogram tap is
+		 *   pre-WB pre-demosaic (ISC_HIS_CFG_RAR), so the raw B mean
+		 *   approaches the noise floor at reduced exposure settings.
+		 *   Grey-world then computes bGain = GR/B ≈ 3-5× — far above
+		 *   the calibrated 2.0× — creating an AE/AWB feedback loop:
+		 *   AE reduces exposure → B drops → bGain spikes → output
+		 *   stays bright → AE cannot reach the target luminance.
+		 *
+		 *   CT-based gains from the calibration table are computed at
+		 *   a specific illuminant level and are STABLE regardless of
+		 *   sensor exposure — they represent the physical R/B channel
+		 *   imbalance for a given scene colour temperature, not the
+		 *   momentary histogram ratio which is exposure-dependent.
+		 *
+		 * If no reference_gains_table is available, fall back to
+		 * grey-world (consistent with libipa/awb_grey.cpp behaviour).
 		 */
-		float rGain = std::clamp(awb.rGain * (meanGR / std::max(meanR, 1.0f)),
-					 gainMin_, gainMax_);
-		float bGain = std::clamp(awb.bGain * (meanGR / std::max(meanB, 1.0f)),
-					 gainMin_, gainMax_);
+		float targetR, targetB;
+		if (!refGainTable_.empty()) {
+			auto [refR, refB] = interpolateRefGains(
+				static_cast<float>(awb.ct > 0 ? awb.ct
+							      : defaultCt_));
+			targetR = refR;
+			targetB = refB;
+		} else {
+			/* Grey-world fallback when no calibration table */
+			targetR = meanGR / std::max(meanR, 1.0f);
+			targetB = meanGR / std::max(meanB, 1.0f);
+		}
+
+		float rGain = std::clamp(targetR, gainMin_, gainMax_);
+		float bGain = std::clamp(targetB, gainMin_, gainMax_);
 		float grGain = 1.0f;
 		float gbGain = std::clamp(awb.gbGain * (meanGR / std::max(meanGB, 1.0f)),
 					  gbGainMin_, gbGainMax_);
@@ -618,7 +652,6 @@ void Awb::process(IPAContext &context,
 			<< "Scene too dark for AWB (lum=" << lumApplied
 			<< " < threshold=" << darkSceneThreshold_
 			<< "), CT frozen at " << awb.ct << " K";
-
 
 	/* Publish convergence state for CCM to pace its own smoothing */
 	awb.awbConverged = awbStable_;
