@@ -31,7 +31,7 @@ algorithms:
         # Minimum scene luminance (histogram units 0-511) below which AWB
         # updates are suppressed. Near-dark scenes produce unreliable
         # channel means due to ISC 8-bit histogram quantization.
-        min_scene_luminance: 24
+        min_scene_luminance: 2
 
       color_temperature:
         min: 1800
@@ -60,19 +60,20 @@ algorithms:
       # any illuminant (indoor tungsten → outdoor daylight → overcast sky)
       # without waiting for the AWB loop to converge.
       #
-      # Calibrate: point at an 18% grey card per illuminant, wait for
-      # AwbLocked=true in metadata, read ColourGains. Values below are
-      # approximate for IMX219 + standard IR-cut lens.
+      # Recalibrated 2026-04-25: matched against mobile reference at CT=4745K.
+      # Measured correction: R×0.952 (−4.8%), B×1.096 (+9.6%) vs previous.
+      # Applied proportionally across all CT entries.
+      # Root cause: NoIR sensor B channel depleted by IR, bGain too low.
       reference_gains_table:
-        - { ct: 2500, r: 4.20, b: 1.05 }   # Candlelight / deep tungsten
-        - { ct: 3000, r: 3.80, b: 1.20 }   # Tungsten lamp
-        - { ct: 3500, r: 3.40, b: 1.40 }   # Halogen / warm LED
-        - { ct: 4000, r: 3.00, b: 1.65 }   # Cool fluorescent / neutral LED
-        - { ct: 4500, r: 2.80, b: 1.85 }   # Midday window light
-        - { ct: 5500, r: 2.55, b: 2.10 }   # Daylight / noon sun
-        - { ct: 6500, r: 2.30, b: 2.40 }   # D65 / overcast
-        - { ct: 7500, r: 2.10, b: 2.75 }   # Heavily overcast / open shade
-        - { ct: 9000, r: 1.85, b: 3.20 }   # Blue sky / deep shade
+        - { ct: 2500, r: 2.191, b: 0.630 }  # Candlelight / deep tungsten
+        - { ct: 3000, r: 1.982, b: 0.720 }  # Tungsten lamp
+        - { ct: 3500, r: 1.773, b: 0.840 }  # Halogen / warm LED
+        - { ct: 4000, r: 1.565, b: 0.990 }  # Cool fluorescent / neutral LED
+        - { ct: 4500, r: 1.461, b: 1.110 }  # Midday window light
+        - { ct: 5500, r: 1.330, b: 1.260 }  # Daylight / noon sun
+        - { ct: 6500, r: 1.200, b: 1.441 }  # D65 / overcast
+        - { ct: 7500, r: 1.095, b: 1.650 }  # Heavily overcast / open shade
+        - { ct: 9000, r: 0.965, b: 1.920 }  # Blue sky / deep shade
 
       # Scalar fallback used only when reference_gains_table is absent.
       reference_gains:
@@ -88,7 +89,23 @@ algorithms:
       ct_color_matrix: [0.4900, 0.3100, 0.1200, 0.2200, 0.6600, 0.0700, 0.0200, 0.1000, 0.8700]
 
   - Agc:
-      target_brightness: 128
+      # Calibrated 2026-04-25: SAMA7G5EK + IMX219 NoIR, 2370 lux, 4500K lightbox
+      # Spyder Checkr 24 grey ramp side filling frame, gain=1.0, exposure=16433us
+      # Calibrated 2026-04-25: SAMA7G5EK + IMX219 NoIR, 2370 lux, 4500K.
+      # 18% grey card → L=117/255. WB factor=1.1481, net_18pct=60 bins.
+      # WB-normalised target = 60 × 1.1481 = 68.9 → 69
+      target_brightness: 69
+      # Calibrated 2026-04-25: gain=1.0 at 2370 lux, exposure=16433us
+      lux_reference:
+        reference_Y: 60.50
+        reference_exposure_us: 16433.0
+        reference_gain: 1.0
+        reference_lux: 2370.0
+      # y_target: lux → WB-normalised bins target. Anchor=69/511=0.1351 at 2370 lux.
+      y_target: [2370, 0.1351, 1000, 0.0878, 615, 0.0688, 300, 0.0481, 148, 0.0338, 50, 0.0196, 10, 0.0088, 1, 0.0050]
+      # IIR smoothing for lux estimate: smoothed = alpha*raw + (1-alpha)*prev
+      # 0.3 = RPi default (3-4 frame settling). 1.0 = no smoothing.
+      lux_smoothing_alpha: 0.30
       # Fraction of clipped pixels that triggers highlight anti-windup.
       # When clipping exceeds this threshold the AGC is prevented from
       # increasing exposure, guarding against oscillation in outdoor
@@ -97,7 +114,34 @@ algorithms:
       clip_threshold: 0.02
       # Minimum luminance (histogram units 0-511) for AE stability check.
       # Below this floor the loop is treated as unstable regardless of error.
-      ae_luminance_floor: 0.5
+      ae_luminance_floor: 3.0
+      # P85 highlight-protection metering (mobile-style AE).
+      # Detects over-bright scenes (flat histogram) and reduces exposure
+      # so P85 of the luminance histogram stays at or below the threshold.
+      # This creates headroom for dynamic range expansion.
+      # Expected: P90-P10 range improves from 40 -> 100-130.
+      #   threshold: 0.55 = 55% of 511 bins (~bin 281, L=170/255 post-gamma)
+      #   strength:  1.0  = full correction
+      highlight_p85_threshold: 0.35
+      highlight_p85_strength: 1.0
+      # EV bias: -0.5 stops under-exposes by design, like mobile.
+      # Combined with P85 protection this gives mobile-like metering.
+      ev_default: -0.5
+      # Zone metering: highlight-avoidance weight strength [0-1].
+      # 0=uniform mean (traditional), 1=full highlight de-emphasis (mobile).
+      # 0.7 gives natural indoor exposure matching mobile highlight AE.
+      zone_metering_strength: 0.50
+      # Inter-quantile mean AE metering range [qLo, qHi].
+      # Ignores the darkest qLo fraction and brightest (1-qHi) fraction.
+      # 0.02/0.98 = exclude worst 2% shadows and 2% highlights.
+      ae_iqm_q_lo: 0.02
+      ae_iqm_q_hi: 0.98
+      # Highlight constraint: clamp gain when top ae_highlight_q_hi
+      # fraction of luminance exceeds ae_highlight_target * HIST_MAX.
+      # Mirrors RPi ConstraintHighlight mode.
+      ae_highlight_q_hi: 0.02
+      ae_highlight_target: 0.70
+
       # Mains flicker avoidance: set to 50 or 60 to round shutter to the
       # nearest multiple of the mains half-period. 0 = disabled (outdoor/DC).
       flicker_hz: 0
@@ -128,11 +172,15 @@ algorithms:
 
   - Cbc:
       # Contrast enhancement strength (0=none, 1=full histogram stretch).
-      # Lower values give subtle enhancement; 0.4 works well for outdoor scenes.
-      contrast_strength: 0.4
+      # 0.30 closes the AGC/CBC feedback loop correctly: the AGC reduces
+      # its raw target by cbcGain so after CBC stretches it back up, the
+      # final output hits the intended brightness. With 0.0 the AGC
+      # underexposes on dim scenes because the compensating boost never happens.
+      contrast_strength: 0.25
       # P5-to-P95 spread target as a fraction of the histogram range.
-      # When the scene spread is below this, contrast is boosted.
-      target_spread: 0.65
+      # 0.45 is conservative — avoids over-stretching flat indoor scenes
+      # while still giving a noticeable contrast lift on grey/overcast shots.
+      target_spread: 0.50
       # Temporal smoothing [0-1]. Higher values reduce flickering.
       # 0.65 is the minimum needed to prevent CBC brightness register flicker
       # when AGC and CBC both react to the same scene changes on successive
@@ -141,7 +189,7 @@ algorithms:
       smoothing_factor: 0.65
       # Default saturation (0-100, 16=unity on SAMA7G5 CBHS).
       # Keep neutral here so RGB and YUV paths start from a known-good baseline.
-      saturation: 16
+      saturation: 18
       # Default hue rotation in degrees (-180 to +180). 0 = no rotation.
       # Applied via V4L2_CID_HUE on SAMA7G5 (has_cbhs=true).
       hue: 0
@@ -158,7 +206,7 @@ algorithms:
       gamma: 2.2
       # Adaptive strength [0.0-1.0]. 0 = purely parametric, 1 = fully adaptive.
       # At 0.3 the exponent is nudged gently toward the target each frame.
-      strength: 0.3
+      strength: 0.0
       # Target post-gamma normalised mean luminance [0.0-1.0].
       # 0.45 ~ mid-grey on a 2.2-gamma display with 18%-grey card.
       target_output: 0.45
@@ -166,11 +214,20 @@ algorithms:
       smoothing_factor: 0.3
       # Histogram CDF blend strength [0.0-1.0].
       # 0.0 = pure power-law (no local adaptation).
-      # 0.2 = 20% histogram equalisation blended with 80% power-law.
-      #       Lifts flat/foggy histogram regions without over-processing
-      #       scenes that already use the full dynamic range.
+      # 0.25 = 25% histogram equalisation blended with 75% power-law.
+      #        Compresses bright bunched pixels (L=180-220) downward,
+      #        lifts shadow detail — gives mobile-like dynamic range
+      #        on scenes where the full histogram is not used.
       # 1.0 = full histogram equalisation (maximum local contrast).
-      cdf_strength: 0.2
+      cdf_strength: 0.08
+      # Scene-adaptive CDF boost.
+      # Automatically increases CDF blend strength when scene spread is low
+      # (flat/over-bright scene). Stretches compressed histogram to full range.
+      #   trigger:   0.25 = boost when P5-P95 spread < 25% of histogram
+      #   max_boost: 0.45 = maximum additional CDF strength to add
+      # With base cdf_strength=0.10 and boost 0.45: effective up to 0.55
+      adaptive_cdf_trigger: 0.25
+      adaptive_cdf_max_boost: 0.45
       # Normalised luminance floor below which adaptive gamma update is skipped.
       dark_scene_threshold: 0.01
       # Normalised input breakpoint for bipartite linear toe (SAMA7G5 only).
@@ -178,11 +235,13 @@ algorithms:
       # entry boundary; misalignment produces a visible shadow step artefact.
       # 0.0313 = 32/1023 (entry-2 boundary) is the recommended value.
       toe_input: 0.0313
-      # Normalised output level above which highlight roll-off is applied.
-      # Above this point the curve compresses exponentially toward white,
-      # preventing burned-out highlights in outdoor scenes.
-      # 1.0 = disabled. 0.85 is a good starting point for outdoor shooting.
-      tone_rolloff_start: 0.85
+      # Reinhard extended white-point (tone_rolloff_start = W in y*(1+y/W^2)/(1+y)).
+      # Controls where highlights start compressing:
+      #   0.75 = aggressive (mobile-like, ~L=190/255 maps to ~L=168)
+      #   0.85 = moderate  (outdoor default, less compression)
+      #   1.0  = disabled  (pure gamma 2.2, no tone mapping)
+      # Use 0.75 with cdf_strength=0.25 for mobile-like rendering.
+      tone_rolloff_start: 0.75
 
   - Ccm:
       # Temporal smoothing factor [0-1]. Higher values give more stable

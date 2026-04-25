@@ -321,13 +321,8 @@ int Agc::configure(IPAContext &context,
 
 	/* Initialise lux estimator reference from YAML — 0 means uncalibrated */
 	/*
-	 * Seed lux to 0.0 instead of 400.0.
-	 * 0.0 is the sentinel that processStats() uses to detect "first frame"
-	 * and seed directly from the raw estimate rather than smoothing from
-	 * the 400 fallback.  This eliminates the 400→49→400 oscillation seen
-	 * on the first 3 frames of every capture.
-	 * RPi equivalent: they persist last-known lux; we approximate by
-	 * seeding from the first real measurement.
+	 * Seed to zero so processStats() uses the first measurement directly
+	 * rather than ramping from the arbitrary indoor fallback.
 	 */
 	context.activeState.lux.lux = 0.0f;
 
