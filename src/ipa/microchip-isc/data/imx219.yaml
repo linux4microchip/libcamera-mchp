@@ -242,6 +242,10 @@ algorithms:
       #   1.0  = disabled  (pure gamma 2.2, no tone mapping)
       # Use 0.75 with cdf_strength=0.25 for mobile-like rendering.
       tone_rolloff_start: 0.75
+      # Shoulder slope compression factor [0.05, 1.0].
+      # The gamma derivative at rolloffStart is multiplied by this.
+      # Lower values compress highlights more aggressively.
+      tone_rolloff_slope: 0.35
 
   - Ccm:
       # Temporal smoothing factor [0-1]. Higher values give more stable
