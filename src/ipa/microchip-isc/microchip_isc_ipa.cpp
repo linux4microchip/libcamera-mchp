@@ -799,15 +799,24 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		 * calibrated against these pedestal-subtracted (net) means.
 		 */
 		/*
-		 * Gain-aware pedestal: IMX219 applies analogue gain to the
-		 * full pixel (signal + pedestal). After DPC subtracts a
-		 * fixed pedestal, a residual of pedestal*(gain-1) remains.
-		 * Scale by actual gain so the net histogram = true signal.
+		 * Pedestal subtraction.
+		 *
+		 * The IMX219 adds its black-level pedestal (64 DN) digitally
+		 * in the ADC output path — AFTER analogue gain is applied to
+		 * the photoelectron count.  The ISC histogram taps the raw
+		 * MIPI data before any ISC processing (pre-DPC, pre-WB), so
+		 * it sees: histogram_bin = (signal * gain + pedestal) / 2.
+		 *
+		 * The pedestal is therefore FIXED at blackLevel/2 bins
+		 * regardless of analogue gain.  Scaling by gain was wrong and
+		 * caused net=0 for all channels at high gain (>= gain 5×).
+		 *
+		 * Reference: CLAUDE.md "Bin conversion: bin = pixel >> 1
+		 * → IMX219 pedestal 64 DN = 32 histogram bins"
 		 */
-		float analogueGain = std::max(1.0f, frameContext.agc.analogueGain);
 		float pedestal = static_cast<float>(
-					 context_.configuration.sensor.blackLevel) *
-				 analogueGain / 2.0f;
+					 context_.configuration.sensor.blackLevel) /
+				 2.0f;
 		for (unsigned int ch = 0; ch < 4; ch++) {
 			float raw = calculateChannelMean(stats, ch);
 			hist.channelMeans[ch] = std::max(0.0f, raw - pedestal);
