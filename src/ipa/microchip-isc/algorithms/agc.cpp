@@ -8,7 +8,7 @@
 #include "agc.h"
 
 #include <algorithm>
-#include <cmath>
+#include <math.h>
 #include <vector>
 
 #include <libcamera/base/log.h>
@@ -100,6 +100,12 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		tuningData["ae_highlight_q_hi"].get<float>(highlightQhi_), 0.0f, 0.5f);
 	highlightTarget_ = std::clamp(
 		tuningData["ae_highlight_target"].get<float>(highlightTarget_), 0.1f, 1.0f);
+	sceneEvThreshold_ = std::clamp(
+		tuningData["scene_ev_threshold"].get<float>(sceneEvThreshold_), 0.1f, 1.0f);
+	sceneEvBias_ = std::clamp(
+		tuningData["scene_ev_bias"].get<float>(sceneEvBias_), -3.0f, 0.0f);
+	sceneBrightP10_ = std::clamp(
+		tuningData["scene_bright_p10"].get<float>(sceneBrightP10_), 1.0f, 400.0f);
 
 	if (tuningData.contains("convergence")) {
 		const YamlObject &conv = tuningData["convergence"];
@@ -331,7 +337,6 @@ int Agc::configure(IPAContext &context,
 	/* Initialise gamma feedback: 1.0 = no compression (identity LUT at start) */
 	context.activeState.gamma.compressionGain = 1.0f;
 	context.activeState.gamma.adaptiveCdfBoost = 0.0f;
-	gammaGainSmoothed_ = -1.0f; /* reset smoothing so seed triggers on first frame */
 
 	LOG(ISC_AGC, Debug)
 		<< "AGC configured: exposure=" << context.activeState.agc.exposure
@@ -566,7 +571,17 @@ void Agc::process(IPAContext &context,
 	float wbGB = (awb.gbGain > 0.0f) ? awb.gbGain : 1.0f;
 	float wbB = (awb.bGain > 0.0f) ? awb.bGain : 1.0f;
 
-	float minWb = std::max(std::min({ wbR, wbGR, wbGB, wbB }), 1.0f);
+	/*
+	 * Normalise all WB gains relative to the minimum (the highest-signal
+	 * channel, typically GR ≈ 1.0 after AWB converges).  The old
+	 * std::max(..., 1.0f) floor prevented normalisation whenever any
+	 * channel gain was below 1.0 — which is common during AWB startup —
+	 * biasing currentLuminance systematically low.  Guard against zero
+	 * only (to avoid divide-by-zero), not against below-unity values.
+	 */
+	float minWb = std::min({ wbR, wbGR, wbGB, wbB });
+	if (minWb < 1e-6f)
+		minWb = 1.0f;
 	float nR = std::min(meanR * (wbR / minWb), kHistogramMax);
 	float nGR = std::min(meanGR * (wbGR / minWb), kHistogramMax);
 	float nGB = std::min(meanGB * (wbGB / minWb), kHistogramMax);
@@ -680,7 +695,41 @@ void Agc::process(IPAContext &context,
 	 * expensive on the Cortex-A7 without an FPU pow instruction.
 	 */
 
-	float totalEv = evBias_ + agcState.exposureValue;
+	/*
+	 * Scene entropy-based automatic EV bias.
+	 *
+	 * Uniformly bright scenes (white walls, overcast sky, lit studio)
+	 * have low histogram entropy: nearly all pixels cluster at one
+	 * luminance level. The AGC correctly exposes for the mean, but the
+	 * result looks washed-out because there is no headroom for highlights.
+	 *
+	 * When entropy falls below scene_ev_threshold AND the luminance is
+	 * above 1.5× the metering target, the scene is globally over-bright.
+	 * Apply scene_ev_bias (default -1.5 stops) to under-expose and create
+	 * headroom for the gamma CDF stretch that follows.
+	 *
+	 * The combined effect with an aggressive CDF blend is equivalent to
+	 * the first pass of CLAHE: reduce exposure to avoid clipping, then
+	 * redistribute the histogram to fill the full output range.
+	 */
+	/*
+	 * Dual-condition scene classifier for flat/bright scenes.
+	 *
+	 * When P10 of the pre-gamma histogram exceeds scene_bright_p10 (few
+	 * shadow pixels) AND the normalised histogram entropy is below
+	 * scene_ev_threshold (compressed luminance distribution), the scene
+	 * is globally over-bright.  Apply scene_ev_bias stops of deliberate
+	 * under-exposure to create headroom for the CDF tone mapping.
+	 */
+	float sceneEvAdjust = 0.0f;
+	if (stats && !inStartup) {
+		float p10 = calculateHistogramPercentile(stats, 0.10f);
+		float entNorm = calculateHistogramEntropy(stats);
+		if ((p10 > sceneBrightP10_) && (entNorm < sceneEvThreshold_))
+			sceneEvAdjust = sceneEvBias_;
+	}
+
+	float totalEv = evBias_ + sceneEvAdjust + agcState.exposureValue;
 	float evScale = (totalEv == 0.0f) ? 1.0f : std::pow(2.0f, totalEv);
 	float zoneScale = context.activeState.agc.zoneRatio;
 	float effectiveTarget = std::clamp(baseTarget * evScale * zoneScale,
@@ -721,62 +770,6 @@ void Agc::process(IPAContext &context,
 	 * compressionGain is initialised to 1.0 (identity / no compression)
 	 * and updated by Gamma::process() every frame.
 	 * Only applied when compression is active (gain < 1.0).
-	 */
-	/*
-	 * Gamma compression feedback: intentionally DISABLED.
-	 *
-	 * When the Reinhard linear-space shoulder (tone_rolloff_start < 1.0)
-	 * is active in gamma.cpp, it compresses bright pixels to reduce the
-	 * white cast on overexposed scenes.  Compensating for this in the
-	 * AGC (dividing effectiveTarget by compressionGain) would undo the
-	 * compression by increasing exposure — defeating the purpose.
-	 *
-	 * Keeping gammaGain = 1.0 lets Reinhard darken highlights while the
-	 * AGC exposes normally for the pre-gamma histogram mean.  CBC
-	 * contrast_strength then stretches the resulting narrower
-	 * post-gamma distribution, restoring vivid colours and mid-tone
-	 * contrast — equivalent to a photographic S-curve.
-	 *
-	 * gammaGainSmoothed_ is retained for potential future use (e.g.
-	 * a user-selectable "scientific" mode that compensates for the LUT).
-	 */
-	gammaGainSmoothed_ = context.activeState.gamma.compressionGain;
-
-	/*
-	 * Highlight metering: the full-frame histogram mean can stay near
-	 * target even when a bright object (lamp, window) is in the scene,
-	 * because the dark background dominates the average.  The AGC then
-	 * declares convergence at high gain while the bright object is
-	 * already in the roll-off / near-clipping region.
-	 *
-	 * Mitigation: count pixels in the top 22% of the histogram
-	 * (bins 400-511, ~800-1023 DN).  If more than 2% of pixels are
-	 * there, the scene has significant highlights that need protecting.
-	 * Scale effectiveTarget down proportionally so the control loop
-	 * reduces gain until highlights move into the mid-tone region.
-	 *
-	 * Formula:  targetScale = 1 - 3 * clamp(highlightFrac/0.10, 0,1)
-	 *   highlightFrac=0.02 → scale=0.40  (moderate protection)
-	 *   highlightFrac=0.10 → scale=0.40  (clamped at 40% target)
-	 * This keeps effectiveTarget ≥ aeLuminanceFloor_.
-	 */
-	/*
-	 * Highlight-weighted metering: the hist_max value tells us the
-	 * highest occupied histogram bin across all channels, even if only
-	 * a tiny fraction of pixels are there (e.g. a lamp in a dark room).
-	 *
-	 * If hist_max exceeds kHiThreshold (bin 350, ~700 DN, ~68% of
-	 * sensor range), bright highlights are present that the mean-based
-	 * target would not account for.  Scale effectiveTarget down so the
-	 * AGC reduces gain until those highlights fall back to mid-tone.
-	 *
-	 * Scale formula (linear):
-	 *   bin 350 → scale = 1.0  (just entering protection zone)
-	 *   bin 430 → scale = 0.60 (moderate highlights, e.g. lamp)
-	 *   bin 511 → scale = 0.32 (full saturation / near-clip)
-	 *
-	 * The scale keeps effectiveTarget ≥ aeLuminanceFloor_ to avoid
-	 * zero-gain oscillation in extreme backlit scenes.
 	 */
 	/*
 	 * P85 highlight metering: when 85% of pixels exceed the configured

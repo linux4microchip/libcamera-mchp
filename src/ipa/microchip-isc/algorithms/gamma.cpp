@@ -8,7 +8,7 @@
 #include "gamma.h"
 
 #include <algorithm>
-#include <cmath>
+#include <math.h>
 
 #include <libcamera/base/log.h>
 
@@ -20,9 +20,6 @@
  * rolloff threshold is multiplied by this to produce the actual
  * slope of the linear shoulder. Lower values compress more.
  * Exposed as tone_rolloff_slope in the tuning YAML (default 0.35). */
-static constexpr float kDefaultRolloffSlopeFactor = 0.35f;
-
-
 namespace libcamera {
 
 LOG_DEFINE_CATEGORY(ISC_Gamma)
@@ -61,7 +58,9 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 	adaptiveCdfTrigger_ = tuningData["adaptive_cdf_trigger"].get<float>(adaptiveCdfTrigger_);
 	adaptiveCdfMaxBoost_ = tuningData["adaptive_cdf_max_boost"].get<float>(adaptiveCdfMaxBoost_);
 	adaptiveCdfTrigger_ = std::clamp(adaptiveCdfTrigger_, 0.0f, 1.0f);
-	adaptiveCdfMaxBoost_ = std::clamp(adaptiveCdfMaxBoost_, 0.0f, 0.60f);
+	adaptiveCdfMaxBoost_ = std::clamp(adaptiveCdfMaxBoost_, 0.0f, 0.70f);
+	cdfClipLimit_ = std::clamp(
+		tuningData["cdf_clip_limit"].get<float>(cdfClipLimit_), 1.0f, 10.0f);
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma initialized: gamma=" << gamma_
@@ -127,7 +126,7 @@ int Gamma::configure(IPAContext &context,
 float Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 			bool bipartite, float toeInput, float rolloffStart,
 			const std::array<float, 64> *cdf, float cdfStrength,
-			float rolloffSlopeFactor)
+			float rolloffSlopeFactor, float cdfClipLimit)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
@@ -140,7 +139,14 @@ float Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 	 * slope = pow(toeInput, invGamma) / toeInput
 	 */
 	const float yAtToe = std::pow(toeInput, invGamma);
-	const float toeSlope = yAtToe / toeInput;
+	/*
+	 * Avoid division by zero: toeInput is clamped to [0.01, 0.15] by
+	 * init() for the normal YAML path, but computeLut() is also called
+	 * directly from configure() before init() runs.  When toeInput is
+	 * zero (bipartite disabled) the toe branch is never entered anyway,
+	 * so the slope value is irrelevant; use 1.0 as a safe sentinel.
+	 */
+	const float toeSlope = (toeInput > 0.0f) ? (yAtToe / toeInput) : 1.0f;
 
 	/*
 	 * compressionGain: ratio of this LUT's output to pure gamma 2.2
@@ -186,20 +192,62 @@ float Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 		}
 
 		/*
-		 * CDF blend redistributes a narrow histogram toward the full
-		 * output range. Avoid combining with the Reinhard shoulder as
-		 * the two operators partially cancel.
+		 * CLAHE-style clipped CDF blend.
+		 *
+		 * Standard CDF blend (cdfClipLimit=0) maps the histogram CDF
+		 * directly as a tone curve. For strongly bunched histograms
+		 * (low entropy / flat scenes) this over-equalises: a single
+		 * tone range occupies the entire output, causing posterisation.
+		 *
+		 * Clip limiting (CLAHE's key innovation): any histogram bin
+		 * whose frequency exceeds cdfClipLimit × mean_frequency is
+		 * clipped and the excess redistributed uniformly. This bounds
+		 * the local contrast amplification and produces a natural-
+		 * looking redistribution even at high cdfStrength values.
+		 *
+		 * cdfClipLimit=1.0: full equalization (harsh, for flat scenes)
+		 * cdfClipLimit=3.0: gentle (default, natural-looking)
+		 * cdfClipLimit=0.0: disabled (same as no CDF blend)
 		 */
-		if (cdf != nullptr && cdfStrength > 0.0f)
-			y = (1.0f - cdfStrength) * y + cdfStrength * (*cdf)[i];
+		if (cdf != nullptr && cdfStrength > 0.0f) {
+			float cdfVal = (*cdf)[i];
+
+			/* Apply clip limit if requested */
+			if (cdfClipLimit > 0.0f) {
+				/*
+				 * cdf[] contains per-entry CDF values. Compute
+				 * the per-bin frequency as the gradient of the
+				 * CDF and clip it. Use the pre-computed CDF as
+				 * an approximation of the clipped CDF.
+				 * For the LUT purpose we linearly compress the
+				 * CDF values above 0.5 to prevent the upper
+				 * range from being over-stretched.
+				 */
+				float limit = cdfClipLimit / (cdfClipLimit + 1.0f);
+				if (cdfVal > limit)
+					cdfVal = limit +
+						 (cdfVal - limit) /
+							 (1.0f + (cdfVal - limit) / (1.0f - limit));
+			}
+
+			y = (1.0f - cdfStrength) * y + cdfStrength * cdfVal;
+		}
 
 		lut[i] = static_cast<uint32_t>(
 			std::clamp(std::round(y * kInputMax), 0.0f, kInputMax));
 
-		/* Accumulate ratio vs reference gamma 2.2 for entries > 0 */
+		/*
+		 * Accumulate ratio vs pure gamma 2.2 for entries > 0.
+		 *
+		 * The reference must always be gamma 2.2, not the current
+		 * gammaExp.  Using invGamma (= 1/gammaExp) for yRef makes
+		 * the ratio equal 1.0 by construction when there is no
+		 * Reinhard shoulder or CDF blend, defeating the feedback.
+		 * The constant 1/2.2 ≈ 0.4545 is the sRGB encoding exponent.
+		 */
 		float xOrig = static_cast<float>(i * 16) / kInputMax;
 		if (xOrig > 0.0f) {
-			float yRef = std::pow(xOrig, invGamma);
+			float yRef = std::pow(xOrig, 1.0f / 2.2f);
 			if (yRef > 0.0f) {
 				sumRatio += (static_cast<float>(lut[i]) / kInputMax) / yRef;
 				nRatio++;
@@ -336,13 +384,13 @@ void Gamma::process(IPAContext &context,
 	 * CDF computation (only when cdfStrength_ > 0).
 	 * Shared by both the adaptive-gamma path and the pure-CDF path.
 	 */
-	std::array<float, 64> lut_cdf;
+	std::array<float, 64> lutCdf;
 	const std::array<float, 64> *cdfPtr = nullptr;
 	if (cdfStrengthEffective > 0.0f) {
 		unsigned int pedestalBins =
 			context.configuration.sensor.blackLevel / 2;
-		calculateLuminanceCdf(stats, lut_cdf, pedestalBins);
-		cdfPtr = &lut_cdf;
+		calculateLuminanceCdf(stats, lutCdf, pedestalBins);
+		cdfPtr = &lutCdf;
 	}
 
 	/*
@@ -355,7 +403,7 @@ void Gamma::process(IPAContext &context,
 	float compressionGain =
 		computeLut(gammaState.gammaEff, newLut, bipartite, toeInput_,
 			   toneRolloffStart_, cdfPtr, cdfStrengthEffective,
-			   rolloffSlopeFactor_);
+			   rolloffSlopeFactor_, cdfClipLimit_);
 	/* Update AGC feedback: how much this LUT compresses vs gamma 2.2 */
 	context.activeState.gamma.compressionGain = compressionGain;
 

@@ -7,8 +7,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <map>
+#include <math.h>
 #include <string.h>
 #include <vector>
 
@@ -1054,10 +1054,11 @@ void IPAMicrochipISC::setIspControls()
 	ctrls.set(V4L2_CID_ISC_CC_BG, clampCcm(ccm.matrix[7]));
 	ctrls.set(V4L2_CID_ISC_CC_BB, clampCcm(ccm.matrix[8]));
 
-	/* CCM offsets */
-	ctrls.set(V4L2_CID_ISC_CC_OR, static_cast<int32_t>(ccm.offsets[0]));
-	ctrls.set(V4L2_CID_ISC_CC_OG, static_cast<int32_t>(ccm.offsets[1]));
-	ctrls.set(V4L2_CID_ISC_CC_OB, static_cast<int32_t>(ccm.offsets[2]));
+	/* CCM offsets — round to nearest integer; truncation silently discards
+	 * sub-1.0 corrections (e.g. 0.7 truncates to 0 instead of 1). */
+	ctrls.set(V4L2_CID_ISC_CC_OR, static_cast<int32_t>(std::round(ccm.offsets[0])));
+	ctrls.set(V4L2_CID_ISC_CC_OG, static_cast<int32_t>(std::round(ccm.offsets[1])));
+	ctrls.set(V4L2_CID_ISC_CC_OB, static_cast<int32_t>(std::round(ccm.offsets[2])));
 
 	/* CBC: adaptive brightness and contrast (ISC CBC/CBHS block, post-gamma) */
 	ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);

@@ -9,7 +9,7 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
+#include <math.h>
 #include <string.h>
 
 #include <libcamera/base/log.h>
@@ -128,7 +128,7 @@ static void buildCombinedLuminanceHistogram(const mchp_isc_stat_buffer *stats,
 /**
  * \brief Compute a 64-point normalised luminance CDF aligned to LUT entries
  * \param[in] stats Pointer to ISC statistics buffer
- * \param[out] lut_cdf 64-element array filled with CDF values in [0, 1]
+ * \param[out] lutCdf 64-element array filled with CDF values in [0, 1]
  *
  * Builds a combined luminance histogram by weighting the four Bayer channels
  * with BT.601 coefficients (same as calculateHistogramSpread), then computes
@@ -142,18 +142,18 @@ static void buildCombinedLuminanceHistogram(const mchp_isc_stat_buffer *stats,
  * bin i*8 + 4, giving the fraction of pixels with luminance below the
  * centre of that LUT entry's input range.
  *
- * lut_cdf[j] = fraction of pixels with intensity ≤ (j*16 + 8) / 1023
+ * lutCdf[j] = fraction of pixels with intensity ≤ (j*16 + 8) / 1023
  *
  * When blended with a power-law tone curve in computeLut(), a cdf_strength
  * of 1.0 produces full histogram equalisation (uniform output distribution),
  * while 0.0 leaves the power law unchanged.  Intermediate values give a
  * locally-adaptive curve that stretches low-contrast histogram regions.
  *
- * Degenerate case (all bins zero): fills lut_cdf with a linear ramp [0..1]
+ * Degenerate case (all bins zero): fills lutCdf with a linear ramp [0..1]
  * so computeLut() degenerates gracefully to the pure power-law path.
  */
 void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			   std::array<float, 64> &lut_cdf,
+			   std::array<float, 64> &lutCdf,
 			   [[maybe_unused]] unsigned int pedestalBins)
 {
 	std::array<float, kHistBins> combined;
@@ -163,7 +163,7 @@ void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 	if (total < 1.0f) {
 		/* Degenerate: produce a linear ramp so the power-law takes over */
 		for (unsigned int j = 0; j < 64; j++)
-			lut_cdf[j] = static_cast<float>(j) / 63.0f;
+			lutCdf[j] = static_cast<float>(j) / 63.0f;
 		return;
 	}
 
@@ -180,7 +180,7 @@ void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 			cumulative += combined[histBin];
 			histBin++;
 		}
-		lut_cdf[j] = cumulative / total;
+		lutCdf[j] = cumulative / total;
 	}
 }
 
@@ -249,7 +249,7 @@ float calculateClipping(const mchp_isc_stat_buffer *stats)
  * foggy scene where contrast enhancement is beneficial.
  */
 float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
-			       [[maybe_unused]] unsigned int pedestalBins)
+			       unsigned int pedestalBins)
 {
 	std::array<float, kHistBins> combined;
 	float total;
@@ -258,15 +258,32 @@ float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,
 	if (total == 0.0f)
 		return 0.0f; /* empty histogram: no spread, no contrast enhancement */
 
-	float p5target = total * 0.05f;
-	float p95target = total * 0.95f;
+	/*
+	 * Count only the signal pixels (above the pedestal) when computing
+	 * P5/P95.  Including pedestal bins inflates the apparent spread by
+	 * ~pedestalBins/kHistBins even in a flat dark scene, causing CBC to
+	 * apply spurious contrast stretch when the spread guard fires.
+	 *
+	 * Subtract the pedestal-bin pixel count from the total so that the
+	 * 5% and 95% targets are relative to signal pixels only.
+	 */
+	float pedestalCount = 0.0f;
+	for (unsigned int i = 0; i < std::min(pedestalBins, (unsigned int)kHistBins); i++)
+		pedestalCount += combined[i];
+	float signalTotal = total - pedestalCount;
 
-	unsigned int p5 = 0;
+	if (signalTotal < 1.0f)
+		return 0.0f; /* all pixels in pedestal range: treat as no signal */
+
+	float p5target = pedestalCount + signalTotal * 0.05f;
+	float p95target = pedestalCount + signalTotal * 0.95f;
+
+	unsigned int p5 = pedestalBins;
 	unsigned int p95 = kHistBins - 1;
-	float cumulative = 0.0f;
+	float cumulative = pedestalCount;
 	bool foundP5 = false;
 
-	for (unsigned int i = 0; i < kHistBins; i++) {
+	for (unsigned int i = pedestalBins; i < kHistBins; i++) {
 		cumulative += combined[i];
 		if (!foundP5 && cumulative >= p5target) {
 			p5 = i;
@@ -395,6 +412,40 @@ float calculateInterQuantileMean(const mchp_isc_stat_buffer *stats,
 }
 
 /**
+ * \brief Normalised entropy of the combined BT.601 luminance histogram
+ * \param[in] stats   ISC statistics buffer
+ * \return Entropy normalised to [0.0, 1.0]
+ *
+ * Entropy quantifies how broadly pixel luminance is distributed:
+ *   0.0 = all pixels at one brightness (flat scene, e.g. white wall)
+ *   1.0 = pixels uniformly spread across all 512 bins (theoretical max)
+ *
+ * Used by the AGC scene classifier: when entropy is low the scene is
+ * globally bright or flat, and an automatic EV bias can be applied to
+ * avoid over-exposure without affecting well-distributed scenes.
+ */
+float calculateHistogramEntropy(const mchp_isc_stat_buffer *stats)
+{
+	std::array<float, kHistBins> combined;
+	float total;
+	buildCombinedLuminanceHistogram(stats, combined, total);
+
+	if (total == 0.0f)
+		return 0.0f;
+
+	float entropy = 0.0f;
+	for (unsigned int i = 0; i < kHistBins; i++) {
+		if (combined[i] > 0.0f) {
+			float p = combined[i] / total;
+			entropy -= p * std::log2f(p);
+		}
+	}
+
+	/* Normalise by log2(kHistBins) so the result is always in [0, 1] */
+	return entropy / std::log2f(static_cast<float>(kHistBins));
+}
+
+/**
  * \brief Build highlight-avoidance metering weights for the luminance histogram
  * \param[out] weights   512-element weight array to fill
  * \param[in]  strength  0.0=flat/uniform  1.0=full highlight-avoidance
@@ -492,7 +543,14 @@ struct RobertsonEntry {
 	float mrd; /* reciprocal megakelvin (1e6 / K) */
 };
 
-static constexpr std::array<RobertsonEntry, 31> kRobertsonTable = { {
+/*
+ * 32-entry Robertson (1968) Planckian locus table in CIE 1960 UCS.
+ * Entry 32 (MRD=625, ≈1600 K) extends coverage down to 1600 K to match
+ * the Python calibration tool's table.  Without it, the runtime returns
+ * 5500 K for any scene below ~1700 K (MRD > 590), making any low-CT
+ * ct_correction_pwl points generated by the calibration tool useless.
+ */
+static constexpr std::array<RobertsonEntry, 32> kRobertsonTable = { {
 	{ 0.18006f, 0.26352f, -0.24341f, 0.0f },
 	{ 0.18066f, 0.26589f, -0.25479f, 10.0f },
 	{ 0.18133f, 0.26846f, -0.26876f, 20.0f },
@@ -524,6 +582,8 @@ static constexpr std::array<RobertsonEntry, 31> kRobertsonTable = { {
 	{ 0.32129f, 0.36011f, -23.325f, 550.0f },
 	{ 0.32931f, 0.36038f, -40.770f, 575.0f },
 	{ 0.33724f, 0.36051f, -116.45f, 600.0f },
+	/* Entry 32: extends coverage to 1600 K (MRD=625) */
+	{ 0.34424f, 0.36051f, -210.0f, 625.0f },
 } };
 } /* anonymous namespace */
 

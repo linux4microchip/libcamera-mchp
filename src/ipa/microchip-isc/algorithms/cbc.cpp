@@ -302,13 +302,15 @@ void Cbc::process(IPAContext &context,
 	float blendedGain = (1.0f + (contrastGain - 1.0f) * contrastStrength_) * userMul;
 
 	/*
-	 * Store the effective contrast multiplier in activeState so the AGC
-	 * can close the feedback loop. Without this, CBC boosts contrast by
-	 * up to 3× on dark low-spread scenes while the AGC targets a raw
-	 * histogram value unaware of the downstream brightness amplification,
-	 * causing systematic overexposure on dim indoor scenes.
+	 * Feed the effective contrast multiplier back to the AGC only when
+	 * the CBHS block is actually in the active pipeline.  For RGB565
+	 * output the ISC pipeline is CFA→WB→CC→GAM — CBHS is absent — so
+	 * writing a contrastGain > 1.0 here would cause the AGC to divide
+	 * its effectiveTarget by that factor, producing systematic
+	 * underexposure with no corresponding hardware boost to compensate.
 	 */
-	context.activeState.cbc.contrastGainLinear = blendedGain;
+	context.activeState.cbc.contrastGainLinear =
+		context.configuration.hw.hasCbhs ? blendedGain : 1.0f;
 
 	/* Convert to hardware units: unity = contrastUnityHw (16 on SAMA7G5, 256 on SAMA5D2) */
 	float targetContrastHw = blendedGain * context.configuration.hw.contrastUnityHw;

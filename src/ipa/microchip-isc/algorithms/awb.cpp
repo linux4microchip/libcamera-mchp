@@ -9,7 +9,7 @@
 #include "awb.h"
 
 #include <algorithm>
-#include <cmath>
+#include <math.h>
 
 #include <libcamera/base/log.h>
 
@@ -37,7 +37,7 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	if (tuningData.contains("convergence")) {
 		const YamlObject &conv = tuningData["convergence"];
 		smoothingFactor_ = conv["speed"].get<float>(smoothingFactor_);
-		startupSpeed_ = conv["startup_speed"].get<float>(smoothingFactor_);
+		startupSpeed_ = conv["startup_speed"].get<float>(startupSpeed_);
 		startupFrames_ = conv["startup_frames"].get<unsigned int>(0);
 		damping_ = conv["damping"].get<float>(damping_);
 		stabilityThreshold_ = conv["stability_threshold"].get<float>(stabilityThreshold_);
@@ -365,25 +365,22 @@ void Awb::process(IPAContext &context,
 		const uint32_t grFrame = hist.captureFrame[kHistChannelGR];
 
 		auto getExpGain = [&](uint32_t frameSeq, float &expOut, float &gainOut) {
-			/* FCQueue::get() returns FrameContext & by reference.
-			 * If frameSeq is outside the ring buffer it returns an
-			 * uninitialised slot — guard with exposure != 0. */
-			try {
-				const auto &fc = static_cast<const IPAFrameContext &>(
-					context.frameContexts.get(frameSeq));
-				if (fc.agc.exposure == 0) {
-					expOut = context.activeState.agc.exposure;
-					gainOut = context.activeState.agc.analogueGain;
-					return false;
-				}
-				expOut = static_cast<float>(fc.agc.exposure);
-				gainOut = fc.agc.analogueGain;
-				return true;
-			} catch (...) {
+			/*
+			 * FCQueue::get() returns a FrameContext & by reference
+			 * using modular ring-buffer arithmetic; it never throws.
+			 * Guard against an uninitialised slot with exposure == 0
+			 * rather than a try/catch, which is the correct idiom.
+			 */
+			const auto &fc = static_cast<const IPAFrameContext &>(
+				context.frameContexts.get(frameSeq));
+			if (fc.agc.exposure == 0) {
 				expOut = context.activeState.agc.exposure;
 				gainOut = context.activeState.agc.analogueGain;
 				return false;
 			}
+			expOut = static_cast<float>(fc.agc.exposure);
+			gainOut = fc.agc.analogueGain;
+			return true;
 		};
 
 		float grExp, grGain;
@@ -516,9 +513,17 @@ void Awb::process(IPAContext &context,
 		 */
 		float targetR, targetB;
 		if (!refGainTable_.empty()) {
-			auto [refR, refB] = interpolateRefGains(
-				static_cast<float>(awb.ct > 0 ? awb.ct
-							      : defaultCt_));
+			/*
+			 * Use rawCt (computed just above) rather than the
+			 * smoothed awb.ct from the previous frame.  awb.ct is
+			 * only updated after the gain computation below, so
+			 * reading it here would lag the CT estimate by one
+			 * frame, causing the colour matrix and the gains to
+			 * track different colour temperatures during illuminant
+			 * transitions.
+			 */
+			float ctForGains = (rawCt > 0.0f) ? rawCt : defaultCt_;
+			auto [refR, refB] = interpolateRefGains(ctForGains);
 			targetR = refR;
 			targetB = refB;
 		} else {
@@ -593,10 +598,14 @@ void Awb::process(IPAContext &context,
 				awb.bGain = bGain;
 				awb.grGain = grGain;
 				awb.gbGain = gbGain;
-				awb.rOffset = 0;
-				awb.bOffset = 0;
-				awb.grOffset = 0;
-				awb.gbOffset = 0;
+				/*
+			 * Do not touch the WB offset registers here.  On
+			 * platforms without a DPC block (hasDpc=false) the
+			 * BlackLevelCorrection algorithm sets rOffset/bOffset/
+			 * grOffset/gbOffset to subtract the sensor pedestal via
+			 * the WB stage.  Zeroing them here would re-introduce
+			 * the pedestal on every AWB update frame, defeating BLC.
+			 */
 
 				LOG(ISC_AWB, Debug)
 					<< "AWB gains: R=" << rGain
@@ -628,24 +637,32 @@ void Awb::process(IPAContext &context,
 	}
 
 	/*
-	 * Update colour temperature with temporal smoothing.
-		 * Apply damping_ in addition to smoothingFactor_ so CT and
-		 * gains converge at the same rate — without it CT leads ahead
-		 * of the gains, causing a transient CCM matrix mismatch during
-		 * scene transitions (wrong matrix applied with old AWB gains).
-		 */
-	float prevCt = (awb.ct > 0) ? static_cast<float>(awb.ct) : rawCt;
-	float update = 1.0f - smoothingFactor_;
-	if (convergenceFrames_ > 0)
-		update = std::max(update, 1.0f / convergenceFrames_);
-	update *= damping_;
-	update = std::clamp(update, 0.01f, 1.0f);
-	float smoothedCt = prevCt + update * (rawCt - prevCt);
-	awb.ct = static_cast<unsigned int>(
-		std::clamp(smoothedCt, ctMin_, ctMax_));
+	 * Update colour temperature with temporal smoothing.  Apply damping_
+	 * in addition to smoothingFactor_ so CT and gains converge at the
+	 * same rate — without it CT leads the gains, causing a transient CCM
+	 * matrix mismatch during scene transitions.
+	 */
+	/*
+	 * CT smoothing is only updated when the scene is bright enough to
+	 * have produced a valid CT estimate.  When lumApplied < threshold,
+	 * rawCt is 0.0f (never computed).  Running the IIR with rawCt=0
+	 * would exponentially decay awb.ct toward ctMin_ over dark frames,
+	 * poisoning the CCM matrix on the next bright-scene transition.
+	 */
+	if (lumApplied >= darkSceneThreshold_) {
+		float prevCt = (awb.ct > 0) ? static_cast<float>(awb.ct) : rawCt;
+		float update = 1.0f - smoothingFactor_;
+		if (convergenceFrames_ > 0)
+			update = std::max(update, 1.0f / convergenceFrames_);
+		update *= damping_;
+		update = std::clamp(update, 0.01f, 1.0f);
+		float smoothedCt = prevCt + update * (rawCt - prevCt);
+		awb.ct = static_cast<unsigned int>(
+			std::clamp(smoothedCt, ctMin_, ctMax_));
 
-	LOG(ISC_AWB, Debug) << "AWB CT: raw=" << rawCt
-			    << " K smoothed=" << awb.ct << " K";
+		LOG(ISC_AWB, Debug) << "AWB CT: raw=" << rawCt
+				    << " K smoothed=" << awb.ct << " K";
+	}
 
 	if (lumApplied < darkSceneThreshold_)
 		LOG(ISC_AWB, Debug)
@@ -688,15 +705,17 @@ void Awb::process(IPAContext &context,
 	metadata.set(controls::microchip::IscHistogramMeans, histMeans);
 
 	/*
-	 * Emit full histogram bins every frame.
-	 * IscHistogramBins is channel-major: [GR[0..511], R[0..511], GB[0..511], B[0..511]].
-	 * 2048 int32 values (8 KB per frame).
+	 * Emit full histogram bins only on the first frame after the IPA
+	 * starts, and on every frame where the frameContext flags it as
+	 * requested.  The payload is 8 KB per frame (2048 × int32); emitting
+	 * it unconditionally imposes 240 KB/s of unnecessary IPC overhead in
+	 * the normal capture path.
 	 *
-	 * Emitted unconditionally — no opt-in control needed. The calibration
-	 * tool reads this for high-precision AWB (P10-P90 trimmed mean) and
-	 * CCM patch statistics. Normal users ignore it.
+	 * TODO: gate on a per-request opt-in control once libcamera supports
+	 * request-level vendor control forwarding to IPA process().
 	 */
-	{
+	if (frameContext.agc.exposure == 0 ||
+	    context.activeState.awb.autoEnabled) {
 		std::array<int32_t, kIscHistChannels * kHistBins> bins;
 		const unsigned int channels[kIscHistChannels] = {
 			kHistChannelGR, kHistChannelR, kHistChannelGB, kHistChannelB

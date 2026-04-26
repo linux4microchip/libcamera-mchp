@@ -72,7 +72,7 @@ static constexpr float kSaturationScale = 16.0f;
  * Replace via YAML Awb.ct_color_matrix for better accuracy (±200 K vs ±500 K).
  * Calibrate with a Macbeth ColorChecker under known illuminants. * Row-major: row 0 = X, row 1 = Y, row 2 = Z.
  */
-inline constexpr std::array<float, 9> kDefaultCtMatrix = {
+constexpr std::array<float, 9> kDefaultCtMatrix = {
 	0.4900f,
 	0.3100f,
 	0.1200f,
@@ -88,7 +88,7 @@ float calculateChannelMean(const mchp_isc_stat_buffer *stats, unsigned int chann
 float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int channel,
 			     unsigned int pedestalBins = 0);
 void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			   std::array<float, 64> &lut_cdf,
+			   std::array<float, 64> &lutCdf,
 			   unsigned int pedestalBins = 0);
 
 float calculateClipping(const mchp_isc_stat_buffer *stats);
@@ -152,12 +152,15 @@ float estimateLux(float currentY,
 void buildHighlightAvoidanceWeights(std::array<float, kHistBins> &weights,
 				    float strength);
 
+
+/* Inter-quantile mean: mean of pixels between qLo and qHi quantiles.
+ * iqm(0.02, 0.98) = robust midtone metering. iqm(0.98,1.0) = top 2%. */
+float calculateInterQuantileMean(const mchp_isc_stat_buffer *stats,
+				 float qLo, float qHi);
+
+/* Normalised histogram entropy [0,1]. 0=flat scene, 1=rich scene. */
+float calculateHistogramEntropy(const mchp_isc_stat_buffer *stats);
+
 } /* namespace ipa::microchip_isc */
 
 } /* namespace libcamera */
-
-/* Inter-quantile mean: mean of pixels between qLo and qHi quantiles.
- * iqm(0.02, 0.98) = robust midtone AE metering (ignores extremes).
- * iqm(0.98, 1.0)  = brightest 2%: used for highlight constraint. */
-float calculateInterQuantileMean(const mchp_isc_stat_buffer *stats,
-				 float qLo, float qHi);

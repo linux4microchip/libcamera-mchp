@@ -8,7 +8,7 @@
 #include "ccm.h"
 
 #include <algorithm>
-#include <cmath>
+#include <math.h>
 
 #include <libcamera/base/log.h>
 
