@@ -42,7 +42,9 @@ algorithms:
       # green-balance ratio. Tighten for more stable but slower adaptation.
       gain_limits:
         r_b_min: 0.2
-        r_b_max: 16.0
+        # Maximum R/B WB gain. The code clamps to [1.0, 8.0] regardless
+        # of this value; set to 8.0 to match what is actually applied.
+        r_b_max: 8.0
         gb_min: 0.9
         gb_max: 1.1
 
@@ -102,7 +104,8 @@ algorithms:
         reference_gain: 1.0
         reference_lux: 2370.0
       # y_target: lux → WB-normalised bins target. Anchor=69/511=0.1351 at 2370 lux.
-      y_target: [2370, 0.1351, 1000, 0.0878, 615, 0.0688, 300, 0.0481, 148, 0.0338, 50, 0.0196, 10, 0.0088, 1, 0.0050]
+      # Scaled from tb=40 calibration by factor 69/40=1.725 (2026-04-26).
+      y_target: [2370, 0.1351, 1000, 0.0876, 615, 0.0688, 300, 0.0481, 148, 0.0338, 50, 0.0197, 10, 0.0088, 1, 0.0086]
       # IIR smoothing for lux estimate: smoothed = alpha*raw + (1-alpha)*prev
       # 0.3 = RPi default (3-4 frame settling). 1.0 = no smoothing.
       lux_smoothing_alpha: 0.30
@@ -126,7 +129,7 @@ algorithms:
       highlight_p85_strength: 1.0
       # EV bias: -0.5 stops under-exposes by design, like mobile.
       # Combined with P85 protection this gives mobile-like metering.
-      ev_default: -0.5
+      ev_default: 0.0
       # Zone metering: highlight-avoidance weight strength [0-1].
       # 0=uniform mean (traditional), 1=full highlight de-emphasis (mobile).
       # 0.7 gives natural indoor exposure matching mobile highlight AE.
@@ -141,6 +144,17 @@ algorithms:
       # Mirrors RPi ConstraintHighlight mode.
       ae_highlight_q_hi: 0.02
       ae_highlight_target: 0.70
+      # Scene entropy-based automatic EV bias.
+      # When entropy < threshold AND luminance > 1.5x target,
+      # the scene is flat/bright. Apply scene_ev_bias stops.
+      scene_ev_threshold: 1.0  # always use P10 check only
+      scene_ev_bias: -1.5
+      # P10 of pre-gamma luminance above this = no shadow detail.
+      # Scene classifier is a coarse safety net only. Primary brightness
+      # control is handled by adaptive gamma (strength=0.5 above).
+      # Set high (200) so it only fires on extreme outdoor/overcast scenes
+      # where the histogram is genuinely saturated at high bins.
+      scene_bright_p10: 200.0
 
       # Mains flicker avoidance: set to 50 or 60 to round shutter to the
       # nearest multiple of the mains half-period. 0 = disabled (outdoor/DC).
@@ -176,7 +190,7 @@ algorithms:
       # its raw target by cbcGain so after CBC stretches it back up, the
       # final output hits the intended brightness. With 0.0 the AGC
       # underexposes on dim scenes because the compensating boost never happens.
-      contrast_strength: 0.25
+      contrast_strength: 0.20
       # P5-to-P95 spread target as a fraction of the histogram range.
       # 0.45 is conservative — avoids over-stretching flat indoor scenes
       # while still giving a noticeable contrast lift on grey/overcast shots.
@@ -189,7 +203,7 @@ algorithms:
       smoothing_factor: 0.65
       # Default saturation (0-100, 16=unity on SAMA7G5 CBHS).
       # Keep neutral here so RGB and YUV paths start from a known-good baseline.
-      saturation: 18
+      saturation: 16
       # Default hue rotation in degrees (-180 to +180). 0 = no rotation.
       # Applied via V4L2_CID_HUE on SAMA7G5 (has_cbhs=true).
       hue: 0
@@ -197,19 +211,20 @@ algorithms:
       contrast_max_gain: 3.0
       # Suppress CBC contrast stretch in very dark scenes. When AGC is at
       # max gain, CBC stretch causes double-amplification → clipping.
-      # 0.03 normalised ≈ 15 pre-WB histogram bins ≈ 3% of full scale.
-      dark_scene_min_luminance: 0.03
+      # 0.01 normalised ≈ 5 pre-WB histogram bins.
+      dark_scene_min_luminance: 0.01
 
   - Gamma:
       # Base gamma exponent for the power-law tone curve.
       # 2.2 approximates sRGB encoding; lower values brighten midtones.
       gamma: 2.2
       # Adaptive strength [0.0-1.0]. 0 = purely parametric, 1 = fully adaptive.
-      # At 0.3 the exponent is nudged gently toward the target each frame.
+      # Disabled pending y_target recalibration against actual JPEG output
+      # luminance at each lux level.
       strength: 0.0
       # Target post-gamma normalised mean luminance [0.0-1.0].
-      # 0.45 ~ mid-grey on a 2.2-gamma display with 18%-grey card.
-      target_output: 0.45
+      # 114/255 = 0.447 = mobile reference. Active when strength > 0.
+      target_output: 0.447
       # Temporal smoothing [0.0-1.0]. Higher values reduce flicker.
       smoothing_factor: 0.3
       # Histogram CDF blend strength [0.0-1.0].
@@ -219,15 +234,18 @@ algorithms:
       #        lifts shadow detail — gives mobile-like dynamic range
       #        on scenes where the full histogram is not used.
       # 1.0 = full histogram equalisation (maximum local contrast).
-      cdf_strength: 0.08
+      cdf_strength: 0.0
       # Scene-adaptive CDF boost.
       # Automatically increases CDF blend strength when scene spread is low
       # (flat/over-bright scene). Stretches compressed histogram to full range.
       #   trigger:   0.25 = boost when P5-P95 spread < 25% of histogram
       #   max_boost: 0.45 = maximum additional CDF strength to add
       # With base cdf_strength=0.10 and boost 0.45: effective up to 0.55
-      adaptive_cdf_trigger: 0.25
-      adaptive_cdf_max_boost: 0.45
+      adaptive_cdf_trigger: 0.30
+      adaptive_cdf_max_boost: 0.0
+      # CLAHE clip limit: bins above this multiple of mean frequency
+      # are redistributed. 3.0=gentle natural. 1.5=stronger.
+      cdf_clip_limit: 2.0
       # Normalised luminance floor below which adaptive gamma update is skipped.
       dark_scene_threshold: 0.01
       # Normalised input breakpoint for bipartite linear toe (SAMA7G5 only).
