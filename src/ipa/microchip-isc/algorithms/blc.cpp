@@ -179,49 +179,34 @@ int BlackLevelCorrection::configure(IPAContext &context,
 {
 	const uint32_t bl = context.configuration.sensor.blackLevel;
 
+	/*
+	 * Pedestal subtraction.
+	 *
+	 * On platforms with a DPC block (hasDpc=true): the hardware subtracts
+	 * the sensor black-level before the WB gain stage.  Setting a negative
+	 * WB offset here would double-subtract the pedestal and drive all
+	 * signal pixels to zero.  WB offsets must be 0.
+	 *
+	 * On platforms without hardware DPC (hasDpc=false): the pedestal is
+	 * removed via the WB offset registers set below.
+	 */
 	if (context.configuration.hw.hasDpc) {
-		/*
-		 * SAMA7G5: DPC hardware subtracts the black offset before
-		 * the WB block. The kernel programs ISC_DPC_CFG.BLOFST from
-		 * the sensor helper (or 64 for imx219). If our tuning YAML
-		 * black_level differs, the IPA's histogram pedestal subtraction
-		 * (blackLevel/2 bins in processStats) will use a different
-		 * value than what the DPC block actually subtracts — corrupting
-		 * AWB means and AGC luminance.
-		 *
-		 * We use the sensor helper value as the reference, not a
-		 * hardcoded 64, so this check stays correct across sensors.
-		 */
-		uint32_t dpcOffset = 64; /* kernel default for imx219 */
-		if (context.camHelper && context.camHelper->blackLevel())
-			dpcOffset = static_cast<uint32_t>(
-					    *context.camHelper->blackLevel()) >>
-				    6;
-
-		if (bl != dpcOffset) {
-			LOG(ISC_BLC, Warning)
-				<< "hasDpc=true: tuning black_level=" << bl
-				<< " DN != kernel DPC offset=" << dpcOffset
-				<< " DN. "
-				   "Histogram pedestal subtraction will be wrong. "
-				   "Set black_level="
-				<< dpcOffset
-				<< " in the tuning YAML (or remove black_level "
-				   "to use the sensor helper value automatically).";
-		}
+		/* DPC BLCEN removes pedestal in hardware — WB offsets must be 0 */
+		context.activeState.awb.rOffset = 0;
+		context.activeState.awb.bOffset = 0;
+		context.activeState.awb.grOffset = 0;
+		context.activeState.awb.gbOffset = 0;
+		LOG(ISC_BLC, Debug)
+			<< "BLC: hasDpc=true, BLCEN active — WB offsets = 0";
 	} else {
-		/*
-		 * SAMA5D2 / SAM9X7: no DPC hardware — pedestal subtracted
-		 * via WB offset registers programmed by configure(). A zero
-		 * black_level disables subtraction entirely.
-		 */
-		if (bl == 0) {
-			LOG(ISC_BLC, Warning)
-				<< "hasDpc=false: black_level=0 means no pedestal "
-				   "subtraction via WB offsets. "
-				   "Set black_level to the sensor pedestal (e.g. 64 "
-				   "for IMX219) to avoid colour bias.";
-		}
+		/* No hardware DPC — subtract pedestal through WB offset block */
+		int32_t offset = -static_cast<int32_t>(bl);
+		context.activeState.awb.rOffset = offset;
+		context.activeState.awb.bOffset = offset;
+		context.activeState.awb.grOffset = offset;
+		context.activeState.awb.gbOffset = offset;
+		LOG(ISC_BLC, Debug)
+			<< "BLC: hasDpc=false — WB offsets = " << offset;
 	}
 
 	return 0;

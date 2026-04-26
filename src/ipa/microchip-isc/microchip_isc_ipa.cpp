@@ -453,25 +453,11 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	 * context.configuration.sensor. The ISC pipeline is 12-bit; sensor
 	 * BL in 10-bit units is scaled ×4.
 	 */
-	if (context_.configuration.hw.hasDpc) {
-		context_.activeState.awb.rOffset = 0;
-		context_.activeState.awb.bOffset = 0;
-		context_.activeState.awb.grOffset = 0;
-		context_.activeState.awb.gbOffset = 0;
-		LOG(ISC_IPA, Debug) << "DPC present: WB BL offsets set to 0";
-	} else {
-		context_.activeState.awb.rOffset =
-			-static_cast<int32_t>(context_.configuration.sensor.blackLevelR * 4);
-		context_.activeState.awb.bOffset =
-			-static_cast<int32_t>(context_.configuration.sensor.blackLevelB * 4);
-		context_.activeState.awb.grOffset =
-			-static_cast<int32_t>(context_.configuration.sensor.blackLevelGR * 4);
-		context_.activeState.awb.gbOffset =
-			-static_cast<int32_t>(context_.configuration.sensor.blackLevelGB * 4);
-		LOG(ISC_IPA, Debug)
-			<< "No DPC: WB BL offsets R=" << context_.activeState.awb.rOffset
-			<< " B=" << context_.activeState.awb.bOffset;
-	}
+	/*
+	 * WB offset initialisation is owned by BlackLevelCorrection::configure().
+	 * Do not duplicate the logic here; BLC sets the offsets based on hasDpc
+	 * and the per-channel black levels read from the sensor helper.
+	 */
 
 	/* CCM: identity matrix until the first process() call */
 	context_.activeState.ccm.matrix = {
@@ -691,8 +677,8 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		int32_t rawGain =
 			sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
 		frameContext.agc.analogueGain =
-			static_cast<float>(camHelper_ ? camHelper_->gain(rawGain)
-						      : static_cast<double>(rawGain));
+			camHelper_ ? static_cast<float>(camHelper_->gain(rawGain))
+				   : static_cast<float>(rawGain);
 	}
 
 	/*

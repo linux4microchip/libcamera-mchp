@@ -150,11 +150,14 @@ algorithms:
       scene_ev_threshold: 1.0  # always use P10 check only
       scene_ev_bias: -1.5
       # P10 of pre-gamma luminance above this = no shadow detail.
-      # Scene classifier is a coarse safety net only. Primary brightness
-      # control is handled by adaptive gamma (strength=0.5 above).
-      # Set high (200) so it only fires on extreme outdoor/overcast scenes
-      # where the histogram is genuinely saturated at high bins.
-      scene_bright_p10: 200.0
+      # Calibrated 2026-04-26: bright white-wall indoor scene has P10=24 net bins.
+      # Threshold=10 fires on any scene where the shadow floor is above 10 bins
+      # (i.e. no true dark areas — globally bright/flat scene). Stays silent for
+      # dim scenes where P10 = 0-5 bins. This is the Jensen gap compensation:
+      # global histogram mean underestimates JPEG L by 2.5× for flat scenes
+      # because mean(gamma(x)) >> gamma(mean(x)). EV-1.5 pushes pixels out of
+      # the steep bipartite toe, reducing the Jensen gap.
+      scene_bright_p10: 10.0
 
       # Mains flicker avoidance: set to 50 or 60 to round shutter to the
       # nearest multiple of the mains half-period. 0 = disabled (outdoor/DC).
@@ -186,11 +189,12 @@ algorithms:
 
   - Cbc:
       # Contrast enhancement strength (0=none, 1=full histogram stretch).
-      # 0.30 closes the AGC/CBC feedback loop correctly: the AGC reduces
-      # its raw target by cbcGain so after CBC stretches it back up, the
-      # final output hits the intended brightness. With 0.0 the AGC
-      # underexposes on dim scenes because the compensating boost never happens.
-      contrast_strength: 0.20
+      # DISABLED (0.0): the CBHS block is NOT in the RGB565 ISC pipeline
+      # (pipeline bits = CFA|WB|GAM|CC, no CBHS). The contrast feedback
+      # (cbcGain) still reaches the AGC and artificially divides effectiveTarget
+      # by ~1.4, causing phantom underexposure. Set to 0.0 to prevent this.
+      # Re-enable for YUYV/YUV output formats where CBHS IS active.
+      contrast_strength: 0.0
       # P5-to-P95 spread target as a fraction of the histogram range.
       # 0.45 is conservative — avoids over-stretching flat indoor scenes
       # while still giving a noticeable contrast lift on grey/overcast shots.
