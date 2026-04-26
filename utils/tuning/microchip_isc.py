@@ -3,31 +3,27 @@
 # Copyright (C) 2024 Microchip Technology Inc.
 #
 # Tuning script for Microchip ISC (SAMA7G5 / SAMA5D2).
-# Follows the same structure as utils/tuning/rkisp1.py.
+# Follows the same offline-only structure as utils/tuning/rkisp1.py and
+# utils/raspberrypi/ctt/ctt.py.
 #
-# Two modes of operation:
+# Offline workflow:
 #
-#   1. Offline batch mode (default):
-#      Process pre-captured RAW files from a directory.
-#        python3 microchip_isc.py -i ./images/ -o imx219_noir.yaml
-#        python3 microchip_isc.py -i images/ -o imx219_noir.yaml \
-#            --modules ct ccm awb lux blc
-#        python3 microchip_isc.py -i images/ -o imx219_noir.yaml --macbeth
+#   1. Deploy the board capture helper once:
+#        scp utils/tuning/mchp_capture.sh root@<board>:/tmp/
 #
-#   2. SSH capture mode (--board):
-#      Interactively trigger captures on the board via SSH, saving RAW files
-#      with proper metadata tags in the filenames.
-#        python3 microchip_isc.py --board root@10.40.24.60 --board-pass 123 \
-#            -i ./calib_images/ -o imx219_noir.yaml --modules ct awb
+#   2. Capture at each CCT point on the board:
+#        /tmp/mchp_capture.sh -c 3200 -l <lux>
+#        /tmp/mchp_capture.sh -c 4500 -l <lux>
+#        /tmp/mchp_capture.sh -c 6500 -l <lux>
 #
-#      The capture mode:
-#        - Connects to the board via SSH
-#        - Triggers mchpcam-still (JPEG, full ISC pipeline)
-#        - Reads IscHistogramMeans from --metadata JSON (pre-WB histogram tap)
-#          Falls back to ISC_AWB:DEBUG log for firmware older than v0.6.1
-#        - Saves .jpg with metadata-tagged filenames
-#        - Runs the requested calibration modules on the saved images
-#        - BLC dark frame: captured with v4l2-ctl directly (no IPA running)
+#   3. Copy captures to host:
+#        scp -r root@<board>:/tmp/calib/ ./captures/
+#
+#   4. Run calibration tool offline:
+#        python3 microchip_isc.py -i ./captures/ -o imx219.yaml
+#        python3 microchip_isc.py -i ./captures/ -o imx219.yaml \
+#            --modules ct ccm awb lux recalc
+#        python3 microchip_isc.py -i ./captures/ -o imx219.yaml --macbeth
 #
 # Image filename tags (case-insensitive, all optional):
 #   ct<K>       True CCT in Kelvin    e.g. ct2860K
@@ -183,7 +179,7 @@ class CalibCapture:
         else:
             logger.warning(f'{self.name}: no JSON sidecar — '
                            f'histogram means unavailable for calibration. '
-                           f'Use calib.sh to capture calibration images.')
+                           f'Capture images using mchp_capture.sh on the board, then copy to --input.')
 
     @property
     def valid(self):
@@ -212,7 +208,7 @@ def load_images(image_dir, macbeth_mode=False):
 
     if not paths:
         logger.error(f'No calibration images found in {image_dir} '
-                     f'(expected .jpg from calib.sh or .pgm/.dng/.raw for CCM/BLC)')
+                     f'(expected .jpg from mchp_capture.sh, or .pgm/.dng/.raw for CCM/BLC)')
         return []
 
     # Warn if images span more than 24 hours -- likely mixing sessions.
@@ -265,7 +261,7 @@ def load_images(image_dir, macbeth_mode=False):
             f'(missing histogram means): '
             f'{[img.name for img in missing_sidecar[:3]]}{"..." if len(missing_sidecar)>3 else ""}. '
             f'These will be skipped by AWB/CT/lux calibration modules. '
-            f'Use calib.sh to capture — it writes the JSON sidecar automatically.')
+            f'Use mchp_capture.sh on the board — it writes the JSON sidecar automatically.')
 
     if macbeth_mode:
         logger.info('Macbeth mode: enter chart corners for DNG colorchecker images')
@@ -621,853 +617,6 @@ def run_blc(images, data, yaml_inst, output_path):
 # SSH capture helpers (replaces mchp_isc_calibrate.py)
 # ---------------------------------------------------------------------------
 
-def _ssh_run(board, password, cmd, timeout=90):
-    """
-    Run a command via SSH, return (stdout, stderr, rc).
-
-    Uses Popen + reader threads instead of subprocess.run(capture_output=True).
-    With capture_output=True the SSH pipe buffers (~64 KB) fill up when the
-    remote side produces verbose debug output (ISC_AWB:DEBUG + ISC_AGC:DEBUG
-    = hundreds of lines/second). When the buffer is full the remote process
-    blocks writing, communicate() never returns, and the timeout fires as a
-    spurious TimeoutExpired even though mchpcam-still is still running fine.
-
-    Streaming with two reader threads drains both pipes continuously so the
-    remote process never blocks, regardless of output volume.
-    """
-    import threading as _th
-
-    if password:
-        full = ['sshpass', '-p', password, 'ssh',
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'ConnectTimeout=10',
-                board, cmd]
-    else:
-        full = ['ssh', '-o', 'StrictHostKeyChecking=no',
-                '-o', 'ConnectTimeout=10', board, cmd]
-
-    proc = subprocess.Popen(full, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True)
-
-    stdout_lines, stderr_lines = [], []
-
-    def _drain(stream, buf):
-        for line in stream:
-            buf.append(line.rstrip('\n'))
-
-    t_o = _th.Thread(target=_drain, args=(proc.stdout, stdout_lines), daemon=True)
-    t_e = _th.Thread(target=_drain, args=(proc.stderr, stderr_lines), daemon=True)
-    t_o.start(); t_e.start()
-
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        t_o.join(timeout=3); t_e.join(timeout=3)
-        logger.error(f'SSH command timed out after {timeout}s')
-        return '\n'.join(stdout_lines), '\n'.join(stderr_lines), -1
-
-    t_o.join(timeout=5); t_e.join(timeout=5)
-    return '\n'.join(stdout_lines), '\n'.join(stderr_lines), proc.returncode
-
-
-def _ssh_run_progress(board, password, cmd, timeout=180, label='Capturing'):
-    """
-    Run a long SSH command with a live single-line progress bar on stdout.
-
-    Drains both stdout and stderr via background threads (same approach as
-    _ssh_run) while rendering a live status bar every 250ms.
-
-    Progress bar format (single overwriting line, no scroll):
-      [████████████░░░░░░░░]  AE  87%  AWB r=1.43 b=1.19  CT=3842K  12s
-
-    AE fill  : currentLuminance / effectiveTarget * 100  (ISC_AGC:DEBUG)
-    AWB state: r/b gain values or locked checkmark        (ISC_AWB:DEBUG)
-    CT       : Robertson CT estimate                      (informational)
-
-    Returns (stdout_str, stderr_str, rc) -- identical to _ssh_run().
-    """
-    import threading as _th, time as _time, sys as _sys, re as _re
-
-    if password:
-        full = ['sshpass', '-p', password, 'ssh',
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'ConnectTimeout=10', board, cmd]
-    else:
-        full = ['ssh', '-o', 'StrictHostKeyChecking=no',
-                '-o', 'ConnectTimeout=10', board, cmd]
-
-    S = dict(ae_lum=0.0, ae_tgt=0.0, ae_locked=False,
-             awb_r=0.0, awb_b=0.0, awb_locked=False,
-             ct=0, saved=False, start=_time.time())
-    stdout_lines, stderr_lines = [], []
-
-    _re_agc     = _re.compile(r'AGC.*luminance=([0-9.]+).*target=([0-9.]+)')
-    _re_lock    = _re.compile(r'AGC stable.*lock=3/3')
-    _re_awb     = _re.compile(r'AWB gains:.*R=([0-9.]+).*B=([0-9.]+)')
-    _re_ct      = _re.compile(r'ct_smoothed=([0-9]+)')
-    _re_ae_app  = _re.compile(r'AE locked\s*:\s*yes', _re.I)
-    _re_awb_app = _re.compile(r'AWB locked\s*:\s*yes', _re.I)
-    _re_saved   = _re.compile(r'Saved RAW:|Saved JPEG:')
-
-    def _parse(line, is_err):
-        (stderr_lines if is_err else stdout_lines).append(line.rstrip('\n'))
-        m = _re_agc.search(line)
-        if m:
-            S['ae_lum'] = float(m.group(1))
-            S['ae_tgt'] = float(m.group(2))
-        if _re_lock.search(line):    S['ae_locked']  = True
-        m = _re_awb.search(line)
-        if m:
-            S['awb_r'] = float(m.group(1))
-            S['awb_b'] = float(m.group(2))
-        m = _re_ct.search(line)
-        if m: S['ct'] = int(m.group(1))
-        if _re_ae_app.search(line):  S['ae_locked']  = True
-        if _re_awb_app.search(line): S['awb_locked'] = True
-        if _re_saved.search(line):
-            S['saved'] = S['ae_locked'] = S['awb_locked'] = True
-
-    def _drain(stream, is_err):
-        for line in stream:
-            _parse(line, is_err)
-
-    BAR  = 24
-    _G   = '\033[32m'; _Y = '\033[33m'; _C = '\033[36m'; _R = '\033[0m'
-    _CLR = '\033[K'
-
-    def _fmt_time(secs):
-        """Format seconds as M:SS (e.g. 1:07) or s (e.g. 8s) for the bar."""
-        s = int(secs)
-        if s < 60:
-            return f"{s}s"
-        return f"{s//60}:{s%60:02d}"
-
-    def _render():
-        elapsed = _time.time() - S['start']
-        ae_f    = min(S['ae_lum'] / S['ae_tgt'], 1.0) if S['ae_tgt'] > 0 else 0.0
-        filled  = int(ae_f * BAR)
-        bar     = '\u2588' * filled + '\u2591' * (BAR - filled)
-
-        ae_s  = (f"{_G}AE  \u2713 {_R}" if S['ae_locked']
-                 else f"AE {int(ae_f*100):3d}%")
-        awb_s = (f"{_G}AWB \u2713 {_R}" if S['awb_locked']
-                 else (f"AWB r={S['awb_r']:.2f} b={S['awb_b']:.2f}"
-                       if S['awb_r'] > 0 else f"{_Y}AWB  \u2026 {_R}"))
-        ct_s  = f"  CT={S['ct']}K" if S['ct'] > 0 else ''
-
-        # ETA only once we have reliable rate data (after 3s, AE in progress)
-        eta_s = ''
-        if elapsed > 3 and 0.05 < ae_f < 0.99 and not S['ae_locked']:
-            rate  = ae_f / elapsed
-            if rate > 0:
-                eta_s = f"  ETA ~{_fmt_time((1-ae_f)/rate)}"
-
-        # Clock ticks every render call (250ms) — always moving
-        clock = _fmt_time(elapsed)
-
-        if S['saved']:
-            _sys.stdout.write(
-                f"\r  {_G}\u2713{_R}  [{_G}{'█'*BAR}{_R}]"
-                f"  {_G}AE \u2713  AWB \u2713{_R}"
-                f"  done {clock}{_CLR}")
-        else:
-            _sys.stdout.write(
-                f"\r  {_C}\u00b7{_R}  [{bar}]"
-                f"  {ae_s}  {awb_s}{ct_s}  {clock}{eta_s}{_CLR}")
-        _sys.stdout.flush()
-
-    _sys.stdout.write(f"\n  {label}\n")
-    _render()
-
-    proc = subprocess.Popen(full, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True)
-    t_o = _th.Thread(target=_drain, args=(proc.stdout, False), daemon=True)
-    t_e = _th.Thread(target=_drain, args=(proc.stderr, True),  daemon=True)
-    t_o.start(); t_e.start()
-
-    deadline = _time.time() + timeout
-    while proc.poll() is None:
-        _render()
-        _time.sleep(0.25)
-        if _time.time() > deadline:
-            proc.kill()
-            _sys.stdout.write(f"\n  ERROR: capture timed out after {timeout}s\n")
-            _sys.stdout.flush()
-            t_o.join(timeout=3); t_e.join(timeout=3)
-            return '\n'.join(stdout_lines), '\n'.join(stderr_lines), -1
-
-    t_o.join(timeout=5); t_e.join(timeout=5)
-    _render()
-    _sys.stdout.write('\n')
-    _sys.stdout.flush()
-    rc = proc.returncode if proc.returncode is not None else -1
-    return '\n'.join(stdout_lines), '\n'.join(stderr_lines), rc
-
-
-def _scp_from_board(board, password, remote, local):
-    """Copy a file from the board to the local machine."""
-    if password:
-        cmd = ['sshpass', '-p', password, 'scp',
-               '-o', 'StrictHostKeyChecking=no',
-               f'{board}:{remote}', str(local)]
-    else:
-        cmd = ['scp', '-o', 'StrictHostKeyChecking=no',
-               f'{board}:{remote}', str(local)]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    return r.returncode == 0
-
-
-def _parse_awb_debug(log_lines):
-    """
-    DEPRECATED: AWB calibration data now comes from IscHistogramMeans
-    vendor metadata (--metadata --metadata-format=json), not from log
-    scraping.  This function is retained only as a reference for
-    debugging older firmware that predates IscHistogramMeans (pre v0.6.1).
-
-    Returns None always in production; the caller checks for None and
-    emits an error directing the user to update firmware.
-    """
-    logger.debug('_parse_awb_debug: log scraping is deprecated — '
-                 'this path should not be reached with v0.6.1+ firmware.')
-    return None
-
-
-def _parse_agc_debug(log_lines):
-    """
-    DEPRECATED: AGC calibration data (ExposureTime, AnalogueGain, AeState)
-    now comes from frame metadata (--metadata --metadata-format=json).
-    This function is retained only as a reference for debugging.
-
-    Matches:
-      'AGC stable: luminance=X target=Y lock=3/3'  (preferred)
-      'AGC: luminance=X target=Y ... -> exposure=X gain=Y'  (fallback)
-
-    Returns dict: {'luminance': float, 'exposure_lines': int, 'gain': float,
-                   'ae_converged': bool}
-    or None if not found.
-    """
-    # Primary: match the stable lock line (post-convergence)
-    stable_re = re.compile(
-        r'AGC stable:\s+luminance=([0-9.]+)\s+target=[0-9.]+\s+lock=3/3')
-    # Secondary: match the running update line which also carries the next exposure
-    running_re = re.compile(
-        r'AGC:\s+luminance=([0-9.]+).*->\s+exposure=([0-9]+)\s+gain=([0-9.]+)')
-
-    stable_lum_list = []
-    agc_list = []
-    ae_converged = False
-
-    for line in log_lines:
-        ms = stable_re.search(line)
-        if ms:
-            stable_lum_list.append(float(ms.group(1)))
-            ae_converged = True
-        mr = running_re.search(line)
-        if mr:
-            agc_list.append({
-                'luminance': float(mr.group(1)),
-                'exposure_lines': int(mr.group(2)),
-                'gain': float(mr.group(3)),
-            })
-
-    if not agc_list:
-        return None
-
-    if not ae_converged:
-        logger.warning('AE did not reach lock=3/3 before capture end. '
-                       'Exposure metadata in sidecar may be mid-ramp. '
-                       'Increase --timeout or verify scene brightness.')
-
-    # Use the last 3 running-update lines (these carry the queued sensor values
-    # closest to the converged steady state). Matching only 'stable' lines would
-    # miss the final applied exposure since stable lines don't carry exposure.
-    last = agc_list[-3:]
-    return {
-        'luminance': sum(d['luminance'] for d in last) / len(last),
-        'exposure_lines': int(round(sum(d['exposure_lines'] for d in last) / len(last))),
-        'gain': sum(d['gain'] for d in last) / len(last),
-        'ae_converged': ae_converged,
-    }
-
-
-def verify_lens_darkness(board, password, width=1920, height=1080, timeout=25):
-    """
-    Verify that the lens is adequately blocked before BLC calibration.
-
-    Captures a single dark frame at minimum gain/exposure and measures the
-    mean pixel level across all 4 Bayer channels. Returns a dict:
-      {
-        'ok':       bool   — True if all channels are in the pedestal range
-        'means':    dict   — {'R': float, 'GR': float, 'GB': float, 'B': float}
-        'max_dn':   float  — highest single-pixel value in the frame
-        'verdict':  str    — human-readable result
-        'nir_leak': bool   — True if B channel significantly higher than GR
-      }
-
-    Acceptance criteria (10-bit DN, exposure=50 lines, gain=1×):
-      Expected pedestal range : 60–75 DN    (IMX219 datasheet 64 DN ± thermal)
-      Max pixel               : < 90 DN     (> 90 means light is leaking in)
-      B/GR ratio              : < 1.10      (> 1.10 means NIR leaking via plastic)
-
-    Material notes:
-      Black electrical tape : max_dn typically 62–68 DN  — PASS
-      Dark paper + cello tape : max_dn 64–75 DN          — usually PASS (verify)
-      Plastic lens cap      : max_dn 70–120 DN at B ch   — FAIL (NIR-transparent)
-      Hand cover (lit room) : max_dn 90–250 DN           — FAIL
-      Hand cover (dark room): max_dn 64–78 DN            — marginal PASS
-    """
-    logger.info('Verifying lens darkness before BLC capture...')
-
-    frame_bytes = width * height * 2
-    cmd = (
-        'SENSOR_DEV=$(media-ctl -d /dev/media0 -e "imx219 1-0010" 2>/dev/null | '
-        'grep -oP "/dev/v4l-subdev[0-9]+" | head -1); '
-        '[ -z "$SENSOR_DEV" ] && SENSOR_DEV=/dev/v4l-subdev3; '
-        'v4l2-ctl -d "$SENSOR_DEV" --set-ctrl analogue_gain=0,exposure=50 2>/dev/null; '
-        'sleep 0.15; '
-        f'v4l2-ctl -d /dev/video0 '
-        f'--set-fmt-video=width={width},height={height},pixelformat=RG10 '
-        f'--stream-mmap --stream-count=5 --stream-to=/tmp/_dark_verify.raw 2>/dev/null && '
-        f'echo VERIFY_OK || echo VERIFY_FAIL'
-    )
-
-    stdout, stderr, rc = _ssh_run(board, password, cmd, timeout=timeout)
-
-    if 'VERIFY_FAIL' in stdout or rc != 0:
-        # EPIPE: pipeline not reset after previous session — needs reboot
-        if 'Broken pipe' in stderr or 'EPIPE' in stderr or 'STREAMON' in stderr:
-            return {
-                'ok': False,
-                'means': {},
-                'max_dn': 0,
-                'verdict': ('PIPELINE ERROR: ISC is in a broken state (EPIPE). '
-                            'Reboot the board and retry: '
-                            'this happens after a session crashes mid-stream.'),
-                'nir_leak': False,
-            }
-        return {
-            'ok': False, 'means': {}, 'max_dn': 0,
-            'verdict': f'Capture failed (rc={rc}): {stderr.strip()[:120]}',
-            'nir_leak': False,
-        }
-
-    # Pull raw frame to a temp file and analyse in Python
-    import tempfile, os
-    tmp = tempfile.mktemp(suffix='.raw')
-    if not _scp_from_board(board, password, '/tmp/_dark_verify.raw', Path(tmp)):
-        return {
-            'ok': False, 'means': {}, 'max_dn': 0,
-            'verdict': 'SCP failed — cannot pull dark frame for analysis',
-            'nir_leak': False,
-        }
-
-    import numpy as np
-    try:
-        data = np.fromfile(tmp, dtype=np.uint16).astype(np.float32)
-        os.unlink(tmp)
-    except Exception as e:
-        return {'ok': False, 'means': {}, 'max_dn': 0,
-                'verdict': f'File read failed: {e}', 'nir_leak': False}
-
-    total_px = width * height
-    if len(data) < total_px:
-        return {'ok': False, 'means': {}, 'max_dn': 0,
-                'verdict': f'Frame too small ({len(data)} px < {total_px})',
-                'nir_leak': False}
-
-    # Use the last frame (most settled after gain/exposure register write)
-    frame = data[-total_px:].reshape(height, width)
-
-    # Extract 4 Bayer channels (RGGB pattern for IMX219)
-    R  = frame[0::2, 0::2]   # Red
-    GR = frame[0::2, 1::2]   # Green-Red row
-    GB = frame[1::2, 0::2]   # Green-Blue row
-    B  = frame[1::2, 1::2]   # Blue
-
-    means = {
-        'R':  float(R.mean()),
-        'GR': float(GR.mean()),
-        'GB': float(GB.mean()),
-        'B':  float(B.mean()),
-    }
-    max_dn = float(frame.max())
-
-    # Evaluate
-    all_in_pedestal = all(60 <= v <= 80 for v in means.values())
-    no_high_pixels  = max_dn < 90
-    gr_mean = means['GR']
-    b_gr_ratio = means['B'] / gr_mean if gr_mean > 0 else 99
-    nir_leak = b_gr_ratio > 1.10
-
-    ok = all_in_pedestal and no_high_pixels and not nir_leak
-
-    if ok:
-        verdict = (f'PASS  — all channels in pedestal range '
-                   f'[R={means["R"]:.1f} GR={means["GR"]:.1f} '
-                   f'GB={means["GB"]:.1f} B={means["B"]:.1f}] DN, '
-                   f'max={max_dn:.0f} DN. Safe to proceed with BLC.')
-    elif nir_leak and not all_in_pedestal:
-        verdict = (f'FAIL: NIR leak detected — B/GR={b_gr_ratio:.2f} (>{1.10:.2f}). '
-                   f'B channel mean={means["B"]:.1f} DN >> GR={means["GR"]:.1f} DN. '
-                   f'Your cover transmits near-infrared (850 nm+). '
-                   f'Use BLACK electrical tape or multiple layers of dark paper. '
-                   f'Cello tape alone is transparent to NIR. '
-                   f'Add black paper between lens and tape.')
-    elif not no_high_pixels:
-        verdict = (f'FAIL: Light leaking in — max pixel={max_dn:.0f} DN (must be <90). '
-                   f'Check for gaps around the lens barrel. '
-                   f'Press cover flat against the lens module with no gaps.')
-    else:
-        verdict = (f'WARN: Means slightly outside pedestal range '
-                   f'[R={means["R"]:.1f} GR={means["GR"]:.1f} '
-                   f'GB={means["GB"]:.1f} B={means["B"]:.1f}] DN. '
-                   f'Acceptable if all values are 55–85 DN. '
-                   f'Proceed with caution or add more layers.')
-
-    logger.info(f'  Darkness check: {verdict}')
-    return {
-        'ok': ok,
-        'means': means,
-        'max_dn': max_dn,
-        'verdict': verdict,
-        'nir_leak': nir_leak,
-    }
-
-
-def _capture_blc_on_board(board, password, output_dir, width=1920, height=1080,
-                          timeout=30):
-    """
-    Capture a dark (lens-capped) frame for BLC calibration using v4l2-ctl.
-
-    Uses v4l2-ctl directly (NOT mchpcam-still) so no IPA is running and
-    therefore no AGC gain boost occurs. The IPA would ramp analogue gain to
-    maximum (~9x) on a dark frame, making the "dark frame" measure the noise
-    floor at high gain rather than the true sensor black level pedestal.
-
-    Sets analogue gain to minimum (1.0) and a fixed short exposure (1ms)
-    via V4L2 sensor controls before capture.
-
-    Returns the local path to the captured .raw dark frame, or None on failure.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    remote_raw = '/tmp/blc_dark.raw'
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    local_raw = output_dir / f'dark_lux0_{ts}.raw'
-
-    # Set minimum gain and short exposure on the SENSOR subdevice (/dev/v4l-subdev3),
-    # NOT on /dev/video0. The sensor exposure/gain controls belong to the sensor
-    # subdevice; setting them on the ISC video node silently fails (unknown control).
-    # The subdevice node index may vary — discover it by matching the entity name.
-    frame_bytes = width * height * 2
-    cmd = (
-        # Find sensor subdevice by entity name and store as SENSOR_DEV
-        'SENSOR_DEV=$(media-ctl -d /dev/media0 -e "imx219 1-0010" 2>/dev/null | '
-        'grep -oP "/dev/v4l-subdev[0-9]+" | head -1); '
-        '[ -z "$SENSOR_DEV" ] && SENSOR_DEV=/dev/v4l-subdev3; '
-        # Set minimum gain (0 = 1.0×) and short exposure (50 lines ≈ 1ms at 30fps)
-        # so the frame is dark enough to measure the true pedestal. Exposure=50
-        # is safe: too short to accumulate scene signal through a capped lens.
-        'v4l2-ctl -d "$SENSOR_DEV" --set-ctrl analogue_gain=0,exposure=50 2>/dev/null; '
-        # Wait 2 frames for the sensor to apply the register write (2-frame lag)
-        'sleep 0.1; '
-        f'v4l2-ctl -d /dev/video0 '
-        f'--set-fmt-video=width={width},height={height},pixelformat=RG10 '
-        f'--stream-mmap --stream-count=8 --stream-to=/tmp/_blc_raw8.raw 2>/dev/null; '
-        # Take the last 3 frames and average them for noise reduction
-        # (vs single frame which has ~3 DN RMS noise at gain=1)
-        f'dd if=/tmp/_blc_raw8.raw bs={frame_bytes} skip=5 count=1 '
-        f'of={remote_raw} 2>/dev/null; '
-        f'rm -f /tmp/_blc_raw8.raw; '
-        # Verify file was created and is not empty
-        f'test -s {remote_raw} && echo "BLC_CAPTURE_OK" || echo "BLC_CAPTURE_FAIL"'
-    )
-
-    logger.info(f'Capturing dark frame via v4l2-ctl on {board}...')
-    stdout, stderr, rc = _ssh_run(board, password, cmd, timeout=timeout)
-
-    if rc != 0 or 'BLC_CAPTURE_FAIL' in stdout:
-        logger.error(f'v4l2-ctl dark capture failed (rc={rc}): {stderr.strip()[:200]}')
-        return None
-    if 'BLC_CAPTURE_OK' not in stdout:
-        logger.error('BLC capture: output file missing or empty on board.')
-        return None
-
-    if not _scp_from_board(board, password, remote_raw, local_raw):
-        logger.error(f'Failed to copy dark frame from board')
-        return None
-
-    # Write a minimal JSON sidecar so image.py can load it correctly
-    # wb_gains all 1.0 (no IPA WB applied), black_level unknown (measuring it)
-    sidecar = {
-        'width': width, 'height': height,
-        'format': 'RG10', 'bayer_pattern': 'RGGB',
-        'exposure_us': 1000.0, 'analogue_gain': 1.0,
-        'black_level': 0,   # 0 = raw -- no BLC applied for this capture
-        'black_level_r': 0, 'black_level_gr': 0,
-        'black_level_gb': 0, 'black_level_b': 0,
-        'wb_gains_r': 1.0, 'wb_gains_gr': 1.0,
-        'wb_gains_gb': 1.0, 'wb_gains_b': 1.0,
-        'lux': 0.0,
-    }
-    json_path = local_raw.with_suffix('.json')
-    with open(json_path, 'w') as f:
-        json.dump(sidecar, f, indent=2)
-
-    logger.info(f'  Saved dark frame: {local_raw}')
-    return local_raw
-
-
-def capture_on_board(board, password, output_dir, prefix,
-                     true_ct=None, true_lux=None,
-                     width=1920, height=1080, timeout=90):
-    """
-    Trigger a calibration capture on the board via SSH.
-
-    Trigger a JPEG calibration capture on the board via SSH.
-
-    Runs mchpcam-still with --metadata --metadata-format=json to get
-    IscHistogramMeans (pre-WB histogram channel means) alongside the
-    converged AWB/AGC state. Falls back to ISC_AWB:DEBUG log parsing for
-    firmware older than v0.6.1.
-
-    Args:
-      board      : SSH target, e.g. 'root@10.40.24.60'
-      password   : SSH password (or None for key auth)
-      output_dir : local directory to save the captured files
-      prefix     : filename prefix (e.g. 'grey_card')
-      true_ct    : true CCT in Kelvin (from phone camera or lux meter)
-      true_lux   : measured scene lux (from handheld meter)
-      width/height: capture resolution
-      timeout    : SSH command timeout in seconds
-
-    Returns the local path to the saved JPEG, or None on failure.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Capture JPEG (full ISC pipeline active, AWB/AGC converge normally).
-    #
-    # The ISC has a single DMA output path. SRGGB10 output has the WB block
-    # active (bits_pipeline=WB_ENABLE), so it is not true pre-WB raw data.
-    # More importantly, without the ISC post-processing pipeline (CFA, gamma,
-    # CBC), the AGC luminance target is in the wrong domain and AE never
-    # converges — mchpcam-still hangs indefinitely.
-    #
-    # Calibration channel means are read from the IPA AWB debug log lines
-    # (pre-WB histogram tap via ISC_HIS_CFG_RAR), not from pixel data.
-    # The JPEG is saved only as a visual reference for the operator.
-    remote_jpeg = '/tmp/calib_capture.jpg'
-    remote_json = '/tmp/calib_capture.json'
-
-    log_cmd = (''
-               'LIBCAMERA_LOG_LEVELS=ISC_AWB:DEBUG,ISC_AGC:DEBUG,ISC_IPA:DEBUG '
-               f'mchpcam-still --noir '
-               f'--width={width} --height={height} --timeout=200 '
-               f'-o {remote_jpeg}')
-
-    ct_str = f'{int(true_ct)}K' if true_ct else '?K'
-    stdout, stderr, rc = _ssh_run_progress(
-        board, password, log_cmd,
-        timeout=180,
-        label=f'Capture {ct_str}',
-    )
-
-    captured_ok = 'Saved JPEG:' in stdout or 'Saved JPEG:' in stderr
-    if not captured_ok:
-        logger.error(f'Capture failed (rc={rc}). "Saved JPEG:" not found.')
-        logger.error('Check: (1) board alive, (2) mchpcam-still installed, '
-                     '(3) sensor connected, (4) scene bright enough for AGC.')
-        return None
-
-    # --- Read AWB/AGC data from structured metadata (only valid source) -----
-    #
-    # mchpcam-still --metadata --metadata-format=json writes one JSON object
-    # per captured frame to stdout. We need the LAST object (the saved frame —
-    # the converged one) not the first (warmup frame before AWB/AGC converged).
-    #
-    # IscHistogramMeans [GR, R, GB, B]: pre-WB histogram channel means.
-    # This is the authoritative calibration input — the ISC histogram tap
-    # (ISC_HIS_CFG_RAR) is before both DPC and WB. Debug log parsing is
-    # completely removed: the metadata is a stable versioned interface;
-    # log format can change or be suppressed without warning.
-    awb = None
-    agc = None
-    last_meta = None
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith('{'):
-            continue
-        try:
-            meta = json.loads(line)
-            last_meta = meta      # keep updating — we want the last one
-        except json.JSONDecodeError:
-            continue
-
-    if last_meta is not None:
-        hist = last_meta.get('IscHistogramMeans')
-        # IscHistogramMeans array: [GR, R, GB, B] — hardware channel order
-        if hist and len(hist) == 4:
-            awb = {
-                'GR':        float(hist[0]),
-                'R':         float(hist[1]),
-                'GB':        float(hist[2]),
-                'B':         float(hist[3]),
-                'awb_locked': bool(last_meta.get('AwbLocked', False)),
-                'ct_smoothed': float(last_meta.get('ColourTemperature', 0)),
-            }
-        else:
-            logger.error(
-                'IscHistogramMeans not found in metadata JSON. '
-                'This firmware does not emit the vendor histogram control. '
-                'Rebuild and redeploy libcamera-mchp v0.6.1+ to the board.')
-            return None
-
-        exp_us = last_meta.get('ExposureTime')
-        gain   = last_meta.get('AnalogueGain')
-        if exp_us is not None and gain is not None:
-            agc = {
-                'exposure_us':  float(exp_us),
-                'gain':         float(gain),
-                'ae_converged': last_meta.get('AeState') == 'AeStateConverged',
-            }
-    else:
-        logger.error(
-            'No JSON metadata found in mchpcam-still stdout. '
-            'Check that --metadata --metadata-format=json flags are passed '
-            'and that the firmware supports metadata output.')
-        return None
-
-    if not awb['awb_locked']:
-        logger.warning('AWB was not locked at capture time. '
-                       'Channel means may not represent true illuminant. '
-                       'Increase --timeout or ensure adequate scene brightness.')
-
-    if agc and not agc['ae_converged']:
-        logger.warning('AE had not converged at capture time. '
-                       'Exposure/gain values may be mid-ramp.')
-
-    # Build filename tags.
-    # CRITICAL: Only use true_ct from the USER (phone/meter measurement).
-    # NEVER use IPA's ct_smoothed as the true CCT — it is the value being
-    # corrected. Using it as ground truth makes calibration circular.
-    tags = []
-    if true_ct is not None:
-        tags.append(f'ct{int(true_ct)}K')
-
-    if true_lux is not None:
-        tags.append(f'lux{int(true_lux)}')
-
-    if agc:
-        tags.append(f'exp{round(agc["exposure_us"])}us')
-        tags.append(f'gain{agc["gain"]:.2f}')
-
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    stem = f'{prefix}_{"_".join(tags)}_{ts}' if tags else f'{prefix}_{ts}'
-
-    local_jpeg = output_dir / f'{stem}.jpg'
-    local_json  = output_dir / f'{stem}.json'
-
-    # Verify file exists on board before copying
-    check_out, _, check_rc = _ssh_run(board, password,
-                                      f'test -s {remote_jpeg} && echo "OK"',
-                                      timeout=10)
-    if check_rc != 0 or 'OK' not in check_out:
-        logger.error(f'JPEG file not found or empty on board: {remote_jpeg}')
-        return None
-
-    # Copy JPEG from board (visual reference)
-    if not _scp_from_board(board, password, remote_jpeg, local_jpeg):
-        logger.error(f'Failed to copy {remote_jpeg} from board')
-        return None
-
-    # Copy JSON sidecar
-    _scp_from_board(board, password, remote_json, local_json)
-
-    # Write a JSON sidecar alongside the JPEG containing all calibration
-    # metadata. This is the single source of truth for each capture:
-    # - true_ct: ground truth CCT from user (phone/meter) — calibration input
-    # - hist_means: pre-WB histogram channel means — calibration input
-    # - ipa_ct_smoothed: IPA estimate — informational only, NOT ground truth
-    # - exposure_us, gain: for lux calibration and filename tagging
-    sidecar = {
-        'width':       width,
-        'height':      height,
-        'format':      'JPEG',
-        'true_ct':     true_ct,
-        'lux':         true_lux,
-    }
-    if awb:
-        sidecar['hist_means'] = {
-            'R':  awb['R'],
-            'GR': awb['GR'],
-            'GB': awb['GB'],
-            'B':  awb['B'],
-        }
-        sidecar['awb_locked']     = awb['awb_locked']
-        sidecar['ipa_ct_smoothed'] = awb['ct_smoothed']
-        if true_ct:
-            sidecar['ipa_ct_error_before_cal'] = round(awb['ct_smoothed'] - true_ct, 1)
-    if agc:
-        sidecar['exposure_us']  = agc['exposure_us']
-        sidecar['analogue_gain'] = agc['gain']
-        sidecar['ae_converged']  = agc['ae_converged']
-
-    try:
-        with open(local_json, 'w') as f:
-            json.dump(sidecar, f, indent=2)
-    except Exception as e:
-        logger.warning(f'Could not write JSON sidecar: {e}')
-
-    if awb:
-        logger.info(f'  IPA CT smoothed={awb.get("ct_smoothed", 0):.0f}K  '
-                    f'means: R={awb["R"]:.1f} GR={awb["GR"]:.1f} '
-                    f'GB={awb["GB"]:.1f} B={awb["B"]:.1f}')
-        if true_ct:
-            err = awb.get('ct_smoothed', 0) - true_ct
-            logger.info(f'  CT error before correction: {err:+.0f}K')
-
-    logger.info(f'  Saved: {local_jpeg}')
-    return local_jpeg
-
-
-def run_ssh_capture_session(args, modules):
-    """
-    Interactive SSH capture session: prompt for each illuminant, trigger
-    captures on the board, save RAW+JSON files with metadata filenames.
-
-    Returns the list of captured local paths.
-    """
-    board = args.board
-    password = getattr(args, 'board_pass', None)
-    output_dir = Path(args.input)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Check board connectivity
-    logger.info(f'Checking board connectivity ({board})...')
-    _, _, rc = _ssh_run(board, password,
-                        'which mchpcam-still > /dev/null 2>&1', timeout=15)
-    if rc != 0:
-        logger.error(f'Cannot reach {board} or mchpcam-still not found')
-        return []
-    logger.info(f'Board reachable: {board}')
-
-    captured = []
-    needs_ct = 'ct' in modules or 'awb' in modules or 'ccm' in modules
-
-    no_prompt = getattr(args, 'no_prompt', False)
-
-    if 'blc' in modules:
-        if not no_prompt:
-            input('Cap the lens. Press Enter when ready: ')
-        path = _capture_blc_on_board(board, password, output_dir)
-        if path:
-            captured.append(path)
-
-    if needs_ct:
-        # Determine what target each capture needs based on active modules:
-        #   ct / awb : 18% neutral grey card, uniform fill >70% of frame
-        #   ccm      : Macbeth ColorChecker chart, all 24 patches visible,
-        #              no glare, chart perpendicular to lens axis
-        # When both are active, two separate captures are taken per CCT:
-        # first the grey card (for ct/awb), then the ColorChecker (for ccm).
-        needs_grey     = 'ct' in modules or 'awb' in modules
-        needs_macbeth  = 'ccm' in modules
-
-        if not no_prompt:
-            targets = []
-            if needs_grey:
-                targets.append('18% grey card (ct/awb)')
-            if needs_macbeth:
-                targets.append('Macbeth ColorChecker (ccm)')
-            print(f'Captures required per CCT point: {", ".join(targets)}')
-            print('Enter lightbox-rated CCT. Type "done" when complete.')
-
-        while True:
-            try:
-                ct_str = input('CCT [K]: ').strip()
-            except EOFError:
-                print('\n  EOF on stdin — ending CCT capture loop.')
-                break
-            if ct_str.lower() == 'done':
-                break
-            ct_str = ct_str.rstrip('kK')
-            try:
-                true_ct = float(ct_str)
-            except ValueError:
-                print('  Invalid CCT. Enter a number (e.g. 4350) or "done".')
-                continue
-
-            if true_ct < 1000 or true_ct > 20000:
-                print(f'  Warning: {true_ct:.0f}K is outside supported range [1000, 20000].')
-
-            true_lux = None
-            if 'lux' in modules:
-                try:
-                    lux_str = input(f'  Lux at {true_ct:.0f}K (Enter to skip): ').strip()
-                except EOFError:
-                    lux_str = ''
-                if lux_str:
-                    try:
-                        true_lux = float(lux_str)
-                        if true_lux <= 0:
-                            print(f'  Lux must be positive. Skipping.')
-                            true_lux = None
-                    except ValueError:
-                        print(f'  Invalid lux value "{lux_str}", skipping.')
-
-            # Grey card capture (ct / awb)
-            if needs_grey:
-                if not no_prompt:
-                    input(f'  Grey card in frame at {true_ct:.0f}K. Press Enter: ')
-                path = capture_on_board(board, password, output_dir,
-                                        prefix='grey_card',
-                                        true_ct=true_ct, true_lux=true_lux,
-                                        width=1920, height=1080)
-                if path:
-                    captured.append(path)
-                    print(f'  Saved: {path.name}')
-
-            # ColorChecker capture (ccm) — separate capture at same CCT
-            if needs_macbeth:
-                if not no_prompt:
-                    input(f'  Macbeth ColorChecker in frame at {true_ct:.0f}K. Press Enter: ')
-                path = capture_on_board(board, password, output_dir,
-                                        prefix='colorchecker',
-                                        true_ct=true_ct, true_lux=true_lux,
-                                        width=1920, height=1080)
-                if path:
-                    captured.append(path)
-                    print(f'  Saved: {path.name}')
-
-    # Lux capture: needed if no previously-captured image has a non-zero lux tag
-    # Check the actual images in the input dir, not just the captured paths,
-    # since the user may have pre-existing lux images from a CT capture session.
-    existing_lux = [
-        p for p in output_dir.iterdir()
-        if p.suffix.lower() == '.raw'
-        and re.search(r'lux([1-9][0-9]*)', p.stem, re.IGNORECASE)
-    ]
-    if 'lux' in modules and not existing_lux:
-        lux_str = input('Lux reference [lux] (Enter to skip): ').strip()
-        if not lux_str:
-            logger.info('Lux reference skipped.')
-        else:
-            try:
-                true_lux = float(lux_str)
-                path = capture_on_board(board, password, output_dir,
-                                        prefix='lux_ref', true_lux=true_lux,
-                                        width=1920, height=1080)
-                if path:
-                    captured.append(path)
-            except ValueError:
-                logger.warning(f'Invalid lux value "{lux_str}", skipping.')
-
-    return captured
-
-
 def main():
     parser = argparse.ArgumentParser(
         description='Microchip ISC IPA tuning tool',
@@ -1495,11 +644,6 @@ Offline workflow:
   python3 microchip_isc.py -i ./images/ -o imx219_noir.yaml --noir \\
       --modules ct awb lux recalc
 
-SSH capture workflow:
-  python3 microchip_isc.py \\
-      --board root@<host> --board-pass <pass> \\
-      -i ./calib_images/ -o imx219_noir.yaml \\
-      --modules blc ct awb lux recalc --noir
 ''')
 
     parser.add_argument('-i', '--input', required=False, default=None,
@@ -1522,20 +666,12 @@ SSH capture workflow:
     parser.add_argument('--no-prompt', action='store_true',
         help='Skip interactive preamble and lens-cap prompt (for use from '
              'wrapper scripts that handle user interaction externally)')
-    parser.add_argument('--board',
-        help='SSH target for live capture mode. Accepts any value that SSH '
-             'resolves: IP address, hostname, or FQDN. '
-             'Example: root@192.168.1.100 or root@boardname. '
-             'When set, captures are triggered on the board via SSH and '
-             'saved to --input directory before processing.')
-    parser.add_argument('--board-pass', dest='board_pass', default=None,
-        help='SSH password for --board. Omit to use key-based authentication.')
     parser.add_argument('--factory-reset', action='store_true',
         help='RECOVERY ONLY: restore physics-derived factory defaults to the '
              'YAML. Use this ONLY when a previous calibration produced garbage '
              'results and you want to return to a known-safe state before '
              're-calibrating. Do NOT use as a routine pre-calibration step — '
-             'the standard workflow (bash calib.sh) handles starting state '
+             'the standard workflow (mchp_capture.sh + microchip_isc.py) handles starting state '
              'correctly without a reset. '
              'Writes: BLC=64 DN, AWB gains from Planckian locus, '
              'CCM=identity, lux_reference=uncalibrated. '
@@ -1543,8 +679,14 @@ SSH capture workflow:
     parser.add_argument('--health', action='store_true',
         help='Print calibration health score (0–100) for the current YAML '
              'and exit. Does not require --input or --modules.')
+    parser.add_argument('--post-cal-image', dest='post_cal_image',
+        default=None, metavar='IMAGE',
+        help='JPEG image captured after calibration (grey card at reference '
+             'CCT) to verify AWB convergence.  R/G and B/G are measured and '
+             'scored in the health report.  Use with --health to check the '
+             'result after running mchp_capture.sh on the calibrated board.')
     parser.add_argument('--dry-run', action='store_true',
-        help='Validate all dependencies (board connectivity, Python packages, '
+        help='Validate all dependencies (Python packages, '
              'YAML structure) and print a pre-flight check. Does not capture '
              'or modify anything.')
 
@@ -1557,7 +699,22 @@ SSH capture workflow:
     # --health: just print score and exit
     if getattr(args, 'health', False):
         data, _ = load_yaml(args.output)
-        score, report = calibration_health_score(data)
+        after_stats = None
+        if getattr(args, 'post_cal_image', None):
+            try:
+                from PIL import Image as _PILImage
+                import numpy as _np
+                _img = _PILImage.open(args.post_cal_image).convert('RGB')
+                _a = _np.array(_img, dtype=_np.float32)
+                _r, _g, _b = _a[:,:,0].mean(), _a[:,:,1].mean(), _a[:,:,2].mean()
+                if _g > 0:
+                    after_stats = {'rg': _r / _g, 'bg': _b / _g}
+                    logger.info(
+                        f'Post-cal image: R/G={after_stats["rg"]:.3f} '
+                        f'B/G={after_stats["bg"]:.3f}  ({args.post_cal_image})')
+            except Exception as e:
+                logger.warning(f'Could not read post-cal image: {e}')
+        score, report = calibration_health_score(data, after_stats)
         grade = ('A' if score >= 90 else 'B' if score >= 75 else
                  'C' if score >= 60 else 'D' if score >= 45 else 'F')
         print(f'\nCalibration Health Score: {score}/100  [{grade}]')
@@ -1567,7 +724,7 @@ SSH capture workflow:
         print()
         if score < 60:
             print('  Action required: run full calibration sequence.')
-            print('  Minimum: bash utils/tuning/calib.sh')
+            print('  Capture images using mchp_capture.sh, then run microchip_isc.py --input <dir>')
         elif score < 80:
             print('  Good baseline. Run missing modules to reach 9/10.')
         else:
@@ -1619,13 +776,6 @@ SSH capture workflow:
                 f'  Old files: {", ".join(f.name for f in existing[:3])}'
                 + (f' ... (+{len(existing)-3} more)' if len(existing) > 3 else ''))
 
-    # SSH capture mode: trigger captures on the board first
-    if args.board:
-        captured = run_ssh_capture_session(args, modules)
-        if not captured:
-            logger.warning('No images captured via SSH. '
-                           'Proceeding with existing images in input directory.')
-
     # Offline mode requires input directory to exist with images
     if not Path(args.input).is_dir():
         logger.error(f'Input directory not found: {args.input}')
@@ -1635,7 +785,7 @@ SSH capture workflow:
     images = load_images(args.input, macbeth_mode='ccm' in modules and args.macbeth)
     if not images:
         logger.error('No calibration images found. '
-                     'Use --board to capture from the board, or place '
+                     'Run mchp_capture.sh on the board and copy captures to --input. See '
                      'DNG/TIFF/.raw files in the input directory.')
         sys.exit(1)
 
@@ -1740,18 +890,6 @@ def _dry_run_check(args):
         if inp.exists():
             raws = list(inp.glob('*.raw'))
             chk(f'RAW files in input', len(raws) > 0, f'{len(raws)} found')
-
-    # Board connectivity
-    if getattr(args, 'board', None):
-        import subprocess
-        pwd = getattr(args, 'board_pass', None) or ''
-        cmd = (['sshpass', '-p', pwd] if pwd else []) + \
-              ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=5',
-               args.board, 'which mchpcam-still']
-        r = subprocess.run(cmd, capture_output=True, timeout=10)
-        chk(f'Board reachable: {args.board}', r.returncode == 0,
-            '' if r.returncode == 0 else '→ check BOARD/BOARD_PASS in calib.cfg',
-            fatal=True)
 
     print(f'\n  {ok_count} checks passed, {fail_count} fatal failures.')
     if fail_count > 0:
