@@ -1014,28 +1014,31 @@ void IPAMicrochipISC::setIspControls()
 		  static_cast<int32_t>(std::round(awb.gbGain * kWbGainScale)));
 
 	/*
-	 * AWB offsets with gain-aware pedestal correction.
+	 * AWB WB offset registers.
 	 *
-	 * The IMX219 analogue gain amplifies the full pixel including
-	 * the black-level pedestal: pixel = (signal + pedestal) × gain.
-	 * The ISC DPC subtracts a FIXED pedestal (not gain-scaled), leaving
-	 * a residual of pedestal × (gain - 1) in every pixel.
+	 * On SAMA7G5 (hasDpc=true): the ISC DPC block subtracts the sensor
+	 * black-level pedestal BEFORE the WB gain multiplication.  The signal
+	 * reaching the WB block is already pedestal-free, so WB offsets must
+	 * be zero (or whatever the IPA algorithm sets, typically 0).
 	 *
-	 * The WB offset registers are applied PRE-gain (hardware subtracts
-	 * offset before the WB multiplication), so adding the residual
-	 * pedestal as a negative offset removes it from the signal path.
+	 * A previous implementation added a "gain-aware residual" correction:
+	 *   pedestalResidual = blackLevel * (gain - 1)
+	 * This was wrong for SAMA7G5: it subtracted up to 591 DN at gain=10×,
+	 * crushing all non-maxres sensor modes to black (offset=-327 observed
+	 * at gain≈6× via v4l2-ctl).  Only the full-array mode (gain≈1×)
+	 * escaped because pedestalResidual≈0 at unity gain.
 	 *
-	 * Without this, at gain=5×: floor = pedestal×4 = 256 DN → L≈164/255
-	 * floor that no target_brightness adjustment can overcome.
+	 * On SAMA5D2 (hasDpc=false): no DPC hardware; BLC uses the WB offset
+	 * path via awb.rOffset = -blackLevel set by the BLC algorithm.
+	 * The gain-residual correction is not needed there either because
+	 * the IMX219 adds its pedestal digitally after the analogue gain
+	 * stage — the pedestal in the histogram is a fixed 32 bins regardless
+	 * of gain (confirmed empirically 2026-04-26).
 	 */
-	float sensorGain = std::max(1.0f, context_.activeState.agc.analogueGain);
-	int32_t pedestalResidual = static_cast<int32_t>(
-		std::round(context_.configuration.sensor.blackLevel * (sensorGain - 1.0f)));
-
-	ctrls.set(V4L2_CID_ISC_WB_R_OFFSET, awb.rOffset - pedestalResidual);
-	ctrls.set(V4L2_CID_ISC_WB_B_OFFSET, awb.bOffset - pedestalResidual);
-	ctrls.set(V4L2_CID_ISC_WB_GR_OFFSET, awb.grOffset - pedestalResidual);
-	ctrls.set(V4L2_CID_ISC_WB_GB_OFFSET, awb.gbOffset - pedestalResidual);
+	ctrls.set(V4L2_CID_ISC_WB_R_OFFSET, awb.rOffset);
+	ctrls.set(V4L2_CID_ISC_WB_B_OFFSET, awb.bOffset);
+	ctrls.set(V4L2_CID_ISC_WB_GR_OFFSET, awb.grOffset);
+	ctrls.set(V4L2_CID_ISC_WB_GB_OFFSET, awb.gbOffset);
 
 	/* CCM: convert float (1.0=unity) to hardware scale (256=1.0x) */
 	const auto &ccm = context_.activeState.ccm;
