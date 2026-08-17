@@ -1140,6 +1140,7 @@ static void printUsage(const char *argv0)
 					 "  --noir                     Use imx219_noir.yaml tuning file\n"
 					 "                             (sensor without IR-cut filter)\n"
 					 "  --tuning-file=PATH         Override tuning YAML path\n"
+					 "\n"
 					 "  -h, --help                 Print this help\n";
 }
 

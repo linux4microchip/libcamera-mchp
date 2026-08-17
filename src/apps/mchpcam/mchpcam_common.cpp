@@ -140,6 +140,17 @@ void MchpCamCommon::applyControls(libcamera::ControlList &controls)
 			controls.set(controls::AnalogueGain, manualGain_);
 	}
 
+	/*
+	 * Independent per-knob auto/manual: lock the shutter while gain
+	 * auto-tracks, or vice versa.  Only sent when the user set them, so
+	 * default behaviour follows AeEnable alone.  The IPA's AGC reads these
+	 * and computes exposure/gain manual state independently.
+	 */
+	if (exposureTimeModeSet_)
+		controls.set(controls::ExposureTimeMode, exposureTimeMode_);
+	if (gainModeSet_)
+		controls.set(controls::AnalogueGainMode, gainMode_);
+
 	/* AWB controls */
 	controls.set(controls::AwbEnable, awbEnabled_);
 
@@ -154,6 +165,16 @@ void MchpCamCommon::applyControls(libcamera::ControlList &controls)
 		controls.set(controls::ColourGains,
 			     Span<const float, 2>(gains.data(), 2));
 	}
+
+	/*
+	 * Manual colour-correction matrix (--ccm). When set it overrides the
+	 * IPA's CT-interpolated matrix for the request; the IPA applies it with
+	 * highest precedence. Best paired with manual AWB so the override is not
+	 * fighting a changing illuminant estimate.
+	 */
+	if (ccmOverrideSet_)
+		controls.set(controls::ColourCorrectionMatrix,
+			     Span<const float, 9>(ccmOverride_.data(), 9));
 
 	/*
 	 * Hardware ISC WB register bypass via vendor controls.
@@ -188,6 +209,22 @@ void MchpCamCommon::applyControls(libcamera::ControlList &controls)
 			controls.set(GreenBlueOffset.id(),
 				     libcamera::ControlValue(hwGains_.greenBlueOffset));
 	}
+
+	/*
+	 * --framerate: lock FrameDurationLimits to a single value (min == max)
+	 * so the IPA pins the sensor VBLANK to the requested rate. 0 leaves the
+	 * frame rate unconstrained.
+	 */
+	if (framerate_ > 0.0f) {
+		int64_t durUs = static_cast<int64_t>(1000000.0f / framerate_);
+		std::array<int64_t, 2> limits{ durUs, durUs };
+		controls.set(controls::FrameDurationLimits,
+			     libcamera::Span<const int64_t, 2>(limits.data(), 2));
+	}
+
+	/* --digitalgain: manual sensor digital gain (IMX219 1.0–16.0). */
+	if (digitalGain_ >= 1.0f)
+		controls.set(controls::DigitalGain, digitalGain_);
 }
 
 /* ------------------------------------------------------------------ */
