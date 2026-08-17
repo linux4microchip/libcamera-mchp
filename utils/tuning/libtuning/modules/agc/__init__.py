@@ -4,3 +4,4 @@
 
 from libtuning.modules.agc.agc import AGC
 from libtuning.modules.agc.rkisp1 import AGCRkISP1
+from libtuning.modules.agc.microchip_isc import AGCMicrochipISC
