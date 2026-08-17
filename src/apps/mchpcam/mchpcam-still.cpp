@@ -1315,11 +1315,13 @@ int main(int argc, char **argv)
 			else if (!strcmp(name, "png-compression"))
 				cam.setPngCompression(std::stoi(optarg));
 			else if (!strcmp(name, "noir"))
-				setenv("MCHPCAM_TUNING_FILE", "imx219_noir.yaml", 1);
+				setenv("LIBCAMERA_MICROCHIP-ISC_TUNING_FILE",
+				       "imx219_noir.yaml", 1);
 			else if (!strcmp(name, "raw"))
 				cam.setRawCapture(true);
 			else if (!strcmp(name, "tuning-file"))
-				setenv("MCHPCAM_TUNING_FILE", optarg, 1);
+				setenv("LIBCAMERA_MICROCHIP-ISC_TUNING_FILE",
+				       optarg, 1);
 
 			/* Image controls */
 			else if (!strcmp(name, "brightness"))
