@@ -20,6 +20,7 @@
 #include <linux/media.h>
 #include <linux/v4l2-controls.h>
 
+#include <libcamera/base/file.h>
 #include <libcamera/base/log.h>
 
 #include <libcamera/camera.h>
@@ -45,6 +46,9 @@
 #include "libcamera/internal/request.h"
 #include "libcamera/internal/v4l2_subdevice.h"
 #include "libcamera/internal/v4l2_videodevice.h"
+#include "libcamera/internal/yaml_parser.h"
+
+#include "isc_postproc.h"
 
 namespace libcamera {
 
@@ -175,6 +179,13 @@ public:
 	std::map<uint32_t, FrameInfo> frameInfo_;
 	ControlList latestIpaMetadata_;
 
+	/*
+	 * Software lens-shading stage. The ISC has no hardware block for it, so
+	 * it runs here on the finished output buffer before completion, serving
+	 * every client.
+	 */
+	std::unique_ptr<IscPostProcessor> postproc_;
+
 	FrameInfo *findFrameInfo(Request *request);
 
 private:
@@ -258,6 +269,8 @@ private:
 	int processControls(MicrochipISCCameraData *data, Request *request);
 	void updateControls(MicrochipISCCameraData *data, const ControlInfoMap &ipaControls);
 	void bufferReady(FrameBuffer *buffer);
+	void postProcDone(FrameBuffer *buffer);
+	void completeFrameBuffer(MicrochipISCCameraData *data, FrameBuffer *buffer);
 	void statsBufferReady(FrameBuffer *buffer);
 	void tryCompleteRequest(MicrochipISCCameraData *data,
 				MicrochipISCCameraData::FrameInfo *info);
@@ -793,27 +806,22 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 		LOG(MicrochipISC, Debug) << "Hardware histogram support: disabled (stats device not found)";
 	}
 
+	/* Tuning file resolved below; also read for the post-processing modules. */
+	std::string ipaTuningFile;
+
 	/* Initialize IPA with tuning file */
 	if (data->ipa_) {
 		std::string sensorModel = data->sensor_->model();
 
 		/*
-		 * Allow the tuning file to be overridden via the
-		 * MCHPCAM_TUNING_FILE environment variable.
-		 * This is the standard way to select sensor variants
-		 * (e.g. imx219_noir.yaml) without modifying the kernel
-		 * driver or device tree.
-		 *
-		 * Example:
-		 *   MCHPCAM_TUNING_FILE=imx219_noir.yaml mchpcam-still -o t.jpg
-		 * or via the --noir flag in mchpcam-still which sets this env var.
+		 * Resolve the tuning file for the sensor. configurationFile()
+		 * honours the LIBCAMERA_MICROCHIP-ISC_TUNING_FILE environment
+		 * variable, the standard libcamera override used to select a
+		 * sensor variant (e.g. imx219_noir.yaml) — the --noir and
+		 * --tuning-file options of mchpcam-still set it.
 		 */
-		const char *tuningOverride = std::getenv("MCHPCAM_TUNING_FILE");
-		std::string ipaTuningFile = tuningOverride
-						    ? data->ipa_->configurationFile(tuningOverride,
-										    "uncalibrated.yaml")
-						    : data->ipa_->configurationFile(sensorModel + ".yaml",
-										    "uncalibrated.yaml");
+		ipaTuningFile = data->ipa_->configurationFile(sensorModel + ".yaml",
+							      "uncalibrated.yaml");
 		ipa::microchip_isc::IPAConfigInfo ipaConfig{};
 		ret = data->sensor_->sensorInfo(&ipaConfig.sensorInfo);
 		if (ret) {
@@ -859,6 +867,39 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	}
 	if (data->ipa_)
 		updateControls(data.get(), data->ipaControls_);
+
+	/*
+	 * Software lens-shading stage. Created on the CameraManager thread so
+	 * its completion signal is delivered back here, on the same thread as
+	 * bufferReady().
+	 */
+	data->postproc_ = std::make_unique<IscPostProcessor>();
+	data->postproc_->frameProcessed.connect(this,
+						&PipelineHandlerMicrochipISC::postProcDone);
+
+	/*
+	 * The lens-shading map is calibration for the output path, not an IPA
+	 * algorithm, so it lives in the tuning file's top-level 'modules:' list
+	 * rather than 'algorithms:' (the same split rkisp1 uses for its dewarp
+	 * parameters). Re-open the resolved tuning file and hand the matching
+	 * module block to the post-processor. A file with no 'modules:' section
+	 * simply leaves the stage inactive, so behaviour is unchanged from the
+	 * pre-calibration tuning files.
+	 */
+	if (!ipaTuningFile.empty()) {
+		File file(ipaTuningFile);
+		if (file.open(File::OpenModeFlag::ReadOnly)) {
+			std::unique_ptr<YamlObject> root = YamlParser::parse(file);
+			if (root && root->contains("modules")) {
+				for (const YamlObject &module :
+				     (*root)["modules"].asList()) {
+					if (module.contains("LensShadingCorrection"))
+						data->postproc_->loadConfig(
+							module["LensShadingCorrection"]);
+				}
+			}
+		}
+	}
 
 	/* Create and register the camera */
 	std::set<Stream *> streams;
@@ -1036,6 +1077,16 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		cfg.size = captureFormat.size;
 	}
 
+	/*
+	 * Configure the CPU post-processor for the negotiated output format.
+	 * The stride carries any line padding the ISC applied, so the filters
+	 * address rows correctly.
+	 */
+	if (data->postproc_)
+		data->postproc_->configure(pipeConfig->captureFormat,
+					   captureFormat.size,
+					   captureFormat.planes[0].bpl);
+
 	LOG(MicrochipISC, Info) << "Camera configuration complete: " << camera->id();
 	return 0;
 }
@@ -1162,6 +1213,10 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 	}
 
 	data->videoStreaming_ = false;
+
+	/* Start the CPU post-processor worker thread (no-op when disabled). */
+	if (data->postproc_)
+		data->postproc_->start();
 
 	LOG(MicrochipISC, Debug) << "Camera ready — video streamOn deferred to first buffer";
 	return 0;
@@ -1862,8 +1917,9 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 	 * call here prevents IPA state from advancing (frame counter, gain
 	 * history) when the request is about to be abandoned, which would
 	 * desynchronise IPA expectations from pipeline reality for all
-	 * subsequent frames. Mirrors the RPi pipeline where queueRequest is
-	 * issued only after the V4L2 controls have been applied successfully.
+	 * subsequent frames. Mirrors the common pipeline pattern where
+	 * queueRequest is issued only after the V4L2 controls have been
+	 * applied successfully.
 	 */
 	if (data->ipa_)
 		data->ipa_->queueRequest(request->sequence(), request->controls());
@@ -1944,15 +2000,44 @@ int PipelineHandlerMicrochipISC::queueRequestDevice(Camera *camera, Request *req
 
 void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 {
-	Request *request = buffer->request();
-	if (!request) {
-		LOG(MicrochipISC, Warning) << "Buffer without associated request";
-		return;
-	}
-
 	MicrochipISCCameraData *data = activeData_;
 	if (!data) {
 		LOG(MicrochipISC, Error) << "No active camera data";
+		return;
+	}
+
+	/*
+	 * When the lens-shading stage is active, hand the finished buffer to
+	 * its worker thread and complete the request only once filtering is
+	 * done (postProcDone()). A cancelled buffer carries no valid pixels,
+	 * so it skips the filter and completes directly.
+	 */
+	if (data->postproc_ && data->postproc_->isEnabled() &&
+	    buffer->metadata().status != FrameMetadata::FrameCancelled) {
+		data->postproc_->queue(buffer);
+		return;
+	}
+
+	completeFrameBuffer(data, buffer);
+}
+
+void PipelineHandlerMicrochipISC::postProcDone(FrameBuffer *buffer)
+{
+	if (!activeData_) {
+		LOG(MicrochipISC, Error)
+			<< "Post-processing completed with no active camera data";
+		return;
+	}
+
+	completeFrameBuffer(activeData_, buffer);
+}
+
+void PipelineHandlerMicrochipISC::completeFrameBuffer(MicrochipISCCameraData *data,
+						      FrameBuffer *buffer)
+{
+	Request *request = buffer->request();
+	if (!request) {
+		LOG(MicrochipISC, Warning) << "Buffer without associated request";
 		return;
 	}
 
@@ -2079,7 +2164,7 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 	 * after freeStatsBuffers() has unmapped the IPA buffer memory —
 	 * resulting in a use-after-free inside the IPA worker thread.
 	 *
-	 * Correct shutdown sequence (mirrors RPi pipeline_base.cpp stopDevice):
+	 * Correct shutdown sequence:
 	 *   1. streamOff video DMA  — no new bufferReady() callbacks
 	 *   2. streamOff stats DMA  — no new statsBufferReady() callbacks
 	 *   3. freeStatsBuffers()   — safe: no DMA in flight
@@ -2091,6 +2176,18 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 		data->iscVideo_->streamOff();
 		data->videoStreaming_ = false;
 	}
+
+	/*
+	 * Drain the post-processor worker now. Video DMA is stopped, so no new
+	 * bufferReady() can queue more work; stop() joins the thread and then
+	 * completes every in-flight buffer — both those already filtered and any
+	 * whose filter never ran — through frameProcessed → postProcDone →
+	 * completeFrameBuffer, before the frameInfo_ cancel loop below runs. It
+	 * must precede releaseBuffers() so the buffers the worker has mapped are
+	 * still valid.
+	 */
+	if (data->postproc_)
+		data->postproc_->stop();
 
 	if (data->statsEnabled_ && data->statsStreaming_) {
 		data->statsDevice_->streamOff();
