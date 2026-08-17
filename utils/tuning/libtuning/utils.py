@@ -36,8 +36,10 @@ def get_module_by_type_name(modules, name):
 
 def _list_image_files(directory):
     d = Path(directory)
+    # Metadata-only carriers (.jpg/.jpeg) and every raw Bayer container the
+    # loader can decode (.dng/.tiff/.tif/.pgm, see Image.raw_suffixes).
     files = [d.joinpath(f) for f in os.listdir(d)
-             if re.search(r'\.(jp[e]g$)|(dng$)', f)]
+             if re.search(r'\.(jpe?g|dng|tiff?|pgm)$', f, re.IGNORECASE)]
     files.sort()
     return files
 
@@ -52,6 +54,16 @@ def _parse_image_filename(fn: Path):
         if part == 'alsc':
             lsc_only = True
             continue
+        # Microchip histogram-capture convention: ct<K>K and lux<N>. Checked
+        # before the RPi <K>k / <N>l forms since 'ct3000K' also ends in 'K'.
+        r = re.match(r'ct(\d+)[kK]$', part)
+        if r:
+            color_temperature = int(r.group(1))
+            continue
+        r = re.match(r'lux(\d+)$', part)
+        if r:
+            lux = int(r.group(1))
+            continue
         r = re.match(r'(\d+)[kK]', part)
         if r:
             color_temperature = int(r.group(1))
@@ -60,10 +72,16 @@ def _parse_image_filename(fn: Path):
         if r:
             lux = int(r.group(1))
 
-    if color_temperature is None:
+    # A metadata-only image (non-raw) may carry CT/lux only in its JSON
+    # sidecar rather than the filename; load_images defers to the sidecar, so
+    # do not error here for those. Only the raw Macbeth path relies on the
+    # filename tags.
+    is_raw = fn.suffix.lower() in Image.raw_suffixes
+
+    if color_temperature is None and is_raw:
         logger.error(f'The file name of "{fn.name}" does not contain a color temperature')
 
-    if lux is None and lsc_only is False:
+    if lux is None and lsc_only is False and is_raw:
         logger.error(f'The file name of "{fn.name}" must either contain alsc or a lux level')
 
     return color_temperature, lux, lsc_only
@@ -91,9 +109,13 @@ def load_images(input_dir: str, config: dict, load_nonlsc: bool, load_lsc: bool)
 
     images = []
     for f in files:
+        is_raw = f.suffix.lower() in Image.raw_suffixes
         color, lux, lsc_only = _parse_image_filename(f)
 
-        if color is None:
+        # A raw Macbeth image must have a color temperature in its filename. A
+        # metadata-only image may instead carry it in the sidecar, so defer the
+        # skip and let the consuming module read it from Image.metadata.
+        if color is None and is_raw:
             logger.warning(f'Ignoring "{f.name}" as it has no associated color temperature')
             continue
 
@@ -116,15 +138,26 @@ def load_images(input_dir: str, config: dict, load_nonlsc: bool, load_lsc: bool)
             logger.error(f'Failed to load image {f.name}: {e}')
             continue
 
-        # Populate simple fields
+        # Populate simple fields. Filename tags win when present; otherwise the
+        # base defaults (-1) stand and the module may read Image.metadata.
         image.lsc_only = lsc_only
-        image.color = color
-        image.lux = lux
+        if color is not None:
+            image.color = color
+        if lux is not None:
+            image.lux = lux
 
         # Black level comes from the TIFF tags, but they are overridable by the
         # config file.
         if 'blacklevel' in config['general']:
             image.blacklevel_16 = config['general']['blacklevel']
+
+        # A metadata-only image (non-raw) has no Bayer array and no Macbeth
+        # chart to locate; its measurements live in the sidecar. Append it for
+        # modules that consume Image.metadata (e.g. vendor histogram-means
+        # calibration) and skip the Macbeth flow.
+        if not is_raw:
+            images.append(image)
+            continue
 
         if lsc_only:
             images.append(image)

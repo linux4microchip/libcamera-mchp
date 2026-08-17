@@ -190,6 +190,11 @@ class Tuner(object):
                 logger.error(f'Config is invalid for module {module.type}')
                 return -1
 
+        # Imported here rather than at module scope: the lsc module references
+        # lt.Gradient at class-definition time, which is not yet bound while
+        # libtuning/__init__.py is still importing this module. A tuner with no
+        # LSC module would otherwise never trigger this submodule to load.
+        import libtuning.modules.lsc
         has_lsc = any(isinstance(m, lt.modules.lsc.LSC) for m in self.modules)
         # Only one LSC module allowed
         has_only_lsc = has_lsc and len(self.modules) == 1

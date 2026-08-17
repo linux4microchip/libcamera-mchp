@@ -1,0 +1,169 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (C) 2026, Microchip Technology Inc.
+#
+# Input config for microchip_isc_lt.py (YamlParser reads it verbatim).
+#
+# Flat top-level keys match what each module reads: config.get('awb'/'agc'/
+# 'ccm'/'blc'/'cbc'/'gamma'). Calibrated keys (reference_gains_table,
+# lux_reference, matrices) are OVERWRITTEN by the modules when calibration
+# captures are supplied; the values here are the authored fallbacks so a run
+# with no captures still reproduces a complete tuning file.
+#
+# Output section names (BlackLevelCorrection, Awb, Agc, Cbc, Gamma, Ccm) are
+# set by each module's out_name; only the input keys are lowercase here.
+
+# Framework-level settings the libtuning core reads (parser contract: the
+# config must carry a 'general' mapping). 'macbeth' tunes the CCM module's
+# ColorChecker detection (small=1 for a chart filling <1/5 of the frame,
+# show=1 to display the located chart). 'blacklevel' (16-bit) is an optional
+# override for the raw-Bayer AWB/CCM path; the histogram-means path ignores it
+# and reads the per-channel pedestal from the blc section below.
+general:
+  macbeth:
+    small: 0
+    show: 0
+
+# Lens-shading map (optional). Built only when a uniformly-lit flat-field
+# capture tagged 'alsc' in its filename is present, and emitted to a sibling
+# <output>_lsc.yaml consumed by the mchpcam still path (the ISC has no hardware
+# shading block, so it is not an IPA algorithm). max_gain caps the corner boost
+# so near-black flat-field edges do not amplify noise.
+lsc:
+  max_gain: 4.0
+
+# Sensor black pedestal, 10-bit units (IMX219 datasheet: 64). Per-channel
+# values fall back to black_level when absent.
+blc:
+  black_level: 64
+  black_level_r: 64
+  black_level_gr: 64
+  black_level_gb: 64
+  black_level_b: 64
+
+awb:
+  convergence:
+    speed: 0.3
+    startup_speed: 1.0
+    startup_frames: 10
+    damping: 0.85
+    stability_threshold: 0.015
+    frames: 3
+    min_scene_luminance: 2
+  color_temperature:
+    min: 1800
+    max: 15000
+  gain_limits:
+    r_b_min: 0.2
+    r_b_max: 8.0
+    gb_min: 0.9
+    gb_max: 1.1
+  highlight_weight: 0.3
+  ct_fallback: 5500
+  # Fallback reference_gains_table; overwritten by the AWB module when
+  # grey-card captures (histogram means or raw pixels) are supplied.
+  reference_gains_table:
+    - { ct: 2500, r: 2.191, b: 0.630 }
+    - { ct: 3000, r: 1.982, b: 0.720 }
+    - { ct: 3500, r: 1.773, b: 0.840 }
+    - { ct: 4000, r: 1.565, b: 0.990 }
+    - { ct: 4500, r: 1.461, b: 1.110 }
+    - { ct: 5500, r: 1.330, b: 1.260 }
+    - { ct: 6500, r: 1.200, b: 1.441 }
+    - { ct: 7500, r: 1.095, b: 1.650 }
+    - { ct: 9000, r: 0.965, b: 1.920 }
+  reference_gains:
+    r: 2.55
+    b: 2.10
+    gr: 1.0
+    gb: 1.02
+  # Sensor-to-XYZ matrix for Robertson CCT estimation (row-major X/Y/Z).
+  ct_color_matrix: [0.4900, 0.3100, 0.1200, 0.2200, 0.6600, 0.0700, 0.0200, 0.1000, 0.8700]
+
+agc:
+  target_brightness: 69
+  # Fallback lux_reference; overwritten by the AGC module from a lux<N> capture.
+  lux_reference:
+    reference_Y: 60.50
+    reference_exposure_us: 16433.0
+    reference_gain: 1.0
+    reference_lux: 2370.0
+  y_target: [2370, 0.1351, 1000, 0.0876, 615, 0.0688, 300, 0.0481, 148, 0.0338, 50, 0.0197, 10, 0.0088, 1, 0.0086]
+  lux_smoothing_alpha: 0.30
+  clip_threshold: 0.02
+  ae_luminance_floor: 3.0
+  highlight_p85_threshold: 0.35
+  highlight_p85_strength: 1.0
+  ev_default: 0.0
+  zone_metering_strength: 0.50
+  ae_iqm_q_lo: 0.02
+  ae_iqm_q_hi: 0.98
+  ae_highlight_q_hi: 0.02
+  ae_highlight_target: 0.70
+  scene_ev_threshold: 1.0
+  scene_ev_bias: -1.5
+  scene_bright_p10: 10.0
+  flicker_hz: 0
+  convergence:
+    speed: 0.3
+    stability_threshold: 10.0
+    frames: 3
+  ratio_clamp:
+    min: 0.25
+    max: 2.5
+    clip_cap: 0.85
+  gain_thresholds:
+    boost: 1.05
+    reduction: 0.95
+
+cbc:
+  contrast_strength: 0.0
+  target_spread: 0.50
+  smoothing_factor: 0.65
+  saturation: 16
+  hue: 0
+  contrast_max_gain: 3.0
+  dark_scene_min_luminance: 0.01
+
+gamma:
+  gamma: 2.2
+  strength: 0.0
+  target_output: 0.447
+  smoothing_factor: 0.3
+  cdf_strength: 0.0
+  adaptive_cdf_trigger: 0.30
+  adaptive_cdf_max_boost: 0.0
+  cdf_clip_limit: 2.0
+  dark_scene_threshold: 0.01
+  toe_input: 0.0313
+  tone_rolloff_start: 0.75
+  tone_rolloff_slope: 0.35
+
+ccm:
+  smoothing_factor: 0.7
+  ct_fallback: 5500
+  ct_snap:
+    snap_threshold: 1500
+    fast_threshold: 500
+    fast_factor: 0.5
+  # Fallback matrices; overwritten by the CCM module's least-squares Macbeth
+  # solve when ColorChecker captures are supplied.
+  matrices:
+    cloudy_daylight:
+      ct: 7500
+      ccm: [1.8000, -0.5000, -0.3000, -0.4600, 1.7300, -0.2700, -0.0900, -0.5500, 1.6400]
+    daylight:
+      ct: 6500
+      ccm: [1.8500, -0.5500, -0.3000, -0.4500, 1.7500, -0.3000, -0.1000, -0.6000, 1.7000]
+    daylight_fluorescent:
+      ct: 5000
+      ccm: [1.8300, -0.5800, -0.2500, -0.3600, 1.7000, -0.3400, -0.0800, -0.6700, 1.7500]
+    fluorescent:
+      ct: 4000
+      ccm: [1.9500, -0.7000, -0.2500, -0.4000, 1.8000, -0.4000, -0.1000, -0.7500, 1.8500]
+    tungsten:
+      ct: 3000
+      ccm: [2.1000, -0.8500, -0.2500, -0.3500, 1.6500, -0.3000, -0.1500, -0.8500, 2.0000]
+    candlelight:
+      ct: 2500
+      ccm: [2.2500, -0.9500, -0.3000, -0.3000, 1.6000, -0.3000, -0.2000, -0.9500, 2.1500]

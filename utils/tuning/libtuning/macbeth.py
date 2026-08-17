@@ -514,10 +514,15 @@ def find_macbeth(img, mac_config):
 
 
 def locate_macbeth(image: Image, config: dict):
+    # A metadata-only capture carries no pixel planes; there is nothing to
+    # locate a chart in, so skip rather than fault on the None channels.
+    if image.channels is None:
+        return None
+
     # Find macbeth centres
     av_chan = (np.mean(np.array(image.channels), axis=0) / (2**16))
     av_val = np.mean(av_chan)
-    if av_val < image.blacklevel_16 / (2**16) + 1 / 64:
+    if av_val < getattr(image, 'blacklevel_16', 0) / (2**16) + 1 / 64:
         logger.warning(f'Image {image.path.name} too dark')
         return None
 

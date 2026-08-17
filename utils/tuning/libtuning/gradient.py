@@ -54,7 +54,14 @@ class Linear(Gradient):
             return [int(size)] * sectors
 
         size = math.ceil(size)
-        rem = domain % size
+        # The odd sector out takes the genuine leftover so the sectors always
+        # sum back to the domain. domain % size only equals that leftover when
+        # ceil(size) still fits sectors-1 times; for a small non-divisible domain
+        # it overshoots, so fall back to a floor size that cannot exceed domain.
+        rem = domain - size * (sectors - 1)
+        if rem < 0:
+            size = domain // sectors
+            rem = domain - size * (sectors - 1)
         output_sectors = [int(size)] * (sectors - 1)
 
         if self.remainder == lt.Remainder.Float:
