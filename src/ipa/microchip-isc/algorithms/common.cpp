@@ -384,8 +384,8 @@ static float histInterBinMean(const std::array<float, kHistBins> &combined,
  *
  * Returns the mean of the middle (qHi-qLo) fraction of the luminance
  * distribution, ignoring the darkest qLo fraction and the brightest
- * (1-qHi) fraction.  This is the core metering primitive used by the
- * Raspberry Pi and libipa AGC implementations to achieve robust AE
+ * (1-qHi) fraction.  This is the core metering primitive used by
+ * libipa-style AGC implementations to achieve robust AE
  * that is insensitive to small bright objects or dark corners.
  *
  * iqm(0.02, 0.98) ignores the darkest 2% and brightest 2% of pixels,

@@ -33,7 +33,7 @@ struct IPASessionConfiguration {
 		float minAnalogueGain;
 		float maxAnalogueGain;
 		/*
-		 * Lux estimator calibration (RPi lux.cpp approach).
+		 * Lux estimator calibration.
 		 * Measure once: point camera at a scene with known lux,
 		 * wait for AGC lock, record exposure/gain/histogramY and
 		 * measure with a handheld lux meter. Store in imx219.yaml.
@@ -231,7 +231,7 @@ struct IPAActiveState {
 		 * mean Y relative to a calibrated reference point.
 		 * Default 400 lux — typical indoor office lighting.
 		 * Used by the AGC y_target PWL to adapt the brightness target
-		 * to the scene light level, matching the RPi lux.cpp approach.
+		 * to the scene light level.
 		 */
 		float lux;
 	} lux;

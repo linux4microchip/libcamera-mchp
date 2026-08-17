@@ -563,8 +563,8 @@ void Awb::process(IPAContext &context,
 				 * AWB process() calls (awbFrameCount_, counted from
 				 * the first stats callback, not the global frame
 				 * number which starts at warmupFrames_).  This
-				 * mirrors the RPi IPA approach: instant convergence
-				 * during sensor startup so gains reach steady state
+				 * gives instant convergence during sensor startup
+				 * so gains reach steady state
 				 * before the stability lock check fires.  After that
 				 * switch to the lower tracking speed for smooth
 				 * temporal adaptation without flicker.

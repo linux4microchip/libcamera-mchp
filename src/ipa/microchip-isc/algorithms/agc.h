@@ -55,8 +55,8 @@ private:
 	/*
 	 * Tuning parameter defaults — values match imx219.yaml to ensure the
 	 * algorithm produces a sane image even when the YAML key is absent.
-	 * Pattern mirrors RPi agc_channel.h which uses constructor init-list,
-	 * and libipa AgcMeanLuminance which also initialises all members.
+	 * Pattern mirrors libipa AgcMeanLuminance, which initialises all
+	 * members via the constructor init-list.
 	 * Using .get<float>(member_) as default is UB when member_ is
 	 * uninitialised — these initialisers fix that.
 	 */
@@ -65,7 +65,7 @@ private:
 	float targetBrightness_ = 60.0f; /* 18% grey net bins, bl=64 DN */
 
 	/* IIR convergence speed in steady state (YAML: convergence.speed) */
-	float convergenceSpeed_ = 0.2f; /* matches RPi agc_channel default */
+	float convergenceSpeed_ = 0.2f; /* default steady-state IIR rate */
 
 	/* Speed used for first startupFrames_ stats deliveries (YAML: convergence.startup_speed) */
 	float startupSpeed_ = 1.0f; /* instant jump on first frames */
@@ -74,7 +74,7 @@ private:
 	unsigned int startupFrames_ = 3;
 
 	/* Near-target band for sqrt(speed) accelerator (YAML: convergence.near_target_fraction) */
-	float nearTargetFraction_ = 0.2f; /* ±20% band — matches RPi */
+	float nearTargetFraction_ = 0.2f; /* ±20% near-target band */
 
 	/* Luminance stability band for AE lock (YAML: convergence.stability_threshold) */
 	float stabilityThreshold_ = 5.0f; /* histogram bins */

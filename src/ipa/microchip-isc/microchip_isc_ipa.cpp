@@ -683,9 +683,9 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	/*
 	 * Update lineDuration from the live HBLANK each stats cycle.
 	 *
-	 * This is the generic, resolution-agnostic approach used by the RPi
-	 * IPA (agc_channel.cpp line 1476): read hblank from the live sensor
-	 * ControlList rather than the ControlInfoMap default. This correctly
+	 * This is the generic, resolution-agnostic approach: read hblank
+	 * from the live sensor ControlList rather than the ControlInfoMap
+	 * default. This correctly
 	 * handles:
 	 *   1. Different sensor modes (each mode has a different hblank)
 	 *   2. Dynamic frame-rate control (vblank changes update lineDuration)

@@ -104,7 +104,7 @@ algorithms:
       # effective brightness not visible in the final image.
     target_brightness: 56
       # EMPIRICAL CALIBRATION — SAMA7G5 + IMX219 NoIR:
-      # AGC uses normalised-WB-corrected BT.601 luminance (RPi method).
+      # AGC uses normalised-WB-corrected BT.601 luminance.
       # Histogram tap is pre-WB, pre-DPC (confirmed by BLCEN toggle test).
       # 18% grey requires ≈195 lines exposure at 4450K.
       # At 195 lines: GR_net ≈ 22 net bins in the pre-WB histogram.
@@ -115,7 +115,7 @@ algorithms:
       #
       # y_target: maps lux → effective pre-WB histogram brightness target.
       # Closes the AE feedback loop across the full pipeline (gamma + CBC),
-      # like RPi kDefaultRelativeLuminanceTarget=0.16 but lux-adaptive.
+      # like a fixed relative-luminance target (0.16) but lux-adaptive.
       #
       # CALIBRATED 2026-04-22 — IMX219 NoIR, SAMA7G5EK, 4450K lightbox:
       #   Setup:   18% grey card, lux=2214, AE locked gain=1.0x exp=6167us
@@ -168,13 +168,14 @@ algorithms:
 - Cbc:
       # Higher contrast strength: IR washes out perceived scene contrast,
       # so more aggressive histogram stretching is beneficial.
-      # contrast_strength=0.0: stretch DISABLED (like RPi/RkISP1).
+      # contrast_strength=0.0: stretch DISABLED (the conservative default:
+      # no automatic histogram stretch).
       # CBC was causing 1.75x boost on grey card → 217/255 vs 117/255.
       # Re-enable (0.1-0.2) only for outdoor/mixed scenes after validating
       # that AGC CBC-feedback loop closes correctly first.
     contrast_strength: 0.0
-      # 0.0 = CBC stretch DISABLED. Like RPi/RkISP1 which have NO automatic
-      # histogram stretch. CBC was causing 1.75× boost on grey card (narrow
+      # 0.0 = CBC stretch DISABLED (no automatic histogram stretch).
+      # CBC was causing 1.75× boost on grey card (narrow
       # histogram) → output 217/255 vs target 117/255. Calibrated 2026-04-22.
       # contrast_strength can be re-enabled (0.1-0.2) for specific scenes
       # that need contrast enhancement (outdoor, mixed lighting).
@@ -196,10 +197,10 @@ algorithms:
 
 - Gamma:
     gamma: 2.2
-      # strength=0: STATIC gamma like RPi/RkISP1. Adaptive gamma fights
+      # strength=0: STATIC gamma (no adaptive gamma). Adaptive gamma fights
       # against AE and CBC causing overexposure loop. With static gamma 2.2
       # and target_brightness=56, grey card output ≈ 96/255 (vs 117/255
-      # sRGB target — acceptable, matches RPi kDefaultRelativeLuminanceTarget).
+      # sRGB target — acceptable, near a fixed relative-luminance target).
       # Calibrated 2026-04-22: grey card 4450K/2214lux gave 244/255 with
       # strength=0.3. With strength=0 + target_brightness=56 → ~96/255.
     strength: 0.0

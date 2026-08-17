@@ -127,9 +127,9 @@ private:
 	 * AWB to compute gains. After kDarkStableFrames consecutive dark
 	 * frames, the gains are considered stable (frozen at seed values
 	 * from reference_gains_table) and AwbLocked is set to true.
-	 * This matches RPi's approach: no AWB lock concept, but the IPA
-	 * should indicate convergence when gains are stable regardless of
-	 * whether they were computed or frozen.
+	 * There is no explicit AWB lock concept: the IPA indicates
+	 * convergence when gains are stable, regardless of whether they
+	 * were computed or frozen.
 	 */
 	static constexpr unsigned int kDarkStableFrames = 5;
 	unsigned int darkFrameCount_ = 0;

@@ -32,8 +32,8 @@ namespace ipa::microchip_isc {
  * \param fallback  Value to return when table is empty
  * \return Interpolated brightness target in histogram units (0–511)
  *
- * Implements the same PWL evaluation as RPi agc_channel.cpp
- * (Pwl::eval). Linear interpolation between adjacent table points;
+ * Implements the standard piecewise-linear evaluation (libipa
+ * Pwl::eval). Linear interpolation between adjacent table points;
  * clamps to first/last entry outside the table range.
  */
 static float interpolateYTarget(const std::vector<Agc::YTargetPoint> &table,
@@ -155,7 +155,7 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		/*
 		 * IIR smoothing coefficient α ∈ (0,1].
 		 * smoothed_lux = α × raw + (1−α) × prev
-		 * 1.0 = no smoothing. Default 0.3 matches RPi lux.cpp.
+		 * 1.0 = no smoothing. Default 0.3.
 		 */
 		float alpha = tuningData["lux_smoothing_alpha"].get<float>(0.3f);
 		context.configuration.agc.luxSmoothingAlpha =
@@ -508,14 +508,14 @@ void Agc::process(IPAContext &context,
 	}
 
 	/*
-	 * Compute WB-corrected luminance, mirroring the RPi IPA approach in
-	 * agc_channel.cpp:computeInitialY().
+	 * Compute WB-corrected luminance, mirroring the reference
+	 * computeInitialY() approach.
 	 *
 	 * The ISC histogram taps pre-WB Bayer data (vp_data, pre-DPC).
 	 * Luminance metering: pre-WB histogram with normalised WB correction.
 	 *
-	 * This mirrors the RPi IPA agc_channel.cpp computeInitialY() when
-	 * agcStatsPos == AgcStatsPos::PreWb (lines 682-690):
+	 * This mirrors the reference computeInitialY() when the stats tap
+	 * is pre-WB (AgcStatsPos::PreWb):
 	 *
 	 *   double minColourGain = std::min(gainR, gainG, gainB, 1.0);
 	 *   minColourGain = std::max(minColourGain, 1.0);
@@ -563,7 +563,8 @@ void Agc::process(IPAContext &context,
 	/*
 	 * Apply normalised AWB gains: divide all channel gains by the
 	 * minimum gain so the reference channel stays at 1× and weaker
-	 * channels are scaled up.  This matches RPi agc_channel.cpp.
+	 * channels are scaled up.  This matches the reference pre-WB
+	 * luminance metering.
 	 */
 	const auto &awb = context.activeState.awb;
 	float wbR = (awb.rGain > 0.0f) ? awb.rGain : 1.0f;
@@ -624,7 +625,7 @@ void Agc::process(IPAContext &context,
 	 * clamp the effective target so the AGC reduces exposure until the
 	 * highlights fall to the target level.
 	 *
-	 * This is the "ConstraintHighlight" mode from the RPi IPA:
+	 * This is the "ConstraintHighlight" metering mode:
 	 *   newGain = targetY * hist.bins() / iqm(qLo, qHi)
 	 *   if newGain < gain: apply upper bound
 	 * For us: if top highlightQhi_% > highlightTarget_, reduce effectiveTarget.
@@ -651,8 +652,8 @@ void Agc::process(IPAContext &context,
 	 * Phase 1 — startup (agcFrameCount_ <= startupFrames_):
 	 *   Use startupSpeed_ (default 1.0) so exposure and gain jump
 	 *   directly to their target values in the first few frames.
-	 *   This matches the RPi IPA fast-start approach: reach roughly
-	 *   correct exposure before the stability lock check can fire,
+	 *   This is a fast-start approach: reach roughly correct exposure
+	 *   before the stability lock check can fire,
 	 *   preventing false-convergence at the initial low luminance.
 	 *
 	 * Phase 2 — steady state (agcFrameCount_ > startupFrames_):
@@ -669,8 +670,8 @@ void Agc::process(IPAContext &context,
 	 * Determine the brightness target in pre-WB RAW histogram units.
 	 *
 	 * When a y_target PWL table is configured (imx219.yaml y_target block),
-	 * interpolate the target from the current lux estimate. This is the RPi
-	 * approach: the target adapts to scene brightness so the full pipeline
+	 * interpolate the target from the current lux estimate. The target
+	 * adapts to scene brightness so the full pipeline
 	 * output stays close to the photographic reference level regardless of
 	 * light level, analogue gain, WB chain, or CBC contrast boost.
 	 *
@@ -821,7 +822,7 @@ void Agc::process(IPAContext &context,
 		<< " effectiveTarget=" << effectiveTarget;
 
 	/*
-	 * Three-region speed selection — mirrors RPi agc_channel.cpp filterExposure():
+	 * Three-region speed selection — mirrors the reference filterExposure():
 	 *
 	 * 1. Startup (agcFrameCount_ <= startupFrames_):
 	 *    speed = startupSpeed_ (default 1.0 — direct jump).
@@ -832,7 +833,7 @@ void Agc::process(IPAContext &context,
 	 *    speed = sqrt(convergenceSpeed_) — ~2× faster than steady state.
 	 *    Eliminates micro-oscillation near the stability boundary where
 	 *    the standard IIR rate leaves the loop hovering for many frames.
-	 *    RPi uses ±20% band (nearTargetFraction_ = 0.2).
+	 *    Default band is ±20% (nearTargetFraction_ = 0.2).
 	 *
 	 * 3. Steady state:
 	 *    speed = convergenceSpeed_ (default 0.2) — smooth tracking.
@@ -881,7 +882,7 @@ void Agc::process(IPAContext &context,
 	 * maximum and the startup phase is complete. In the latter case
 	 * the sensor has done everything it can — there is no point
 	 * waiting indefinitely for a target it physically cannot reach.
-	 * Mirrors the RPi pattern where frameCount > startupFrames + lockFrames
+	 * Mirrors the common pattern where frameCount > startupFrames + lockFrames
 	 * eventually forces a lock even on scenes beyond the sensor's range.
 	 */
 	bool frameStable = (currentLuminance >= aeLuminanceFloor_ &&

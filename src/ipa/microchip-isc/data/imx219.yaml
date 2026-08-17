@@ -20,8 +20,8 @@ algorithms:
         # Used after startup_frames to give smooth temporal tracking.
         speed: 0.3
         # Startup speed [0-1]: fast convergence for the first startup_frames
-        # updates, matching the RPi IPA approach of instant convergence during
-        # sensor warmup so gains reach steady state before the lock check.
+        # updates, giving instant convergence during sensor warmup so gains
+        # reach steady state before the lock check.
         startup_speed: 1.0
         # Number of frames to use startup_speed before switching to speed.
         startup_frames: 10
@@ -107,7 +107,7 @@ algorithms:
       # Scaled from tb=40 calibration by factor 69/40=1.725 (2026-04-26).
       y_target: [2370, 0.1351, 1000, 0.0876, 615, 0.0688, 300, 0.0481, 148, 0.0338, 50, 0.0197, 10, 0.0088, 1, 0.0086]
       # IIR smoothing for lux estimate: smoothed = alpha*raw + (1-alpha)*prev
-      # 0.3 = RPi default (3-4 frame settling). 1.0 = no smoothing.
+      # 0.3 = default (3-4 frame settling). 1.0 = no smoothing.
       lux_smoothing_alpha: 0.30
       # Fraction of clipped pixels that triggers highlight anti-windup.
       # When clipping exceeds this threshold the AGC is prevented from
@@ -141,7 +141,7 @@ algorithms:
       ae_iqm_q_hi: 0.98
       # Highlight constraint: clamp gain when top ae_highlight_q_hi
       # fraction of luminance exceeds ae_highlight_target * HIST_MAX.
-      # Mirrors RPi ConstraintHighlight mode.
+      # Highlight-constraint metering mode.
       ae_highlight_q_hi: 0.02
       ae_highlight_target: 0.70
       # Scene entropy-based automatic EV bias.

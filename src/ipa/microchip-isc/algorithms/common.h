@@ -122,7 +122,7 @@ float estimateColorTemperature(float meanR, float meanG, float meanB,
  * \param refLux         Reference scene illuminance in lux (e.g. 400 for office)
  * \return Estimated scene illuminance in lux, clamped to [1, 100000]
  *
- * Implements the Raspberry Pi lux estimator formula (lux.cpp):
+ * Implements the standard reference lux estimator formula:
  *   lux = (refExposure/curExposure) * (refGain/curGain) * (curY/refY) * refLux
  *
  * The ratio curY/refY accounts for scene reflectance; the exposure and gain
