@@ -153,13 +153,26 @@ static void buildCombinedLuminanceHistogram(const mchp_isc_stat_buffer *stats,
  */
 void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 			   std::array<float, 64> &lutCdf,
-			   [[maybe_unused]] unsigned int pedestalBins)
+			   unsigned int pedestalBins)
 {
 	std::array<float, kHistBins> combined;
 	float total;
 	buildCombinedLuminanceHistogram(stats, combined, total);
 
-	if (total < 1.0f) {
+	/*
+	 * Exclude the black-level pedestal from the CDF.  The pedestal bins
+	 * hold the sensor black floor, not scene content; counting them
+	 * inflates the low end of the CDF and, once blended into the tone
+	 * curve, lifts true blacks off zero.  Accumulate and normalise over
+	 * signal pixels only (bins >= pedestalBins), matching the pedestal
+	 * handling in calculateHistogramSpread().
+	 */
+	float pedestalCount = 0.0f;
+	for (unsigned int i = 0; i < std::min(pedestalBins, (unsigned int)kHistBins); i++)
+		pedestalCount += combined[i];
+	float signalTotal = total - pedestalCount;
+
+	if (signalTotal < 1.0f) {
 		/* Degenerate: produce a linear ramp so the power-law takes over */
 		for (unsigned int j = 0; j < 64; j++)
 			lutCdf[j] = static_cast<float>(j) / 63.0f;
@@ -167,11 +180,13 @@ void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 	}
 
 	/*
-	 * Build cumulative sum, then sample at midpoint of each LUT entry.
-	 * LUT entry j midpoint → histogram bin j*8 + 4.
+	 * Build cumulative sum over signal bins, then sample at midpoint of
+	 * each LUT entry.  LUT entry j midpoint → histogram bin j*8 + 4.
+	 * Entries whose midpoint falls in the pedestal region accumulate
+	 * nothing and map to ~0, keeping shadows anchored at black.
 	 */
 	float cumulative = 0.0f;
-	unsigned int histBin = 0;
+	unsigned int histBin = pedestalBins;
 	for (unsigned int j = 0; j < 64; j++) {
 		unsigned int midBin = j * 8 + 4;
 		/* Accumulate up to (and including) the midpoint bin */
@@ -179,7 +194,7 @@ void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
 			cumulative += combined[histBin];
 			histBin++;
 		}
-		lutCdf[j] = cumulative / total;
+		lutCdf[j] = cumulative / signalTotal;
 	}
 }
 

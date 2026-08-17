@@ -387,6 +387,12 @@ void Gamma::process(IPAContext &context,
 	std::array<float, 64> lutCdf;
 	const std::array<float, 64> *cdfPtr = nullptr;
 	if (cdfStrengthEffective > 0.0f) {
+		/*
+		 * The CDF is a single cross-channel luminance distribution, so a
+		 * scalar pedestal (not the per-channel black levels) is the right
+		 * zero-point here — the per-channel offsets only matter when each
+		 * Bayer channel mean is corrected individually (processStats()).
+		 */
 		unsigned int pedestalBins =
 			context.configuration.sensor.blackLevel / 2;
 		calculateLuminanceCdf(stats, lutCdf, pedestalBins);
