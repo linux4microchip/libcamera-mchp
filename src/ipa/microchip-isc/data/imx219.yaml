@@ -282,36 +282,38 @@ algorithms:
         snap_threshold: 1500
         fast_threshold: 500
         fast_factor: 0.5
+      # These matrices are the Raspberry Pi reference-design IMX219
+      # calibration (raspberrypi/libcamera vc4/data/imx219.json, rpi.ccm),
+      # adopted verbatim at their measured colour temperatures. IMX219 is
+      # the same sensor and the ISC CC block sits at the same pipeline
+      # position as the Pi CCM stage (post-WB, pre-gamma, on linear RGB),
+      # so the coefficients transfer directly. Rows sum to 1.0 (white
+      # preserving) and the largest coefficient (3.08) is within the ISC
+      # CC range (kCcmScale 256, max 2047 = 8.0x). They are stronger than
+      # the previous hand-extrapolated matrices, so a confirming Macbeth
+      # capture on this board is still worthwhile to fine-tune saturation.
       matrices:
-        # Cloudy/overcast daylight (~7500 K). Sensor R channel is relatively
-        # strong under blue-sky/skylight illumination; reduce R correction
-        # slightly compared to D65. Values extrapolated from D65; calibrate
-        # against a Macbeth chart under overcast sky for accuracy.
         cloudy_daylight:
-          ct: 7500
-          ccm: [1.8000, -0.5000, -0.3000, -0.4600, 1.7300, -0.2700, -0.0900, -0.5500, 1.6400]
+          ct: 7580
+          ccm: [2.21175, -0.53242, -0.67933, -0.57875, 3.07922, -1.50047, -0.27709, -0.73338, 2.01048]
 
         daylight:
-          ct: 6500
-          ccm: [1.8500, -0.5500, -0.3000, -0.4500, 1.7500, -0.3000, -0.1000, -0.6000, 1.7000]
+          ct: 5858
+          ccm: [2.32392, -0.88421, -0.43971, -0.63821, 2.58348, -0.94527, -0.28541, -0.54112, 1.82653]
 
         daylight_fluorescent:
-          ct: 5000
-          ccm: [1.8300, -0.5800, -0.2500, -0.3600, 1.7000, -0.3400, -0.0800, -0.6700, 1.7500]
+          ct: 4650
+          ccm: [2.18174, -0.70887, -0.47287, -0.70196, 2.76426, -1.06231, -0.25157, -0.71978, 1.97135]
 
         fluorescent:
-          ct: 4000
-          ccm: [1.9500, -0.7000, -0.2500, -0.4000, 1.8000, -0.4000, -0.1000, -0.7500, 1.8500]
+          ct: 3603
+          ccm: [2.18644, -0.66148, -0.52496, -0.77828, 2.69474, -0.91645, -0.25239, -0.83059, 2.08298]
 
         tungsten:
-          ct: 3000
-          ccm: [2.1000, -0.8500, -0.2500, -0.3500, 1.6500, -0.3000, -0.1500, -0.8500, 2.0000]
+          ct: 2960
+          ccm: [2.26962, -0.54174, -0.72789, -0.77008, 2.60271, -0.83262, -0.26036, -1.51254, 2.77289]
 
-        # Deep tungsten / candlelight (~2500 K). Strong blue correction and
-        # reduced R diagonal relative to 3000 K. Values extrapolated from the
-        # 3000 K tungsten entry; calibrate against a tungsten lamp or candle
-        # with a Macbeth chart for accuracy.
         candlelight:
-          ct: 2500
-          ccm: [2.2500, -0.9500, -0.3000, -0.3000, 1.6000, -0.3000, -0.2000, -0.9500, 2.1500]
+          ct: 2860
+          ccm: [2.12089, -0.52461, -0.59629, -0.85342, 2.80445, -0.95103, -0.26897, -1.14788, 2.41685]
 ...
