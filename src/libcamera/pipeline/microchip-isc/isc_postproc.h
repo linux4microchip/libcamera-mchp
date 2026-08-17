@@ -86,11 +86,12 @@ public:
 	/**
 	 * \brief Queue a finished buffer for in-place filtering
 	 * \param[in] buffer The ISC output buffer to filter
+	 * \param[in] colourTemperature Scene CT for per-CT map selection (0 if unknown)
 	 *
 	 * The buffer is filtered on the worker thread and returned via
 	 * frameProcessed once complete.
 	 */
-	void queue(FrameBuffer *buffer);
+	void queue(FrameBuffer *buffer, unsigned int colourTemperature);
 
 	/** \brief Emitted on the pipeline thread when a buffer has been filtered */
 	Signal<FrameBuffer *> frameProcessed;
@@ -109,7 +110,7 @@ private:
 	{
 	public:
 		Worker(IscPostProcessor *parent) : parent_(parent) {}
-		void process(FrameBuffer *buffer);
+		void process(FrameBuffer *buffer, unsigned int colourTemperature);
 		Signal<FrameBuffer *> bufferProcessed;
 
 	private:
@@ -121,7 +122,7 @@ private:
 	void workerDone(FrameBuffer *buffer);
 
 	/* Applies the active filters in place on the mapped plane data. */
-	void applyFilters(uint8_t *data) const;
+	void applyFilters(uint8_t *data, unsigned int colourTemperature) const;
 
 	/*
 	 * Lens-shading correction. Per-channel flat-field gain maps on a coarse
@@ -137,6 +138,21 @@ private:
 		std::vector<float> b;
 		bool valid = false;
 	};
+
+	/*
+	 * Per-CT lens-shading maps, from the 'per_ct' shape microchip_isc_lt.py
+	 * emits when flat-field captures span several illuminant colour
+	 * temperatures. Sorted by CT; selectLscGrid() picks the map nearest the
+	 * scene CT. Empty when the tuning file carries a single flat 'gains'
+	 * block, in which case lscGrid_ is used directly and behaviour is
+	 * identical to the legacy single-map path.
+	 */
+	struct CtLscGrid {
+		unsigned int ct = 0;
+		LscGrid grid;
+	};
+
+	const LscGrid &selectLscGrid(unsigned int colourTemperature) const;
 
 	void applyLscRgb565(uint8_t *data, const LscGrid &grid) const;
 	void applyLscYuv422(uint8_t *data, const LscGrid &grid, bool uyvy) const;
@@ -157,6 +173,7 @@ private:
 	unsigned int stride_ = 0;
 
 	LscGrid lscGrid_;
+	std::vector<CtLscGrid> lscPerCt_;
 
 	bool lscActive_ = false;
 	bool enabled_ = false;

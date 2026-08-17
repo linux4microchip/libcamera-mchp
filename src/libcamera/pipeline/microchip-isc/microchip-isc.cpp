@@ -2014,7 +2014,12 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	 */
 	if (data->postproc_ && data->postproc_->isEnabled() &&
 	    buffer->metadata().status != FrameMetadata::FrameCancelled) {
-		data->postproc_->queue(buffer);
+		unsigned int colourTemperature = 0;
+		const auto &ct = data->latestIpaMetadata_.get(controls::ColourTemperature);
+		if (ct)
+			colourTemperature = *ct;
+
+		data->postproc_->queue(buffer, colourTemperature);
 		return;
 	}
 

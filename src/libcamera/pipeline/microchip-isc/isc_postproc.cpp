@@ -80,13 +80,19 @@ constexpr unsigned int kMaxGridDim = 256;
  * and per-channel gain lists (r, g, b), each grid_width*grid_height entries in
  * row-major order.
  *
- * The gains live under a 'gains' block with per-channel r/g/b lists sized to
- * the grid. A malformed block leaves the store empty, which disables the
- * correction rather than failing the stream.
+ * The gains live either directly under a 'gains' block (single-illuminant
+ * calibration, the legacy shape) or under a 'per_ct' list of { ct, gains }
+ * entries when the flats spanned several colour temperatures. The single-map
+ * shape is parsed into lscGrid_; the multi-CT shape fills lscPerCt_ and
+ * selectLscGrid() picks per frame.
+ *
+ * A malformed block leaves both stores empty, which disables the correction
+ * rather than failing the stream.
  */
 void IscPostProcessor::loadConfig(const YamlObject &config)
 {
 	lscGrid_ = LscGrid{};
+	lscPerCt_.clear();
 
 	unsigned int gw = config["grid_width"].get<uint32_t>(0);
 	unsigned int gh = config["grid_height"].get<uint32_t>(0);
@@ -119,6 +125,30 @@ void IscPostProcessor::loadConfig(const YamlObject &config)
 		return true;
 	};
 
+	if (config.contains("per_ct")) {
+		for (const YamlObject &entry : config["per_ct"].asList()) {
+			CtLscGrid ctGrid;
+			ctGrid.ct = entry["ct"].get<uint32_t>(0);
+			if (!parseGains(entry["gains"], ctGrid.grid)) {
+				LOG(IscPostProc, Warning)
+					<< "Malformed per-CT lens-shading map (expected "
+					<< gw << "x" << gh << " per channel at ct="
+					<< ctGrid.ct << "); LSC disabled";
+				lscPerCt_.clear();
+				return;
+			}
+			lscPerCt_.push_back(std::move(ctGrid));
+		}
+		std::sort(lscPerCt_.begin(), lscPerCt_.end(),
+			  [](const CtLscGrid &a, const CtLscGrid &b) {
+				  return a.ct < b.ct;
+			  });
+		LOG(IscPostProc, Info)
+			<< "Loaded " << lscPerCt_.size() << " per-CT " << gw << "x"
+			<< gh << " lens-shading map(s)";
+		return;
+	}
+
 	if (!parseGains(config["gains"], lscGrid_)) {
 		LOG(IscPostProc, Warning)
 			<< "Malformed lens-shading map (expected " << gw << "x"
@@ -131,6 +161,39 @@ void IscPostProcessor::loadConfig(const YamlObject &config)
 		<< "Loaded " << gw << "x" << gh << " lens-shading map";
 }
 
+/*
+ * Pick the per-CT lens-shading map nearest the scene colour temperature. With a
+ * single-map calibration (lscPerCt_ empty) the one loaded map is returned
+ * unchanged. Nearest-CT selection is used rather than blending two bracketing
+ * maps: the CT metadata is coarse and lags the scene by the IPA's convergence
+ * delay, so a blend would not be measurably more accurate than the nearest map.
+ *
+ * A CT of 0 means the IPA has not yet reported one (early frames, before AWB
+ * converges). Matching on 0 would always pick the lowest-CT map, biasing those
+ * frames warm; select against a neutral daylight reference instead until a real
+ * CT arrives.
+ */
+const IscPostProcessor::LscGrid &
+IscPostProcessor::selectLscGrid(unsigned int colourTemperature) const
+{
+	if (lscPerCt_.empty())
+		return lscGrid_;
+
+	constexpr unsigned int kNeutralCt = 5000;
+	unsigned int ct = colourTemperature ? colourTemperature : kNeutralCt;
+
+	const CtLscGrid *best = &lscPerCt_.front();
+	unsigned int bestDelta = ct > best->ct ? ct - best->ct : best->ct - ct;
+	for (const CtLscGrid &c : lscPerCt_) {
+		unsigned int delta = ct > c.ct ? ct - c.ct : c.ct - ct;
+		if (delta < bestDelta) {
+			bestDelta = delta;
+			best = &c;
+		}
+	}
+	return best->grid;
+}
+
 int IscPostProcessor::configure(const PixelFormat &format, const Size &size,
 				unsigned int stride)
 {
@@ -141,7 +204,7 @@ int IscPostProcessor::configure(const PixelFormat &format, const Size &size,
 	bool filterable = isFilterableFormat(format);
 
 	/* Lens-shading runs for every role when a gain map is loaded. */
-	lscActive_ = filterable && lscGrid_.valid;
+	lscActive_ = filterable && (lscGrid_.valid || !lscPerCt_.empty());
 
 	enabled_ = lscActive_;
 
@@ -193,10 +256,11 @@ void IscPostProcessor::stop()
 	running_ = false;
 }
 
-void IscPostProcessor::queue(FrameBuffer *buffer)
+void IscPostProcessor::queue(FrameBuffer *buffer, unsigned int colourTemperature)
 {
 	inFlight_.push_back(buffer);
-	worker_->invokeMethod(&Worker::process, ConnectionTypeQueued, buffer);
+	worker_->invokeMethod(&Worker::process, ConnectionTypeQueued, buffer,
+			      colourTemperature);
 }
 
 void IscPostProcessor::workerDone(FrameBuffer *buffer)
@@ -208,7 +272,8 @@ void IscPostProcessor::workerDone(FrameBuffer *buffer)
 	frameProcessed.emit(buffer);
 }
 
-void IscPostProcessor::Worker::process(FrameBuffer *buffer)
+void IscPostProcessor::Worker::process(FrameBuffer *buffer,
+				       unsigned int colourTemperature)
 {
 	/*
 	 * The filters run in place on the ISC video device's own exported
@@ -254,17 +319,18 @@ void IscPostProcessor::Worker::process(FrameBuffer *buffer)
 		return;
 	}
 
-	parent_->applyFilters(plane.data());
+	parent_->applyFilters(plane.data(), colourTemperature);
 
 	syncers.clear();
 
 	bufferProcessed.emit(buffer);
 }
 
-void IscPostProcessor::applyFilters(uint8_t *data) const
+void IscPostProcessor::applyFilters(uint8_t *data,
+				    unsigned int colourTemperature) const
 {
 	if (lscActive_) {
-		const LscGrid &grid = lscGrid_;
+		const LscGrid &grid = selectLscGrid(colourTemperature);
 		if (format_ == formats::RGB565)
 			applyLscRgb565(data, grid);
 		else if (format_ == formats::YUYV)
