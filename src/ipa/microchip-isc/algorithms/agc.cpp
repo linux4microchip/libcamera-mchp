@@ -334,9 +334,6 @@ int Agc::configure(IPAContext &context,
 
 	/* Initialise CBC contrast gain to unity so AGC target is unmodified before first CBC cycle */
 	context.activeState.cbc.contrastGainLinear = 1.0f;
-	/* Initialise gamma feedback: 1.0 = no compression (identity LUT at start) */
-	context.activeState.gamma.compressionGain = 1.0f;
-	context.activeState.gamma.adaptiveCdfBoost = 0.0f;
 
 	LOG(ISC_AGC, Debug)
 		<< "AGC configured: exposure=" << context.activeState.agc.exposure
@@ -756,22 +753,6 @@ void Agc::process(IPAContext &context,
 		effectiveTarget = std::clamp(effectiveTarget / cbcGain,
 					     aeLuminanceFloor_, kHistogramMax);
 
-	/*
-	 * Gamma compression feedback: mirrors the cbcGain mechanism.
-	 *
-	 * The gamma LUT may compress highlights (compressionGain < 1.0)
-	 * via the Reinhard operator in computeLut().  Without feedback,
-	 * target_brightness would refer to a pre-gamma bin count that
-	 * maps to a post-gamma output LOWER than intended.
-	 *
-	 * By dividing effectiveTarget by compressionGain we make the AGC
-	 * expose to a proportionally HIGHER pre-gamma level so the
-	 * post-gamma output hits the intended brightness.
-	 *
-	 * compressionGain is initialised to 1.0 (identity / no compression)
-	 * and updated by Gamma::process() every frame.
-	 * Only applied when compression is active (gain < 1.0).
-	 */
 	/*
 	 * P85 highlight metering: when 85% of pixels exceed the configured
 	 * threshold the scene is globally over-bright. Scale effectiveTarget

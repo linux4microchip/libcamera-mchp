@@ -284,10 +284,6 @@ struct IPAActiveState {
 		 * prevent sending an all-zero table on the first frame.
 		 */
 		bool lutValid;
-		/* Gamma LUT compression vs pure gamma 2.2. 1.0=identity. */
-		float compressionGain;
-		/* Adaptive CDF boost applied this frame (0=none). */
-		float adaptiveCdfBoost;
 	} gamma;
 };
 

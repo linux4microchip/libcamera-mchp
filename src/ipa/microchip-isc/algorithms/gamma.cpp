@@ -83,10 +83,8 @@ int Gamma::configure(IPAContext &context,
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 	context.activeState.gamma.gammaEff = gamma_;
 	/* No histogram available at configure time — pure power-law only */
-	context.activeState.gamma.compressionGain =
-		computeLut(gamma_, context.activeState.gamma.lutB, bipartite,
-			   toeInput_, toneRolloffStart_, nullptr, 0.0f);
-	context.activeState.gamma.adaptiveCdfBoost = 0.0f;
+	computeLut(gamma_, context.activeState.gamma.lutB, bipartite,
+		   toeInput_, toneRolloffStart_, nullptr, 0.0f);
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutValid = true;
@@ -123,10 +121,10 @@ int Gamma::configure(IPAContext &context,
  * Misaligned values such as 0.04 (mid-entry 2–3) produce a 34-level step
  * that is visible as a faint shadow gradient discontinuity.
  */
-float Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
-			bool bipartite, float toeInput, float rolloffStart,
-			const std::array<float, 64> *cdf, float cdfStrength,
-			float rolloffSlopeFactor, float cdfClipLimit)
+void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
+		       bool bipartite, float toeInput, float rolloffStart,
+		       const std::array<float, 64> *cdf, float cdfStrength,
+		       float rolloffSlopeFactor, float cdfClipLimit)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
@@ -147,19 +145,6 @@ float Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 	 * so the slope value is irrelevant; use 1.0 as a safe sentinel.
 	 */
 	const float toeSlope = (toeInput > 0.0f) ? (yAtToe / toeInput) : 1.0f;
-
-	/*
-	 * compressionGain: ratio of this LUT's output to pure gamma 2.2
-	 * measured ACROSS ALL ENTRIES (RMS ratio).
-	 *
-	 * Using a single reference entry is unreliable because Reinhard's
-	 * compression is negligible at low x (where the scene mean operates)
-	 * but significant at high x (bright patches).  The RMS ratio gives
-	 * the AGC an accurate picture of how much the overall LUT compresses
-	 * relative to gamma 2.2, accounting for the full LUT shape.
-	 */
-	float sumRatio = 0.0f;
-	unsigned int nRatio = 0;
 
 	for (unsigned int i = 0; i < 64; i++) {
 		float x = static_cast<float>(i * 16) / kInputMax;
@@ -235,34 +220,7 @@ float Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 
 		lut[i] = static_cast<uint32_t>(
 			std::clamp(std::round(y * kInputMax), 0.0f, kInputMax));
-
-		/*
-		 * Accumulate ratio vs pure gamma 2.2 for entries > 0.
-		 *
-		 * The reference must always be gamma 2.2, not the current
-		 * gammaExp.  Using invGamma (= 1/gammaExp) for yRef makes
-		 * the ratio equal 1.0 by construction when there is no
-		 * Reinhard shoulder or CDF blend, defeating the feedback.
-		 * The constant 1/2.2 ≈ 0.4545 is the sRGB encoding exponent.
-		 */
-		float xOrig = static_cast<float>(i * 16) / kInputMax;
-		if (xOrig > 0.0f) {
-			float yRef = std::pow(xOrig, 1.0f / 2.2f);
-			if (yRef > 0.0f) {
-				sumRatio += (static_cast<float>(lut[i]) / kInputMax) / yRef;
-				nRatio++;
-			}
-		}
 	}
-
-	/*
-	 * Return mean ratio (compressionGain).
-	 * < 1.0 when Reinhard compresses highlights.
-	 * = 1.0 for pure gamma 2.2.
-	 * The AGC divides effectiveTarget by this to compensate.
-	 */
-	float gain = (nRatio > 0) ? (sumRatio / static_cast<float>(nRatio)) : 1.0f;
-	return std::clamp(gain, 0.3f, 1.05f);
 }
 
 /**
@@ -321,13 +279,19 @@ void Gamma::process(IPAContext &context,
 	 */
 	float spread = frameContext.scene.spread;
 	float adaptiveCdfBoost = 0.0f;
-	if (adaptiveCdfTrigger_ > 0.0f && spread < adaptiveCdfTrigger_) {
+	/*
+	 * cdf_strength is the master switch for histogram equalisation. When
+	 * it is zero the scene-adaptive boost stays off too, so cdf_strength: 0
+	 * fully disables CDF blending rather than leaving flat scenes to
+	 * silently re-enable it.
+	 */
+	if (cdfStrength_ > 0.0f && adaptiveCdfTrigger_ > 0.0f &&
+	    spread < adaptiveCdfTrigger_) {
 		float flatness = (adaptiveCdfTrigger_ - spread) / adaptiveCdfTrigger_;
 		adaptiveCdfBoost = flatness * adaptiveCdfMaxBoost_;
 	}
 	float cdfStrengthEffective = std::clamp(cdfStrength_ + adaptiveCdfBoost,
 						0.0f, 0.60f);
-	context.activeState.gamma.adaptiveCdfBoost = adaptiveCdfBoost;
 
 	/*
 	 * When both strength and effective cdf are zero there is nothing to
@@ -406,12 +370,9 @@ void Gamma::process(IPAContext &context,
 	 * automatically stretches flat/over-bright scenes.
 	 */
 	std::array<uint32_t, 64> newLut;
-	float compressionGain =
-		computeLut(gammaState.gammaEff, newLut, bipartite, toeInput_,
-			   toneRolloffStart_, cdfPtr, cdfStrengthEffective,
-			   rolloffSlopeFactor_, cdfClipLimit_);
-	/* Update AGC feedback: how much this LUT compresses vs gamma 2.2 */
-	context.activeState.gamma.compressionGain = compressionGain;
+	computeLut(gammaState.gammaEff, newLut, bipartite, toeInput_,
+		   toneRolloffStart_, cdfPtr, cdfStrengthEffective,
+		   rolloffSlopeFactor_, cdfClipLimit_);
 
 	for (unsigned int i = 0; i < 64; i++) {
 		float smoothed = smoothingFactor_ * static_cast<float>(gammaState.lutB[i]) +

@@ -33,23 +33,21 @@ public:
 		     ControlList &metadata) override;
 
 private:
-	/* Returns compressionGain: ratio of LUT output to gamma 2.2 output
-	 * at the reference entry (entry 8). Used by AGC feedback. */
-	static float computeLut(float gammaExp,
-				std::array<uint32_t, 64> &lut,
-				bool bipartite,
-				float toeInput,
-				float rolloffStart,
-				const std::array<float, 64> *cdf,
-				float cdfStrength,
-				float rolloffSlopeFactor = 0.35f,
-				float cdfClipLimit = 3.0f);
+	static void computeLut(float gammaExp,
+			       std::array<uint32_t, 64> &lut,
+			       bool bipartite,
+			       float toeInput,
+			       float rolloffStart,
+			       const std::array<float, 64> *cdf,
+			       float cdfStrength,
+			       float rolloffSlopeFactor = 0.35f,
+			       float cdfClipLimit = 3.0f);
 
 	/*
 	 * Tuning parameters — all set by init() from YAML.
 	 * In-class initialisers mirror imx219.yaml defaults so that a
 	 * missing YAML key never reads uninitialised memory (UB).
-	 * Pattern: RPi agc_channel.h ctor init-list, same principle.
+	 * Same principle: all tuning members initialised via the ctor init-list.
 	 */
 
 	/* Base gamma exponent (YAML: gamma) */
