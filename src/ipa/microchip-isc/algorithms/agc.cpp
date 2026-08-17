@@ -427,6 +427,21 @@ void Agc::queueRequest(IPAContext &context,
 	} else {
 		agc.analogueGain = context.activeState.agc.analogueGain;
 	}
+
+	/*
+	 * Manual frame-rate lock. FrameDurationLimits carries [min, max] in
+	 * microseconds; the caller sets min == max to pin a rate. Take the
+	 * lower bound and convert it to a sensor VBLANK at emit time.
+	 */
+	const auto &frameDuration = controls.get(controls::FrameDurationLimits);
+	if (frameDuration.has_value() && frameDuration->size() > 0 &&
+	    (*frameDuration)[0] > 0)
+		context.activeState.agc.frameDurationUs = (*frameDuration)[0];
+
+	/* Manual digital gain override; 1.0 leaves the sensor default. */
+	const auto &digitalGain = controls.get(controls::DigitalGain);
+	if (digitalGain.has_value() && digitalGain.value() >= 1.0f)
+		context.activeState.agc.digitalGain = digitalGain.value();
 }
 
 /**

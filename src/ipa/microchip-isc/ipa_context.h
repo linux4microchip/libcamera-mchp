@@ -52,6 +52,17 @@ struct IPASessionConfiguration {
 		/* Pixel rate in Hz — needed to recompute lineDuration from live hblank */
 		double pixelRate;
 		/*
+		 * Active output height in lines and the sensor VBLANK range,
+		 * captured at configure() time. Used to convert a requested
+		 * frame duration (controls::FrameDurationLimits) into a sensor
+		 * VBLANK value so a locked frame rate can be applied without the
+		 * AGC exposure loop having to own timing. vblankMax == vblankMin
+		 * (both 0) disables the conversion.
+		 */
+		uint32_t outputHeight;
+		int32_t vblankMin;
+		int32_t vblankMax;
+		/*
 		 * Sensor black level in 10-bit units (e.g. 64 for IMX219).
 		 * Per-channel values fall back to blackLevel when absent in YAML.
 		 * On SAMA7G5 (hasDpc=true) these are not applied to WB offsets
@@ -127,6 +138,20 @@ struct IPAActiveState {
 		float exposureValue = 0.0f;
 		/* Zone metering scale: <1 reduces exposure for bright scenes. */
 		float zoneRatio = 1.0f;
+		/*
+		 * Manual frame-duration request in microseconds (0 = free-run
+		 * at the sensor default). Set from controls::FrameDurationLimits
+		 * and converted to a sensor VBLANK at emit time, so locking the
+		 * frame rate does not require the AGC exposure loop to own timing.
+		 */
+		int64_t frameDurationUs = 0;
+		/*
+		 * Manual digital gain multiplier (1.0 = unity / sensor default).
+		 * Set from controls::DigitalGain and emitted as
+		 * V4L2_CID_DIGITAL_GAIN. Analogue gain is preferred by the AGC
+		 * loop; this is an explicit override for extra range.
+		 */
+		float digitalGain = 1.0f;
 	} agc;
 
 	struct {

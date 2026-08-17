@@ -571,6 +571,14 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 				ControlInfo(frameDurations[0], frameDurations[1],
 					    ControlValue(Span<const int64_t, 2>{
 						    { frameDurations[2], frameDurations[2] } }));
+
+			/* Geometry for the frameDuration → VBLANK inverse. */
+			context_.configuration.sensor.outputHeight =
+				info.outputSize.height;
+			context_.configuration.sensor.vblankMin =
+				v4l2VBlank.min().get<int32_t>();
+			context_.configuration.sensor.vblankMax =
+				v4l2VBlank.max().get<int32_t>();
 		} else {
 			/* Fallback: derive from shutter speed limits */
 			int64_t minDur = static_cast<int64_t>(minExpUs);
@@ -580,6 +588,12 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 				ControlInfo(minDur, maxDur,
 					    ControlValue(Span<const int64_t, 2>{
 						    { defDur, defDur } }));
+
+			/* No VBLANK control: disable frame-rate locking. */
+			context_.configuration.sensor.outputHeight =
+				info.outputSize.height;
+			context_.configuration.sensor.vblankMin = 0;
+			context_.configuration.sensor.vblankMax = 0;
 		}
 	}
 
@@ -947,6 +961,46 @@ void IPAMicrochipISC::setSensorControls()
 			context_.activeState.agc.analogueGain);
 
 	ctrls.set(V4L2_CID_ANALOGUE_GAIN, gainCode);
+
+	const auto &agcState = context_.activeState.agc;
+	const auto &sensorCfg = context_.configuration.sensor;
+
+	/*
+	 * Manual frame-rate lock: convert the requested frame duration to a
+	 * sensor VBLANK. VBLANK is the number of blanking lines beyond the
+	 * active output height, so vblank = frameLines - outputHeight, clamped
+	 * to the sensor's advertised range. The AGC exposure clamp is separate
+	 * (maxShutterSpeed), so a longer frame does not widen the exposure
+	 * budget here — the intent is only to pin the frame rate.
+	 */
+	if (agcState.frameDurationUs > 0 &&
+	    sensorCfg.vblankMax > sensorCfg.vblankMin &&
+	    sensorControls_.find(V4L2_CID_VBLANK) != sensorControls_.end()) {
+		double lineUs = sensorCfg.lineDuration.get<std::micro>();
+		if (lineUs > 0.0) {
+			int32_t frameLines = static_cast<int32_t>(
+				std::round(agcState.frameDurationUs / lineUs));
+			int32_t vblank = std::clamp(
+				frameLines -
+					static_cast<int32_t>(sensorCfg.outputHeight),
+				sensorCfg.vblankMin, sensorCfg.vblankMax);
+			ctrls.set(V4L2_CID_VBLANK, vblank);
+		}
+	}
+
+	/*
+	 * Manual digital gain. IMX219 V4L2_CID_DIGITAL_GAIN is Q8 (256 = 1.0x);
+	 * clamp to the control's advertised range so an out-of-spec request is
+	 * bounded rather than rejected by the sensor.
+	 */
+	auto dgIt = sensorControls_.find(V4L2_CID_DIGITAL_GAIN);
+	if (agcState.digitalGain > 1.0f && dgIt != sensorControls_.end()) {
+		int32_t dgCode = static_cast<int32_t>(
+			std::round(agcState.digitalGain * 256.0));
+		dgCode = std::clamp(dgCode, dgIt->second.min().get<int32_t>(),
+				    dgIt->second.max().get<int32_t>());
+		ctrls.set(V4L2_CID_DIGITAL_GAIN, dgCode);
+	}
 
 	IPAMicrochipISCInterface::setSensorControls.emit(ctrls);
 }
