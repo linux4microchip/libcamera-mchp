@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <math.h>
-#include <string.h>
 
 #include <libcamera/base/log.h>
 
@@ -665,22 +664,9 @@ float estimateColorTemperature(float meanR, float meanG, float meanB,
 }
 
 /**
- * \brief Convenience overload: estimate CT directly from stats buffer means
- */
-float estimateColorTemperature(const mchp_isc_stat_buffer *stats)
-{
-	float meanR = calculateChannelMean(stats, kHistChannelR);
-	float meanG = (calculateChannelMean(stats, kHistChannelGR) +
-		       calculateChannelMean(stats, kHistChannelGB)) /
-		      2.0f;
-	float meanB = calculateChannelMean(stats, kHistChannelB);
-	return estimateColorTemperature(meanR, meanG, meanB, nullptr);
-}
-
-/**
  * \brief Estimate scene illuminance in lux
  *
- * Implements the Raspberry Pi lux estimator formula (lux.cpp):
+ * Implements the standard reference lux estimator formula:
  *   lux = (refExposure/curExposure) * (refGain/curGain) * (curY/refY) * refLux
  */
 float estimateLux(float currentY,

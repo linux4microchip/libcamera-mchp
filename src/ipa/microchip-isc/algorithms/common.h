@@ -49,12 +49,6 @@ static constexpr float kHistogramMax = 511.0f;
 /* CBC/CBHS hardware brightness register limits */
 static constexpr float kBrightnessMin = -1024.0f;
 static constexpr float kBrightnessMax = 1023.0f;
-/*
- * Conservative brightness drive limit: sub-range of the hardware register
- * used to avoid overdriving the AGC control loop. Small enough that CBC
- * brightness only corrects residual error rather than competing with AGC.
- */
-static constexpr float kBrightnessDriveLimit = 256.0f;
 
 /* CBC/CBHS hardware contrast register limits */
 static constexpr float kContrastMin = -2048.0f;
@@ -113,8 +107,6 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
  */
 float calculateHistogramPercentile(const mchp_isc_stat_buffer *stats,
 				   float pct);
-/* Convenience overload: computes channel means internally from stats buffer */
-float estimateColorTemperature(const mchp_isc_stat_buffer *stats);
 float estimateColorTemperature(float meanR, float meanG, float meanB,
 			       const std::array<float, 9> *ctColorMatrix = nullptr);
 

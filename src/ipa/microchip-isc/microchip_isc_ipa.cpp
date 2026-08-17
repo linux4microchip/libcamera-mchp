@@ -9,7 +9,6 @@
 #include <array>
 #include <map>
 #include <math.h>
-#include <string.h>
 #include <vector>
 
 #include <linux/v4l2-controls.h>
@@ -847,9 +846,6 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		frameContext.scene.spread =
 			calculateHistogramSpread(stats, pedestalBins);
 		frameContext.scene.clipping = calculateClipping(stats);
-		frameContext.scene.isDark =
-			(frameContext.scene.luminance / kHistogramMax) < 0.02f;
-		frameContext.scene.isHighContrast = frameContext.scene.clipping > 0.02f;
 
 		/*
 		 * Estimate scene lux from current exposure, gain, and histogram
@@ -914,8 +910,6 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		frameContext.scene.luminance = 0.0f;
 		frameContext.scene.spread = 0.0f;
 		frameContext.scene.clipping = 0.0f;
-		frameContext.scene.isDark = true;
-		frameContext.scene.isHighContrast = false;
 		context_.activeState.lux.lux = kLuxUncalibrated;
 	}
 

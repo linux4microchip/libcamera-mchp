@@ -321,15 +321,11 @@ struct IPAFrameContext : public FrameContext {
 	 *                 by AGC, CBC, and Gamma.
 	 * spread:         P5–P95 inter-percentile range / 512 (0–1).
 	 * clipping:       fraction of pixels in the top 4 bins (0–1).
-	 * isDark:         luminance / 511 < darkSceneThreshold (approx 0.02).
-	 * isHighContrast: clipping exceeds the AGC clip threshold (~0.02).
 	 */
 	struct {
 		float luminance;
 		float spread;
 		float clipping;
-		bool isDark;
-		bool isHighContrast;
 	} scene;
 };
 
