@@ -10,7 +10,6 @@
 #include <errno.h>
 #include <map>
 #include <memory>
-#include <queue>
 #include <set>
 #include <string.h>
 #include <string>
@@ -94,7 +93,6 @@ public:
 	int setupLinks();
 	int initSubdev(MediaEntity *entity);
 	int setupFormats(V4L2SubdeviceFormat *format, V4L2Subdevice::Whence whence);
-	unsigned int getMediaBusFormat(PixelFormat *pixelFormat) const;
 	int initStatsDevice();
 	int allocateStatsBuffers();
 	void freeStatsBuffers();
@@ -105,10 +103,6 @@ public:
 	struct Configuration {
 		uint32_t code;
 		/*
-		 * sensorSize: the user-visible / config-matching size. This is
-		 * the capture size clamped to the ISC video device maximum.
-		 * Used by generateConfiguration() to match user requests.
-		 *
 		 * nativeSensorSize: the actual size the sensor hardware
 		 * negotiates to. Some sensors snap to a wider native readout
 		 * (e.g. IMX219 snaps 3264→3280 at max resolution). The
@@ -120,11 +114,9 @@ public:
 		 * Without this separation the kernel falls back to
 		 * bits_pipeline=0 (raw passthrough), bypassing all ISP stages.
 		 */
-		Size sensorSize;
 		Size nativeSensorSize;
 		PixelFormat captureFormat;
 		Size captureSize;
-		std::vector<PixelFormat> outputFormats;
 		SizeRange outputSizes;
 	};
 
@@ -141,7 +133,6 @@ public:
 	std::unique_ptr<V4L2VideoDevice> iscVideo_;
 	std::unique_ptr<V4L2VideoDevice> statsDevice_;
 	std::vector<std::unique_ptr<FrameBuffer>> statsBuffers_;
-	std::queue<FrameBuffer *> availableStatsBuffers_;
 	std::vector<IPABuffer> ipaBuffers_;
 	std::vector<Stream> streams_;
 	std::vector<Configuration> configs_;
@@ -216,7 +207,6 @@ public:
 	}
 
 	static const std::map<PixelFormat, unsigned int> formatsMap_;
-	V4L2SubdeviceFormat sensorFormat_;
 
 private:
 	MicrochipISCCameraData *data_;
@@ -281,23 +271,6 @@ private:
 				      const StreamConfiguration &cfg);
 };
 
-unsigned int MicrochipISCCameraData::getMediaBusFormat(PixelFormat *pixelFormat) const
-{
-	const auto &fmtMap = MicrochipISCCameraConfiguration::formatsMap_;
-	auto it = fmtMap.find(*pixelFormat);
-	if (it != fmtMap.end())
-		return it->second;
-
-	/* Requested format not in the map — fall back to YUYV. */
-	*pixelFormat = formats::YUYV;
-	auto yuvIt = fmtMap.find(formats::YUYV);
-	if (yuvIt == fmtMap.end()) {
-		LOG(MicrochipISC, Error) << "YUYV fallback not in formatsMap_";
-		return 0;
-	}
-	return yuvIt->second;
-}
-
 MicrochipISCCameraData::FrameInfo *MicrochipISCCameraData::findFrameInfo(Request *request)
 {
 	auto it = frameInfo_.find(request->sequence());
@@ -353,9 +326,6 @@ int MicrochipISCCameraData::allocateStatsBuffers()
 
 void MicrochipISCCameraData::freeStatsBuffers()
 {
-	while (!availableStatsBuffers_.empty())
-		availableStatsBuffers_.pop();
-
 	if (!ipaBuffers_.empty() && ipa_) {
 		std::vector<unsigned int> ids;
 		ids.reserve(ipaBuffers_.size());
@@ -442,8 +412,8 @@ void MicrochipISCCameraData::setIspControls(const ControlList &controls)
  *     (sensor_->sizes(MEDIA_BUS_FMT_RGB565_2X8_LE) == {}) and are harmless
  *     but wasteful. See sensorMbusFormats_ below for the correct subset.
  *
- *  2. Format advertisement (validate / getMediaBusFormat): all entries are
- *     valid — the ISC converts Bayer to any of these output formats.
+ *  2. Format advertisement (validate): all entries are valid — the ISC
+ *     converts Bayer to any of these output formats.
  *
  * The mix of sensor-mbus and ISC-output-format entries in one map is a
  * historical artefact. The correct fix is to use sensorMbusFormats_ for
@@ -1726,11 +1696,9 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size,
 
 		Configuration config;
 		config.code = code;
-		config.sensorSize = captureSize; /* user-visible / matching size */
-		config.nativeSensorSize = nativeSize; /* actual subdev chain size     */
+		config.nativeSensorSize = nativeSize; /* actual subdev chain size */
 		config.captureFormat = pixelFormat;
 		config.captureSize = captureSize;
-		config.outputFormats = { pixelFormat };
 		config.outputSizes = SizeRange{ captureSize, captureSize };
 
 		configs_.push_back(config);
