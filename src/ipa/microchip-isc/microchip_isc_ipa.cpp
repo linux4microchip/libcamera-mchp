@@ -1054,7 +1054,21 @@ void IPAMicrochipISC::setIspControls()
 	 * SAMA5D2 CBC exposes brightness and contrast only.
 	 */
 	if (context_.configuration.hw.hasCbhs) {
-		ctrls.set(V4L2_CID_SATURATION, context_.activeState.cbc.saturation);
+		/*
+		 * The active CCM already boosts saturation through its
+		 * off-diagonals; divide it back out of the CBHS register so the
+		 * combined CCM x CBHS saturation stays near the intended value.
+		 * Compensate the nominal each frame here rather than in the CBC
+		 * active state, which would feed the divided value back in and
+		 * decay the register geometrically toward zero.
+		 */
+		int32_t saturation = context_.activeState.cbc.saturation;
+		float satBoost = context_.activeState.ccm.satBoost;
+		if (satBoost > 1.0f)
+			saturation = static_cast<int32_t>(std::clamp(
+				saturation / satBoost, 0.0f,
+				kSaturationScale * 2.0f));
+		ctrls.set(V4L2_CID_SATURATION, saturation);
 		ctrls.set(V4L2_CID_HUE, context_.activeState.cbc.hue);
 	}
 

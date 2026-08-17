@@ -325,31 +325,11 @@ void Cbc::process(IPAContext &context,
 		std::clamp(contrast, kContrastMin, kContrastMax));
 
 	/*
-	 * CCM saturation compensation: the active CCM matrix introduces a
-	 * saturation boost as a side effect of off-diagonal cross-channel
-	 * correction. CCM stores this boost factor in ccm.satBoost. Divide
-	 * the nominal CBHS saturation by satBoost so the combined pipeline
-	 * saturation (CCM × CBHS) stays close to the intended value.
-	 *
-	 * Only applied on SAMA7G5 (hasCbhs = true) and only when the nominal
-	 * saturation has been explicitly set (not left at hardware reset 0).
-	 * The result is clamped to [0, kSaturationScale * 2.0f] (= 32) to
-		 * prevent exceeding the hardware register range (unity = 16,
-		 * maximum useful saturation = 2× unity). No smoothing is applied
-		 * here because the CCM matrix itself is already temporally smoothed.
+	 * The CBHS saturation register is left at its nominal (user/YAML)
+	 * value here. CCM-boost compensation is applied once at emit time in
+	 * setIspControls(), reading the nominal each frame, so it must not be
+	 * folded back into the active state.
 	 */
-	if (context.configuration.hw.hasCbhs) {
-		float satBoost = context.activeState.ccm.satBoost;
-		if (satBoost > 1.0f) {
-			/*
-			 * kSaturationScale * 2.0f matches the queueRequest() upper
-			 * clamp (libcamera Saturation=2.0 maps to hardware=32).
-			 */
-			float compensated = static_cast<float>(cbc.saturation) / satBoost;
-			cbc.saturation = static_cast<int32_t>(
-				std::clamp(compensated, 0.0f, kSaturationScale * 2.0f));
-		}
-	}
 
 	LOG(ISC_CBC, Debug)
 		<< "CBC: brightness=" << cbc.brightness
