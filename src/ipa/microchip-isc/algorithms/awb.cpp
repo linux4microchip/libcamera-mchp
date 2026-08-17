@@ -101,7 +101,7 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
 	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 255.0f);
 	gainMin_ = std::clamp(gainMin_, 0.1f, 1.0f);
-	gainMax_ = std::clamp(gainMax_, 1.0f, 8.0f);
+	gainMax_ = std::clamp(gainMax_, 1.0f, 32.0f);
 	gbGainMin_ = std::clamp(gbGainMin_, 0.5f, 1.0f);
 	gbGainMax_ = std::clamp(gbGainMax_, 1.0f, 2.0f);
 	ctMin_ = std::clamp(ctMin_, 1000.0f, 4000.0f);
@@ -250,18 +250,6 @@ void Awb::queueRequest(IPAContext &context,
 			context.activeState.awb.gbGain = 1.0f;
 		}
 	}
-
-	/*
-	 * Record the gains for this frame context. These are used in
-	 * process() for ColourGains metadata reporting in manual mode.
-	 * Note: gain-undo is NOT needed in process() because the ISC
-	 * histogram taps pre-WB data (vp_data) — channel means are raw
-	 * sensor values independent of the hardware WB gains.
-	 */
-	awb.rGain = context.activeState.awb.rGain;
-	awb.bGain = context.activeState.awb.bGain;
-	awb.grGain = context.activeState.awb.grGain;
-	awb.gbGain = context.activeState.awb.gbGain;
 }
 
 /**
@@ -276,13 +264,12 @@ void Awb::queueRequest(IPAContext &context,
  * neutral grey. Gains are computed to equalise the mean of each Bayer
  * channel to the green reference. Temporal smoothing prevents flickering.
  *
- * The ISC histogram taps wb_data — the Bayer stream AFTER the WB block
- * (post-WB). Channel means already reflect the current hardware gains.
- * Grey-world gains must therefore use multiplicative correction
- * (current_gain x ratio) not a direct ratio, to avoid converging at
- * sqrt(K) instead of K. See gain computation below.
+ * The ISC histogram taps the Bayer stream pre-WB (post-DPC), so the channel
+ * means are raw sensor values that do not reflect the applied WB gains. Gains
+ * are therefore a direct ratio (or a CT-table lookup), not the post-WB
+ * multiplicative form.
  *
- * Color temperature is estimated from gain-undone R/B means and written to
+ * Color temperature is estimated from the raw R/B means and written to
  * activeState.awb.ct for use by CCM (single source of truth).
  */
 void Awb::process(IPAContext &context,
@@ -434,10 +421,17 @@ void Awb::process(IPAContext &context,
 		 * capped at 0.8 to retain some grey-world stability.
 		 */
 		if (highlightWeight_ > 0.0f) {
-			float hlGR = calculateHighlightMean(stats, kHistChannelGR);
-			float hlR = calculateHighlightMean(stats, kHistChannelR);
-			float hlGB = calculateHighlightMean(stats, kHistChannelGB);
-			float hlB = calculateHighlightMean(stats, kHistChannelB);
+			/*
+			 * The grey-world means are net (pedestal subtracted);
+			 * sample the highlight means on the same zero-point so
+			 * the blend does not re-add the sensor pedestal.
+			 */
+			unsigned int pedestalBins =
+				context.configuration.sensor.blackLevel / 2;
+			float hlGR = calculateHighlightMean(stats, kHistChannelGR, pedestalBins);
+			float hlR = calculateHighlightMean(stats, kHistChannelR, pedestalBins);
+			float hlGB = calculateHighlightMean(stats, kHistChannelGB, pedestalBins);
+			float hlB = calculateHighlightMean(stats, kHistChannelB, pedestalBins);
 
 			/*
 			 * Chromaticity divergence: how far the full-frame
@@ -535,7 +529,15 @@ void Awb::process(IPAContext &context,
 		float rGain = std::clamp(targetR, gainMin_, gainMax_);
 		float bGain = std::clamp(targetB, gainMin_, gainMax_);
 		float grGain = 1.0f;
-		float gbGain = std::clamp(awb.gbGain * (meanGR / std::max(meanGB, 1.0f)),
+		/*
+		 * Direct green-balance ratio, not awb.gbGain * ratio. The
+		 * histogram is pre-WB, so meanGR/meanGB is a fixed sensor
+		 * imbalance that does not respond to the applied gain; the
+		 * multiplicative form would compound every frame and rail to a
+		 * clamp. The IIR below smooths this target the same way it does
+		 * the R/B targets.
+		 */
+		float gbGain = std::clamp(meanGR / std::max(meanGB, 1.0f),
 					  gbGainMin_, gbGainMax_);
 
 		if (frame > 0 && awb.rGain > 0.0f) {
