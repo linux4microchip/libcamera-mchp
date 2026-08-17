@@ -131,6 +131,8 @@ def ccm(imgs, cal_cr_list, cal_cb_list):
     ccm and the colour tempertaure.
     """
     ccm_tab = {}
+    # Per-CT CIEDE2000 accuracy of the optimised matrix, for the health score.
+    de_tab = {}
     for Img in imgs:
         logger.info('Processing image: ' + Img.name)
         """
@@ -248,6 +250,15 @@ def ccm(imgs, cal_cr_list, cal_cb_list):
         logger.info(f'delta E optimized: average: {after_average:.2f}  max:{new_worst_delta_e:.2f}')
         logger.info(f'delta E old:       average: {before_average:.2f}  max:{old_worst_delta_e:.2f}')
 
+        # CIEDE2000 accuracy of the optimised matrix (perceptually weighted,
+        # unlike the CIE76 average above). after_gamma_lab holds the 24 patch
+        # Lab values after the optimised CCM, so this scores the emitted matrix.
+        de00 = [deltae_2000(after_gamma_lab[i], m_lab[i]) for i in range(24)]
+        avg00 = sum(de00) / 24.0
+        max00 = max(de00)
+        logger.info(f'delta E 2000:      average: {avg00:.2f}  max:{max00:.2f}')
+        de_tab.setdefault(Img.color, []).append((avg00, max00))
+
         visualise_macbeth_chart(m_rgb, optimised_ccm_rgb, after_gamma_rgb, str(Img.color) + str(matrix_selection_types[typenum]))
         '''
         The program will also save some visualisations of improvements.
@@ -282,10 +293,16 @@ def ccm(imgs, cal_cr_list, cal_cb_list):
     sorted_ccms = sorted(ccm_tab.items(), key=lambda kv: kv[0])
     ccms = []
     for i in sorted_ccms:
-        ccms.append({
+        entry = {
             'ct': i[0],
             'ccm': i[1]
-        })
+        }
+        # Mean CIEDE2000 across the captures averaged into this CT bucket.
+        de = de_tab.get(i[0])
+        if de:
+            entry['delta_e_avg'] = float(np.mean([d[0] for d in de]))
+            entry['delta_e_max'] = float(np.max([d[1] for d in de]))
+        ccms.append(entry)
     return ccms
 
 
@@ -406,3 +423,75 @@ def deltae(colorA, colorB):
     return ((colorA[0] - colorB[0]) ** 2 + (colorA[1] - colorB[1]) ** 2 + (colorA[2] - colorB[2]) ** 2) ** 0.5
     # return ((colorA[1]-colorB[1]) *  * 2 + (colorA[2]-colorB[2]) *  * 2) *  * 0.5
     # UNCOMMENT IF YOU WANT TO NEGLECT LUMINANCE FROM CALCULATION OF DELTA E
+
+
+def deltae_2000(colorA, colorB):
+    """CIEDE2000 colour difference between two CIE Lab colours.
+
+    The plain deltae() above is CIE76 (Euclidean in Lab), which overstates
+    differences in saturated and dark regions. CIEDE2000 adds lightness,
+    chroma and hue weighting plus a blue-region rotation term, and is the
+    metric a colour-accuracy score should report. Implementation follows the
+    Sharma-Wu-Dalal (2005) formulation; verified against their reference pairs.
+
+    colorA, colorB: [L, a, b]. Returns the scalar dE00.
+    """
+    l1, a1, b1 = float(colorA[0]), float(colorA[1]), float(colorA[2])
+    l2, a2, b2 = float(colorB[0]), float(colorB[1]), float(colorB[2])
+
+    c1 = np.hypot(a1, b1)
+    c2 = np.hypot(a2, b2)
+    c_bar = (c1 + c2) / 2.0
+    g = 0.5 * (1.0 - np.sqrt(c_bar ** 7 / (c_bar ** 7 + 25.0 ** 7)))
+
+    a1p = (1.0 + g) * a1
+    a2p = (1.0 + g) * a2
+    c1p = np.hypot(a1p, b1)
+    c2p = np.hypot(a2p, b2)
+
+    h1p = np.degrees(np.arctan2(b1, a1p)) % 360.0
+    h2p = np.degrees(np.arctan2(b2, a2p)) % 360.0
+
+    dLp = l2 - l1
+    dCp = c2p - c1p
+
+    if c1p * c2p == 0.0:
+        dhp = 0.0
+    elif abs(h2p - h1p) <= 180.0:
+        dhp = h2p - h1p
+    elif h2p - h1p > 180.0:
+        dhp = h2p - h1p - 360.0
+    else:
+        dhp = h2p - h1p + 360.0
+    dHp = 2.0 * np.sqrt(c1p * c2p) * np.sin(np.radians(dhp) / 2.0)
+
+    Lp_bar = (l1 + l2) / 2.0
+    Cp_bar = (c1p + c2p) / 2.0
+
+    if c1p * c2p == 0.0:
+        hp_bar = h1p + h2p
+    elif abs(h1p - h2p) <= 180.0:
+        hp_bar = (h1p + h2p) / 2.0
+    elif h1p + h2p < 360.0:
+        hp_bar = (h1p + h2p + 360.0) / 2.0
+    else:
+        hp_bar = (h1p + h2p - 360.0) / 2.0
+
+    t = (1.0
+         - 0.17 * np.cos(np.radians(hp_bar - 30.0))
+         + 0.24 * np.cos(np.radians(2.0 * hp_bar))
+         + 0.32 * np.cos(np.radians(3.0 * hp_bar + 6.0))
+         - 0.20 * np.cos(np.radians(4.0 * hp_bar - 63.0)))
+
+    d_theta = 30.0 * np.exp(-(((hp_bar - 275.0) / 25.0) ** 2))
+    rc = 2.0 * np.sqrt(Cp_bar ** 7 / (Cp_bar ** 7 + 25.0 ** 7))
+    sl = 1.0 + (0.015 * (Lp_bar - 50.0) ** 2) / np.sqrt(20.0 + (Lp_bar - 50.0) ** 2)
+    sc = 1.0 + 0.045 * Cp_bar
+    sh = 1.0 + 0.015 * Cp_bar * t
+    rt = -np.sin(np.radians(2.0 * d_theta)) * rc
+
+    return float(np.sqrt(
+        (dLp / sl) ** 2
+        + (dCp / sc) ** 2
+        + (dHp / sh) ** 2
+        + rt * (dCp / sc) * (dHp / sh)))
