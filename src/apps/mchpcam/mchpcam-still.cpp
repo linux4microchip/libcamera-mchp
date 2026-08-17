@@ -1257,6 +1257,13 @@ int main(int argc, char **argv)
 	int opt, optIdx = 0;
 	while ((opt = getopt_long(argc, argv, "c:o:f:hks",
 				  longOpts, &optIdx)) != -1) {
+		/*
+		 * The numeric options below parse optarg with std::stoi/stof,
+		 * which throw std::invalid_argument or std::out_of_range on a
+		 * malformed value.  Catch here so a bad argument reports a clear
+		 * usage error instead of terminating via an uncaught exception.
+		 */
+		try {
 		switch (opt) {
 		case 'c':
 			cameraId = optarg;
@@ -1497,6 +1504,14 @@ int main(int argc, char **argv)
 
 		default:
 			printUsage(argv[0]);
+			return 1;
+		}
+		} catch (const std::exception &e) {
+			std::string optName = opt ? std::string(1, static_cast<char>(opt))
+						  : std::string(longOpts[optIdx].name);
+			std::cerr << "Invalid argument for option '" << optName
+				  << "': " << (optarg ? optarg : "")
+				  << " (" << e.what() << ")\n";
 			return 1;
 		}
 	}
