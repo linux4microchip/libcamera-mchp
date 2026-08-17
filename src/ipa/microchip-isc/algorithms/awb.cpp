@@ -123,6 +123,35 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	}
 
 	/*
+	 * Load the Robertson CT correction table.  The Robertson estimate from
+	 * an approximate ct_color_matrix carries a systematic error; the
+	 * calibration tool measures it against known illuminants and emits a
+	 * piecewise-linear map raw_K → corrected_K.  Format is a flat list of
+	 * [raw, corrected] pairs sorted ascending by raw.  Without it (empty
+	 * table) applyCtCorrection() is an identity pass-through.
+	 */
+	if (tuningData.contains("ct_correction_pwl")) {
+		auto pwl = tuningData["ct_correction_pwl"].getList<float>();
+		if (pwl && pwl->size() >= 4 && pwl->size() % 2 == 0) {
+			for (size_t i = 0; i + 1 < pwl->size(); i += 2)
+				ctCorrectionPwl_.push_back(
+					{ (*pwl)[i], (*pwl)[i + 1] });
+			std::sort(ctCorrectionPwl_.begin(), ctCorrectionPwl_.end(),
+				  [](const CtCorrectionPoint &a,
+				     const CtCorrectionPoint &b) {
+					  return a.robertson < b.robertson;
+				  });
+			LOG(ISC_AWB, Debug)
+				<< "Loaded " << ctCorrectionPwl_.size()
+				<< " ct_correction_pwl points";
+		} else {
+			LOG(ISC_AWB, Warning)
+				<< "ct_correction_pwl ignored: need an even "
+				   "count of >= 4 values ([raw,corrected] pairs)";
+		}
+	}
+
+	/*
 	 * Advertise all controls emitted in metadata or accepted as input.
 	 * Without registration here the controls do not appear in the camera's
 	 * ControlInfoMap, so applications cannot query their ranges.
@@ -476,10 +505,17 @@ void Awb::process(IPAContext &context,
 			&context.configuration.sensor.ctColorMatrix);
 
 		/*
+		 * Correct the Robertson estimate with the calibrated PWL map so
+		 * both the reference-gain lookup below and the smoothed awb.ct
+		 * (read by CCM) track the true CCT. Identity when uncalibrated.
+		 */
+		rawCt = applyCtCorrection(rawCt);
+
+		/*
 		 * CT-based gain lookup: interpolate the calibrated R/B gains
 		 * from reference_gains_table at the current estimated CT.
 		 *
-		 * This mirrors the RPi IPA (awb.cpp lines 157-161):
+		 * This mirrors the reference colour-gain-curve lookup:
 		 *   gainR = 1.0 / ctR.eval(temperatureK)
 		 *   gainB = 1.0 / ctB.eval(temperatureK)
 		 * and libipa/awb_grey.cpp gainsFromColourTemperature():
@@ -763,6 +799,41 @@ std::pair<float, float> Awb::interpolateRefGains(float ct) const
 	}
 
 	return { refGainTable_.back().r, refGainTable_.back().b };
+}
+
+/**
+ * \brief Correct a raw Robertson CT estimate using the calibrated PWL table
+ * \param[in] rawCt Robertson-estimated colour temperature in Kelvin
+ * \return Corrected colour temperature in Kelvin
+ *
+ * Linearly interpolates rawCt through the ct_correction_pwl table, clamping to
+ * the endpoints outside the calibrated range. An empty table (no calibration)
+ * returns rawCt unchanged.
+ */
+float Awb::applyCtCorrection(float rawCt) const
+{
+	if (ctCorrectionPwl_.empty())
+		return rawCt;
+
+	if (rawCt <= ctCorrectionPwl_.front().robertson)
+		return ctCorrectionPwl_.front().corrected;
+
+	if (rawCt >= ctCorrectionPwl_.back().robertson)
+		return ctCorrectionPwl_.back().corrected;
+
+	for (size_t i = 1; i < ctCorrectionPwl_.size(); ++i) {
+		if (rawCt <= ctCorrectionPwl_[i].robertson) {
+			const auto &lo = ctCorrectionPwl_[i - 1];
+			const auto &hi = ctCorrectionPwl_[i];
+			float span = hi.robertson - lo.robertson;
+			if (span < 1.0f)
+				return lo.corrected;
+			float t = (rawCt - lo.robertson) / span;
+			return lo.corrected + t * (hi.corrected - lo.corrected);
+		}
+	}
+
+	return ctCorrectionPwl_.back().corrected;
 }
 
 REGISTER_IPA_ALGORITHM(Awb, "Awb")
