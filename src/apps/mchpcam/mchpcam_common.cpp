@@ -7,16 +7,12 @@
 
 #include "mchpcam_common.h"
 
-#include <algorithm>
 #include <array>
 #include <chrono>
 #include <iostream>
 #include <limits.h>
-#include <thread>
 
 #include <libcamera/base/span.h>
-
-#include <libcamera/property_ids.h>
 
 #include <libcamera/ipa/microchip_isc_ipa_interface.h>
 
@@ -353,7 +349,7 @@ int MchpCamCommon::init(const std::string &cameraId)
 /* Camera stop                                                          */
 /* ------------------------------------------------------------------ */
 
-void MchpCamCommon::stop()
+void MchpCamCommon::stopStreaming()
 {
 	if (!camera_)
 		return;
@@ -372,6 +368,14 @@ void MchpCamCommon::stop()
 
 	if (cameraStarted_.exchange(false))
 		camera_->stop();
+}
+
+void MchpCamCommon::stop()
+{
+	if (!camera_)
+		return;
+
+	stopStreaming();
 
 	if (allocator_ && stream_)
 		allocator_->free(stream_);
@@ -417,25 +421,6 @@ void MchpCamCommon::requestComplete(libcamera::Request *request)
 		return;
 
 	const ControlList &meta = request->metadata();
-
-	/* Capture applied sensor state from IPA metadata every frame.
-	 * These reflect the settings actually applied to THIS frame by the IPA.
-	 * ColourGains is [R, B]; indices 0 and 1. */
-	{
-		auto expVal = meta.get(controls::ExposureTime);
-		if (expVal.has_value())
-			appliedExposureUs_ = static_cast<float>(*expVal);
-
-		auto gainVal = meta.get(controls::AnalogueGain);
-		if (gainVal.has_value())
-			appliedAnalogueGain_ = *gainVal;
-
-		auto cgVal = meta.get(controls::ColourGains);
-		if (cgVal.has_value()) {
-			convergedColourGainR_ = (*cgVal)[0];
-			convergedColourGainB_ = (*cgVal)[1];
-		}
-	}
 
 	/*
 	 * AWB lock — if AWB is disabled it is always "locked" (nothing to

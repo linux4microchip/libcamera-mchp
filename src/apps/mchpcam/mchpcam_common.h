@@ -81,7 +81,6 @@ public:
 	void setFormat(const std::string &formatStr);
 	unsigned int getWidth() const { return width_; }
 	unsigned int getHeight() const { return height_; }
-	libcamera::PixelFormat getPixelFormat() const { return pixelFormat_; }
 
 	/*
 	 * Image controls — types and neutral values match libcamera spec.
@@ -220,14 +219,17 @@ public:
 	bool isAeLocked() const { return aeLocked_.load(); }
 	int colourTemperature() const { return colourTemperature_; }
 
-	/* Applied exposure/gain metadata (populated from request metadata) */
-	int32_t appliedExposureUs() const { return appliedExposureUs_; }
-	float appliedAnalogueGain() const { return appliedAnalogueGain_; }
-
-	float convergedColourGainR() const { return convergedColourGainR_; }
-	float convergedColourGainB() const { return convergedColourGainB_; }
-
 protected:
+	/*
+	 * Stop the streaming pipeline without releasing the camera. Disconnects
+	 * the requestCompleted signal before camera_->stop() so no completion
+	 * callback can requeue a request onto a Stopping camera (which would
+	 * assert). Leaves camera_, the allocator and buffers intact so the
+	 * caller can still read savedBuffer_ afterwards; full teardown is done
+	 * by stop().
+	 */
+	void stopStreaming();
+
 	/* libcamera objects */
 	std::unique_ptr<libcamera::CameraManager> cameraManager_;
 	std::shared_ptr<libcamera::Camera> camera_;
@@ -346,15 +348,6 @@ protected:
 	std::atomic<bool> awbLocked_{ false };
 	std::atomic<bool> aeLocked_{ false };
 	int colourTemperature_ = 0;
-
-	/* Applied sensor state populated from request metadata */
-	int32_t appliedExposureUs_ = 0;
-	float appliedAnalogueGain_ = 1.0f;
-
-	/* Converged IPA white balance gains (R, B) read from ColourGains metadata.
-	 * Written to the JSON sidecar for calibration tool WB-undo. */
-	float convergedColourGainR_ = 1.0f;
-	float convergedColourGainB_ = 1.0f;
 
 	virtual void requestComplete(libcamera::Request *request);
 	virtual void saveFrame(const libcamera::FrameBuffer *buffer,

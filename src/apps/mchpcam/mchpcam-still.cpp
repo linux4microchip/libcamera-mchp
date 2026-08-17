@@ -10,13 +10,11 @@
 #include <atomic>
 #include <chrono>
 #include <ctime>
-#include <fstream>
 #include <getopt.h>
 #include <iomanip>
 #include <iostream>
 #include <limits.h>
 #include <png.h>
-#include <poll.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <string.h>
@@ -280,8 +278,7 @@ public:
 				  << effectiveTimeout << " s before convergence\n";
 
 		/* Stop camera */
-		if (cameraStarted_.exchange(false))
-			camera_->stop();
+		stopStreaming();
 
 		if (!savedBuffer_) {
 			std::cerr << "No buffer captured\n";
@@ -426,8 +423,7 @@ public:
 					std::chrono::milliseconds(timelapseMs_));
 		}
 
-		if (cameraStarted_.exchange(false))
-			camera_->stop();
+		stopStreaming();
 
 		return 0;
 	}
