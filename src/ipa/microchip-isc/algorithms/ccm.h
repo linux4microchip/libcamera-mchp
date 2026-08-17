@@ -27,6 +27,9 @@ public:
 	int init(IPAContext &context, const YamlObject &tuningData) override;
 	int configure(IPAContext &context,
 		      const IPACameraSensorInfo &sensorInfo) override;
+	void queueRequest(IPAContext &context, const uint32_t frame,
+			  IPAFrameContext &frameContext,
+			  const ControlList &controls) override;
 	void process(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
 		     const mchp_isc_stat_buffer *stats,

@@ -12,6 +12,8 @@
 
 #include <libcamera/base/log.h>
 
+#include <libcamera/control_ids.h>
+
 #include "libcamera/internal/yaml_parser.h"
 
 #include "common.h"
@@ -33,9 +35,23 @@ namespace ipa::microchip_isc {
  * Profiles are sorted by descending CT (ascending reciprocal megakelvin,
  * MRD) for correct interpolation in MRD space.
  */
-int Ccm::init([[maybe_unused]] IPAContext &context,
+int Ccm::init(IPAContext &context,
 	      const YamlObject &tuningData)
 {
+	/*
+	 * Advertise manual CCM (controls::ColourCorrectionMatrix) so an
+	 * application can override the CT-interpolated matrix. Registered
+	 * before the early return so the control is available even when the
+	 * tuning file carries no calibrated matrices. Range mirrors rkisp1's
+	 * CCM control; the default is the identity matrix.
+	 */
+	static const std::array<float, 9> kIdentityCcm = {
+		1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+	};
+	context.ctrlMap[&controls::ColourCorrectionMatrix] = ControlInfo(
+		ControlValue(-8.0f), ControlValue(7.993f),
+		ControlValue(Span<const float, 9>(kIdentityCcm)));
+
 	if (!tuningData.contains("matrices"))
 		return 0;
 
@@ -130,6 +146,34 @@ int Ccm::configure(IPAContext &context,
 	/* Initialise satBoost to unity so CBC does not over-correct on first frame */
 	context.activeState.ccm.satBoost = 1.0f;
 	return 0;
+}
+
+/**
+ * \brief Latch a per-request manual colour-correction matrix
+ * \param[in] context The IPA context (unused)
+ * \param[in] frame The frame number (unused)
+ * \param[out] frameContext The frame context for this request
+ * \param[in] controls The controls attached to the request
+ *
+ * Reads controls::ColourCorrectionMatrix and records it in the frame context.
+ * When present it takes precedence over the CT-interpolated matrix in
+ * process(); when absent the automatic path runs. The override is stored
+ * per-frame so it never leaks into a later request that omits the control.
+ */
+void Ccm::queueRequest([[maybe_unused]] IPAContext &context,
+		       [[maybe_unused]] const uint32_t frame,
+		       IPAFrameContext &frameContext,
+		       const ControlList &controls)
+{
+	frameContext.ccm.manualSet = false;
+
+	const auto &ccmMatrix = controls.get(controls::ColourCorrectionMatrix);
+	if (ccmMatrix) {
+		std::copy(ccmMatrix->begin(), ccmMatrix->end(),
+			  frameContext.ccm.matrix.begin());
+		frameContext.ccm.manualSet = true;
+		LOG(ISC_CCM, Debug) << "Manual CCM latched from control";
+	}
 }
 
 /**
@@ -235,63 +279,83 @@ void Ccm::interpolateMatrix(float ct,
  */
 void Ccm::process(IPAContext &context,
 		  const uint32_t frame,
-		  [[maybe_unused]] IPAFrameContext &frameContext,
+		  IPAFrameContext &frameContext,
 		  [[maybe_unused]] const mchp_isc_stat_buffer *stats,
 		  [[maybe_unused]] ControlList &metadata)
 {
+	auto &ccm = context.activeState.ccm;
+	std::array<float, 9> matrix;
+	std::array<float, 3> offsets;
+
 	/*
-	 * Use the colour temperature computed by AWB from gain-undone channel
-	 * means. AWB is the single authority for CT estimation; reading it
-	 * here ensures both AWB gains and the CCM matrix track the same
-	 * illuminant. Fall back to 5500 K (neutral daylight) on the first
-	 * frame before AWB has produced an estimate.
+	 * Colour temperature computed by AWB from gain-undone channel means.
+	 * AWB is the single authority for CT estimation, so both the AWB gains
+	 * and the interpolated CCM track the same illuminant. Falls back to
+	 * 5500 K (neutral daylight) before AWB has produced an estimate.
 	 */
 	unsigned int rawCt = context.activeState.awb.ct;
 	float ct = (rawCt > 0) ? static_cast<float>(rawCt) : ctFallback_;
 
-	std::array<float, 9> matrix;
-	std::array<float, 3> offsets;
-	interpolateMatrix(ct, matrix, offsets);
+	if (frameContext.ccm.manualSet) {
+		/*
+		 * Explicit override takes precedence over CT interpolation. It
+		 * is applied directly with no temporal smoothing so the
+		 * requested matrix takes effect immediately; offsets are zeroed
+		 * because the control carries only the 3×3 matrix. lastCt_ is
+		 * kept in step with the AWB estimate so the automatic path
+		 * resumes smoothly if the override is dropped.
+		 */
+		matrix = frameContext.ccm.matrix;
+		offsets = { 0.0f, 0.0f, 0.0f };
+		lastCt_ = ct;
+	} else {
+		interpolateMatrix(ct, matrix, offsets);
 
-	/*
-	 * Adaptive temporal smoothing based on CT rate of change.
-	 * Large CT jumps indicate scene changes and warrant immediate
-	 * matrix snap (sf=0). Moderate changes or AWB still converging
-	 * use a faster-than-normal factor to track the changing illuminant
-	 * estimate in sync with AWB gains, preventing a transient mismatch
-	 * where new AWB gains are applied with a lagging colour matrix.
-	 *
-	 * The CT-delta guard takes priority: CCM speed is driven by how fast
-	 * CT is changing, not solely by the AWB stable flag, so the matrix
-	 * does not unnecessarily slam on the same frame AWB declares stable
-	 * while CT has already settled for multiple frames.
-	 */
-	auto &ccm = context.activeState.ccm;
-	if (frame > 0) {
-		float ctDelta = std::abs(ct - lastCt_);
-		float sf = smoothingFactor_;
-		if (ctDelta > ctSnapThreshold_) {
-			/* Large scene change: snap immediately */
-			sf = 0.0f;
-		} else if (ctDelta > ctFastThreshold_ ||
-			   !context.activeState.awb.awbConverged) {
-			/*
-			 * Moderate CT change or AWB still converging: use
-			 * faster adaptation so the colour matrix tracks the
-			 * changing illuminant estimate in sync with the AWB
-			 * gains. Prevents a transient mismatch where new gains
-			 * are applied with an old matrix during scene changes.
-			 */
-			sf = smoothingFactor_ * ctFastFactor_;
+		/*
+		 * Adaptive temporal smoothing based on CT rate of change.
+		 * Large CT jumps indicate scene changes and warrant immediate
+		 * matrix snap (sf=0). Moderate changes or AWB still converging
+		 * use a faster-than-normal factor to track the changing
+		 * illuminant estimate in sync with AWB gains, preventing a
+		 * transient mismatch where new AWB gains are applied with a
+		 * lagging colour matrix.
+		 *
+		 * The CT-delta guard takes priority: CCM speed is driven by how
+		 * fast CT is changing, not solely by the AWB stable flag, so
+		 * the matrix does not unnecessarily slam on the same frame AWB
+		 * declares stable while CT has already settled for multiple
+		 * frames.
+		 */
+		if (frame > 0) {
+			float ctDelta = std::abs(ct - lastCt_);
+			float sf = smoothingFactor_;
+			if (ctDelta > ctSnapThreshold_) {
+				/* Large scene change: snap immediately */
+				sf = 0.0f;
+			} else if (ctDelta > ctFastThreshold_ ||
+				   !context.activeState.awb.awbConverged) {
+				/*
+				 * Moderate CT change or AWB still converging:
+				 * use faster adaptation so the colour matrix
+				 * tracks the changing illuminant estimate in
+				 * sync with the AWB gains. Prevents a transient
+				 * mismatch where new gains are applied with an
+				 * old matrix during scene changes.
+				 */
+				sf = smoothingFactor_ * ctFastFactor_;
+			}
+
+			for (size_t i = 0; i < 9; i++)
+				matrix[i] = sf * ccm.matrix[i] +
+					    (1.0f - sf) * matrix[i];
+			for (size_t i = 0; i < 3; i++)
+				offsets[i] = sf * ccm.offsets[i] +
+					     (1.0f - sf) * offsets[i];
 		}
 
-		for (size_t i = 0; i < 9; i++)
-			matrix[i] = sf * ccm.matrix[i] + (1.0f - sf) * matrix[i];
-		for (size_t i = 0; i < 3; i++)
-			offsets[i] = sf * ccm.offsets[i] + (1.0f - sf) * offsets[i];
+		lastCt_ = ct;
 	}
 
-	lastCt_ = ct;
 	ccm.matrix = matrix;
 	ccm.offsets = offsets;
 

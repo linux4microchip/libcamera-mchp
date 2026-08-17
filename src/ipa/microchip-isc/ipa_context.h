@@ -290,6 +290,18 @@ struct IPAFrameContext : public FrameContext {
 		bool autoEnabled;
 	} awb;
 
+	struct {
+		/*
+		 * Manual colour-correction matrix from
+		 * controls::ColourCorrectionMatrix. When manualSet is true the
+		 * CCM algorithm bypasses CT interpolation and loads this matrix
+		 * directly, so the override applies for one frame only and does
+		 * not leak into subsequent auto frames.
+		 */
+		std::array<float, 9> matrix;
+		bool manualSet;
+	} ccm;
+
 	/*
 	 * Per-frame scene analysis: computed once in processStats() before
 	 * the algorithm loop and shared by all algorithms to avoid redundant
