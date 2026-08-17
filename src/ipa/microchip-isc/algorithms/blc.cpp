@@ -31,8 +31,6 @@
 
 #include "blc.h"
 
-#include <optional>
-
 #include <libcamera/base/log.h>
 
 #include "libcamera/internal/yaml_parser.h"
@@ -177,8 +175,6 @@ int BlackLevelCorrection::init(IPAContext &context,
 int BlackLevelCorrection::configure(IPAContext &context,
 				    [[maybe_unused]] const IPACameraSensorInfo &sensorInfo)
 {
-	const uint32_t bl = context.configuration.sensor.blackLevel;
-
 	/*
 	 * Pedestal subtraction.
 	 *
@@ -199,14 +195,28 @@ int BlackLevelCorrection::configure(IPAContext &context,
 		LOG(ISC_BLC, Debug)
 			<< "BLC: hasDpc=true, BLCEN active — WB offsets = 0";
 	} else {
-		/* No hardware DPC — subtract pedestal through WB offset block */
-		int32_t offset = -static_cast<int32_t>(bl);
-		context.activeState.awb.rOffset = offset;
-		context.activeState.awb.bOffset = offset;
-		context.activeState.awb.grOffset = offset;
-		context.activeState.awb.gbOffset = offset;
+		/*
+		 * No hardware DPC — subtract the pedestal through the WB offset
+		 * block.  Use the per-channel black levels so a sensor with an
+		 * asymmetric pedestal (different R/GR/GB/B offsets) is corrected
+		 * exactly; they default to the scalar bl when the YAML omits the
+		 * per-channel keys, so IMX219 (all 64) is unaffected.
+		 */
+		const auto &sensor = context.configuration.sensor;
+		context.activeState.awb.rOffset =
+			-static_cast<int32_t>(sensor.blackLevelR);
+		context.activeState.awb.bOffset =
+			-static_cast<int32_t>(sensor.blackLevelB);
+		context.activeState.awb.grOffset =
+			-static_cast<int32_t>(sensor.blackLevelGR);
+		context.activeState.awb.gbOffset =
+			-static_cast<int32_t>(sensor.blackLevelGB);
 		LOG(ISC_BLC, Debug)
-			<< "BLC: hasDpc=false — WB offsets = " << offset;
+			<< "BLC: hasDpc=false — WB offsets R="
+			<< context.activeState.awb.rOffset
+			<< " GR=" << context.activeState.awb.grOffset
+			<< " GB=" << context.activeState.awb.gbOffset
+			<< " B=" << context.activeState.awb.bOffset;
 	}
 
 	return 0;

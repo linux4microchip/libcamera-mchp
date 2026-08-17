@@ -775,7 +775,9 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		 *
 		 * The histogram has 512 bins over 10-bit (0-1023) data:
 		 *   bin_index = pixel_value >> 1
-		 * so pedestal in histogram units = blackLevel / 2.
+		 * so pedestal in histogram units = blackLevel / 2, applied
+		 * per Bayer channel so a sensor with an asymmetric pedestal is
+		 * corrected exactly (all channels equal for IMX219).
 		 * Clamp to 0: noise in a very dark scene can pull the mean
 		 * below the pedestal floor.
 		 *
@@ -799,12 +801,16 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		 * Reference: CLAUDE.md "Bin conversion: bin = pixel >> 1
 		 * → IMX219 pedestal 64 DN = 32 histogram bins"
 		 */
-		float pedestal = static_cast<float>(
-					 context_.configuration.sensor.blackLevel) /
-				 2.0f;
+		const auto &sensor = context_.configuration.sensor;
+		const float pedestal[4] = {
+			static_cast<float>(sensor.blackLevelGR) / 2.0f,
+			static_cast<float>(sensor.blackLevelR) / 2.0f,
+			static_cast<float>(sensor.blackLevelGB) / 2.0f,
+			static_cast<float>(sensor.blackLevelB) / 2.0f,
+		};
 		for (unsigned int ch = 0; ch < 4; ch++) {
 			float raw = calculateChannelMean(stats, ch);
-			hist.channelMeans[ch] = std::max(0.0f, raw - pedestal);
+			hist.channelMeans[ch] = std::max(0.0f, raw - pedestal[ch]);
 			hist.captureFrame[ch] = stats->hist[ch].capture_frame;
 			/* Cache raw bin counts for IscHistogramBins calibration control. */
 			for (unsigned int i = 0; i < kHistBins; i++)
@@ -1009,7 +1015,8 @@ void IPAMicrochipISC::setIspControls()
 	 * escaped because pedestalResidual≈0 at unity gain.
 	 *
 	 * On SAMA5D2 (hasDpc=false): no DPC hardware; BLC uses the WB offset
-	 * path via awb.rOffset = -blackLevel set by the BLC algorithm.
+	 * path via awb.{r,gr,gb,b}Offset = -blackLevel<ch> set per channel by
+	 * the BLC algorithm.
 	 * The gain-residual correction is not needed there either because
 	 * the IMX219 adds its pedestal digitally after the analogue gain
 	 * stage — the pedestal in the histogram is a fixed 32 bins regardless
