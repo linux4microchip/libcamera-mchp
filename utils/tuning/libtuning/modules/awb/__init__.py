@@ -4,3 +4,4 @@
 
 from libtuning.modules.awb.awb import AWB
 from libtuning.modules.awb.rkisp1 import AWBRkISP1
+from libtuning.modules.awb.microchip_isc import AWBMicrochipISC
