@@ -1060,7 +1060,7 @@ static void printUsage(const char *argv0)
 					 "                             block is a mathematical no-op (datasheet\n"
 					 "                             §43.6.20: histogram taps vp_data before WB;\n"
 					 "                             AE converges normally). AWB is disabled.\n"
-					 "                             Output: <file>.pgm  maxval=1023  Bayer GRBG.\n"
+					 "                             Output: <file>.pgm  maxval=1023  Bayer RGGB.\n"
 					 "                             Use for CCM calibration with microchip_isc.py.\n"
 					 "  --width=N                  Capture width  (default: 1920)\n"
 					 "  --height=N                 Capture height (default: 1080)\n"

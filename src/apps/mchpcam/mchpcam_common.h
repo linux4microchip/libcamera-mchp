@@ -187,7 +187,7 @@ public:
 	 *
 	 * The output is a 16-bit little-endian PGM (P5 magic, maxval 1023).
 	 * Each pixel occupies 2 bytes; the 10-bit sample is in the low 10 bits.
-	 * Bayer pattern: GRBG (IMX219 native, verified from sensor data sheet).
+	 * Bayer pattern: RGGB (IMX219 native, no flip; SRGGB10_1X10).
 	 */
 	void setRawCapture(bool r) { rawCapture_ = r; }
 
