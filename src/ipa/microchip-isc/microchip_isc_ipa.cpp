@@ -96,8 +96,7 @@ protected:
 
 private:
 	void updateSessionConfiguration(const IPACameraSensorInfo &info,
-					const ipa::microchip_isc::IPAConfigInfo &ipaConfig,
-					BayerFormat::Order bayerOrder);
+					const ipa::microchip_isc::IPAConfigInfo &ipaConfig);
 	void setSensorControls();
 	void setIspControls();
 
@@ -241,11 +240,8 @@ void IPAMicrochipISC::stop()
 
 void IPAMicrochipISC::updateSessionConfiguration(
 	const IPACameraSensorInfo &info,
-	const ipa::microchip_isc::IPAConfigInfo &ipaConfig,
-	BayerFormat::Order bayerOrder)
+	const ipa::microchip_isc::IPAConfigInfo &ipaConfig)
 {
-	context_.configuration.sensor.bayerOrder = bayerOrder;
-
 	/*
 	 * Compute lineDuration from the LIVE hblank value for the active
 	 * sensor mode, not the ControlInfoMap default. Different sensor modes
@@ -393,8 +389,7 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	sensorControls_ = ipaConfig.sensorControls;
 	ispControls_ = ipaConfig.ispControls;
 
-	updateSessionConfiguration(info, ipaConfig,
-				   static_cast<BayerFormat::Order>(bayerOrder));
+	updateSessionConfiguration(info, ipaConfig);
 
 	/*
 	 * Hardware capability flags come from the pipeline handler via IPC.

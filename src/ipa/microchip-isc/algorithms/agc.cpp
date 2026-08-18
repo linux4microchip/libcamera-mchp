@@ -887,7 +887,6 @@ void Agc::process(IPAContext &context,
 		aeLockCount_ = 0;
 	}
 	bool aeStable = (aeLockCount_ >= aeLockFrames_);
-	agcState.aeConverged = aeStable;
 
 	if (!aeStable) {
 		float ratio = effectiveTarget / std::max(currentLuminance, 1.0f);

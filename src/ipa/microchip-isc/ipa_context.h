@@ -16,8 +16,6 @@
 
 #include <libcamera/controls.h>
 
-#include "libcamera/internal/bayer_format.h"
-
 #include <libipa/camera_sensor_helper.h>
 #include <libipa/fc_queue.h>
 
@@ -50,7 +48,6 @@ struct IPASessionConfiguration {
 	} agc;
 
 	struct {
-		BayerFormat::Order bayerOrder;
 		utils::Duration lineDuration;
 		/* Pixel rate in Hz — needed to recompute lineDuration from live hblank */
 		double pixelRate;
@@ -128,13 +125,6 @@ struct IPAActiveState {
 		 * multiplier (2^ev) to the YAML target_brightness each frame.
 		 */
 		float exposureValue = 0.0f;
-		/*
-		 * True once AGC has declared the exposure stable (luminance
-		 * within stabilityThreshold_ of the EV-adjusted target).
-		 * Read by CBC to inhibit its brightness correction while AGC
-		 * is actively converging, preventing the two loops from fighting.
-		 */
-		bool aeConverged = false;
 		/* Zone metering scale: <1 reduces exposure for bright scenes. */
 		float zoneRatio = 1.0f;
 	} agc;
@@ -297,10 +287,6 @@ struct IPAFrameContext : public FrameContext {
 	} agc;
 
 	struct {
-		float rGain;
-		float bGain;
-		float grGain;
-		float gbGain;
 		bool autoEnabled;
 	} awb;
 
