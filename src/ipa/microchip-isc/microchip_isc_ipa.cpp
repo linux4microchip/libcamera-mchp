@@ -810,12 +810,22 @@ void IPAMicrochipISC::processStats(unsigned int request,
 		 * Reference: CLAUDE.md "Bin conversion: bin = pixel >> 1
 		 * → IMX219 pedestal 64 DN = 32 histogram bins"
 		 */
+		/*
+		 * On hasDpc platforms (SAMA7G5) the DPC BLCEN block already
+		 * subtracts the black-level pedestal from vp_data — the
+		 * histogram tap — in hardware.  Subtracting it again here would
+		 * double-count the pedestal and floor the low-signal R/B channel
+		 * means to zero, collapsing luminance to a green-only value and
+		 * breaking AE/AWB metering.  Only subtract in software when the
+		 * hardware is not already doing it.
+		 */
 		const auto &sensor = context_.configuration.sensor;
+		const bool swPedestal = !context_.configuration.hw.hasDpc;
 		const float pedestal[4] = {
-			static_cast<float>(sensor.blackLevelGR) / 2.0f,
-			static_cast<float>(sensor.blackLevelR) / 2.0f,
-			static_cast<float>(sensor.blackLevelGB) / 2.0f,
-			static_cast<float>(sensor.blackLevelB) / 2.0f,
+			swPedestal ? static_cast<float>(sensor.blackLevelGR) / 2.0f : 0.0f,
+			swPedestal ? static_cast<float>(sensor.blackLevelR) / 2.0f : 0.0f,
+			swPedestal ? static_cast<float>(sensor.blackLevelGB) / 2.0f : 0.0f,
+			swPedestal ? static_cast<float>(sensor.blackLevelB) / 2.0f : 0.0f,
 		};
 		for (unsigned int ch = 0; ch < 4; ch++) {
 			float raw = calculateChannelMean(stats, ch);
@@ -856,7 +866,7 @@ void IPAMicrochipISC::processStats(unsigned int request,
 					       0.114f * m[kHistChannelB];
 
 		/* Pass pedestal so spread is on same zero-point as means */
-		unsigned int pedestalBins =
+		unsigned int pedestalBins = context_.configuration.hw.hasDpc ? 0 :
 			context_.configuration.sensor.blackLevel / 2;
 		frameContext.scene.spread =
 			calculateHistogramSpread(stats, pedestalBins);

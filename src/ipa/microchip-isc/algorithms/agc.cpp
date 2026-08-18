@@ -622,8 +622,18 @@ void Agc::process(IPAContext &context,
 	 * (BSD-2-Clause, Copyright Raspberry Pi Ltd).
 	 */
 	context.activeState.agc.zoneRatio = 1.0f;
+	unsigned int pedestalBins = context.configuration.hw.hasDpc ? 0 :
+				    context.configuration.sensor.blackLevel / 2;
 	if (stats && iqmQhi_ > iqmQlo_ && currentLuminance > 1.0f) {
-		float iqm = calculateInterQuantileMean(stats, iqmQlo_, iqmQhi_);
+		/*
+		 * calculateInterQuantileMean() operates on the raw histogram
+		 * (pedestal included); currentLuminance is pedestal-subtracted.
+		 * Convert IQM to the same net scale before taking the ratio,
+		 * otherwise the +pedestal bias makes the ratio >1 and the zone
+		 * highlight guard never engages (scene stays over-exposed).
+		 */
+		float iqm = calculateInterQuantileMean(stats, iqmQlo_, iqmQhi_) -
+			    static_cast<float>(pedestalBins);
 		if (iqm > 0.0f) {
 			float ratio = iqm / currentLuminance;
 			context.activeState.agc.zoneRatio =
