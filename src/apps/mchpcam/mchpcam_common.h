@@ -230,6 +230,9 @@ protected:
 	 */
 	void stopStreaming();
 
+	/* Return the held savedRequest_ to the ring; no-op if none held. */
+	void requeueSavedRequest();
+
 	/* libcamera objects */
 	std::unique_ptr<libcamera::CameraManager> cameraManager_;
 	std::shared_ptr<libcamera::Camera> camera_;
@@ -242,6 +245,10 @@ protected:
 	std::atomic<bool> captureReady_{ false };
 	std::atomic<bool> cameraStarted_{ false };
 	const libcamera::FrameBuffer *savedBuffer_ = nullptr;
+	/* Request owning savedBuffer_, held out of the ring while it is saved. */
+	libcamera::Request *savedRequest_ = nullptr;
+	/* Keep the ring in flight across shots (burst/timelapse). */
+	bool continuousCapture_ = false;
 	/*
 	 * keypressReceived_: set by the main thread when the user presses
 	 * Enter (--keypress) or SIGUSR1 is received (--signal). Acts as a

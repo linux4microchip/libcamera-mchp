@@ -321,6 +321,7 @@ public:
 			return ret;
 		}
 		cameraStarted_ = true;
+		continuousCapture_ = true;
 
 		for (auto &req : requests_)
 			camera_->queueRequest(req.get());
@@ -409,13 +410,15 @@ public:
 
 			shot++;
 
-			/* Reset convergence state for the next shot — both timelapse
-			 * and burst need this to clear captureReady_, savedBuffer_,
-			 * and frameCount_ so the next iteration converges fresh.
-			 * Without reset, burst mode saves the same buffer every shot
-			 * and the ISC pipeline stops requeueing. */
-			if (shot < total)
+			/*
+			 * Clear convergence state, then return the just-saved
+			 * request to the ring. Reset first so the requeued buffer
+			 * is no longer held by requestComplete()'s save guard.
+			 */
+			if (shot < total) {
 				resetConvergenceState();
+				requeueSavedRequest();
+			}
 
 			/* Timelapse: sleep the inter-shot interval */
 			if (timelapseMs_ > 0)

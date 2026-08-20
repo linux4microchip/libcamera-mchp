@@ -536,20 +536,24 @@ void MchpCamCommon::requestComplete(libcamera::Request *request)
 				 * wrong buffer.
 				 */
 				savedBuffer_ = request->findBuffer(stream_);
+				savedRequest_ = request;
 				captureNotify_.notify_one();
 			}
 		}
 		/* fall through — always requeue */
 	}
 
+	/* Hold the saved buffer out of the ring until the main thread frees it. */
+	if (captureReady_.load() && request->findBuffer(stream_) == savedBuffer_)
+		return;
+
 	/*
-	 * Requeue while capture has not yet been saved.  Once captureReady_
-	 * is set the main thread calls camera_->stop(), which cancels all
-	 * still-queued requests (they return via the RequestCancelled early
-	 * exit above).  Do NOT requeue after captureReady_ is set — the
-	 * camera is in Stopping state and queueRequest() would assert.
+	 * Single-shot drains after capture: the main thread then calls
+	 * camera_->stop(), and queuing onto a Stopping camera would assert.
+	 * Continuous capture keeps the ring in flight so the next shot
+	 * re-converges instead of the pipeline running dry.
 	 */
-	if (!captureReady_.load()) {
+	if (!captureReady_.load() || continuousCapture_) {
 		request->reuse(Request::ReuseBuffers);
 		ControlList ctrls(camera_->controls());
 		applyControls(ctrls);
@@ -623,4 +627,21 @@ void MchpCamCommon::resetConvergenceState()
 	 * The IPA does not reset its convergence state between shots, so
 	 * the next shot will converge faster than the first.
 	 */
+}
+
+void MchpCamCommon::requeueSavedRequest()
+{
+	using namespace libcamera;
+
+	if (!savedRequest_ || !cameraStarted_.load())
+		return;
+
+	Request *req = savedRequest_;
+	savedRequest_ = nullptr;
+
+	req->reuse(Request::ReuseBuffers);
+	ControlList ctrls(camera_->controls());
+	applyControls(ctrls);
+	req->controls() = ctrls;
+	camera_->queueRequest(req);
 }
