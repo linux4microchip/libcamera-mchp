@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <new>
 
 #include <libcamera/base/log.h>
 
@@ -250,7 +251,7 @@ void IscPostProcessor::stop()
 	 */
 	thread_.removeMessages(worker_.get());
 	for (FrameBuffer *buffer : inFlight_)
-		frameProcessed.emit(buffer);
+		frameProcessed.emit(buffer, false);
 	inFlight_.clear();
 
 	running_ = false;
@@ -263,13 +264,13 @@ void IscPostProcessor::queue(FrameBuffer *buffer, unsigned int colourTemperature
 			      colourTemperature);
 }
 
-void IscPostProcessor::workerDone(FrameBuffer *buffer)
+void IscPostProcessor::workerDone(FrameBuffer *buffer, bool filtered)
 {
 	/* Runs on the pipeline thread; hand the buffer back to the handler. */
 	auto it = std::find(inFlight_.begin(), inFlight_.end(), buffer);
 	if (it != inFlight_.end())
 		inFlight_.erase(it);
-	frameProcessed.emit(buffer);
+	frameProcessed.emit(buffer, filtered);
 }
 
 void IscPostProcessor::Worker::process(FrameBuffer *buffer,
@@ -298,7 +299,7 @@ void IscPostProcessor::Worker::process(FrameBuffer *buffer,
 			mapErrorLogged_ = true;
 		}
 		syncers.clear();
-		bufferProcessed.emit(buffer);
+		bufferProcessed.emit(buffer, false);
 		return;
 	}
 
@@ -315,15 +316,22 @@ void IscPostProcessor::Worker::process(FrameBuffer *buffer,
 			<< "Mapped plane " << plane.size() << " < required "
 			<< needed << " bytes; completing frame unfiltered";
 		syncers.clear();
-		bufferProcessed.emit(buffer);
+		bufferProcessed.emit(buffer, false);
 		return;
 	}
 
-	parent_->applyFilters(plane.data(), colourTemperature);
+	bool filtered = true;
+	try {
+		parent_->applyFilters(plane.data(), colourTemperature);
+	} catch (const std::bad_alloc &) {
+		/* Complete the frame unfiltered rather than abort the stream. */
+		LOG(IscPostProc, Error) << "Out of memory in post-processing";
+		filtered = false;
+	}
 
 	syncers.clear();
 
-	bufferProcessed.emit(buffer);
+	bufferProcessed.emit(buffer, filtered);
 }
 
 void IscPostProcessor::applyFilters(uint8_t *data,

@@ -28,9 +28,9 @@ class YamlObject;
  *
  * The ISC has no hardware lens-shading block, so the correction is applied in
  * software here, on the finished output buffer, before it is completed to the
- * application. Running in the pipeline handler (rather than in a single
- * application) means every client — cam, qcam, libcamerasrc, mchpcam —
- * benefits.
+ * application. Hosting it in the pipeline handler (rather than one
+ * application) lets any client — cam, qcam, libcamerasrc, mchpcam — request it
+ * through the IscStillProcess control.
  *
  * The IPA cannot host this: it is a control-plane process that only sees
  * statistics and emits parameters, never pixel buffers. Per-pixel work must
@@ -47,7 +47,9 @@ class YamlObject;
  * per-pixel correction of an already-demosaiced ISC buffer is this
  * pipeline-handler-owned stage, filtering the buffer in place.
  *
- * Lens-shading is one multiply per pixel, cheap enough to run for every role.
+ * Lens-shading is one multiply per pixel, but the stage is gated per request
+ * via IscStillProcess: it runs only on the frames the application marks and
+ * completes the rest straight from the ISC output.
  */
 class IscPostProcessor : public Object
 {
@@ -84,17 +86,22 @@ public:
 	void stop();
 
 	/**
-	 * \brief Queue a finished buffer for in-place filtering
+	 * \brief Queue a finished buffer for the in-place still pass
 	 * \param[in] buffer The ISC output buffer to filter
 	 * \param[in] colourTemperature Scene CT for per-CT map selection (0 if unknown)
 	 *
-	 * The buffer is filtered on the worker thread and returned via
-	 * frameProcessed once complete.
+	 * Runs the pass on the worker thread and returns the buffer via
+	 * frameProcessed. Queued only for frames marked IscStillProcess.
 	 */
 	void queue(FrameBuffer *buffer, unsigned int colourTemperature);
 
-	/** \brief Emitted on the pipeline thread when a buffer has been filtered */
-	Signal<FrameBuffer *> frameProcessed;
+	/**
+	 * \brief Emitted on the pipeline thread when a queued buffer is done
+	 *
+	 * The bool is true if the pass ran, false if the buffer was completed
+	 * unfiltered (map/size failure, out of memory, or drained at stop()).
+	 */
+	Signal<FrameBuffer *, bool> frameProcessed;
 
 private:
 	/*
@@ -111,7 +118,7 @@ private:
 	public:
 		Worker(IscPostProcessor *parent) : parent_(parent) {}
 		void process(FrameBuffer *buffer, unsigned int colourTemperature);
-		Signal<FrameBuffer *> bufferProcessed;
+		Signal<FrameBuffer *, bool> bufferProcessed;
 
 	private:
 		IscPostProcessor *parent_;
@@ -119,7 +126,7 @@ private:
 		bool mapErrorLogged_ = false;
 	};
 
-	void workerDone(FrameBuffer *buffer);
+	void workerDone(FrameBuffer *buffer, bool filtered);
 
 	/* Applies the active filters in place on the mapped plane data. */
 	void applyFilters(uint8_t *data, unsigned int colourTemperature) const;

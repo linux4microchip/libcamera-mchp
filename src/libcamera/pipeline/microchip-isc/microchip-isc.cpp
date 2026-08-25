@@ -259,8 +259,9 @@ private:
 	int processControls(MicrochipISCCameraData *data, Request *request);
 	void updateControls(MicrochipISCCameraData *data, const ControlInfoMap &ipaControls);
 	void bufferReady(FrameBuffer *buffer);
-	void postProcDone(FrameBuffer *buffer);
-	void completeFrameBuffer(MicrochipISCCameraData *data, FrameBuffer *buffer);
+	void postProcDone(FrameBuffer *buffer, bool filtered);
+	void completeFrameBuffer(MicrochipISCCameraData *data, FrameBuffer *buffer,
+				 int stillProcessed = -1);
 	void statsBufferReady(FrameBuffer *buffer);
 	void tryCompleteRequest(MicrochipISCCameraData *data,
 				MicrochipISCCameraData::FrameInfo *info);
@@ -1527,6 +1528,8 @@ int MicrochipISCCameraData::init()
 					      { &controls::Brightness, ControlInfo(-1.0f, 1.0f, 0.0f) },
 					      { &controls::Contrast, ControlInfo(0.0f, 128.0f, 1.0f) },
 					      { &controls::AwbEnable, ControlInfo(false, true, true) },
+					      /* Per-request opt-in for the software still pass */
+					      { &controls::microchip::IscStillProcess, ControlInfo(false, true, false) },
 					      /* Sensor controls — ranges overwritten in configure() */
 					      { &controls::AnalogueGain, ControlInfo(1.0f, 16.0f, 1.0f) },
 					      { &controls::ExposureTime, ControlInfo(100, 33333, 10000) },
@@ -1975,13 +1978,23 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 	}
 
 	/*
-	 * When the lens-shading stage is active, hand the finished buffer to
-	 * its worker thread and complete the request only once filtering is
-	 * done (postProcDone()). A cancelled buffer carries no valid pixels,
-	 * so it skips the filter and completes directly.
+	 * The lens-shading pass is gated per request: a frame marked with
+	 * IscStillProcess goes to the worker and completes via postProcDone();
+	 * every other frame completes straight from the ISC output, stamped
+	 * false so it is not taken for the processed grab.
 	 */
-	if (data->postproc_ && data->postproc_->isEnabled() &&
-	    buffer->metadata().status != FrameMetadata::FrameCancelled) {
+	Request *request = buffer->request();
+	bool ppStream = data->postproc_ && data->postproc_->isEnabled();
+	bool stamp = ppStream && request &&
+		     buffer->metadata().status != FrameMetadata::FrameCancelled;
+	bool runPass = false;
+	if (stamp) {
+		const auto &flag = request->controls().get(
+			controls::microchip::IscStillProcess);
+		runPass = flag && *flag;
+	}
+
+	if (runPass) {
 		unsigned int colourTemperature = 0;
 		const auto &ct = data->latestIpaMetadata_.get(controls::ColourTemperature);
 		if (ct)
@@ -1991,10 +2004,10 @@ void PipelineHandlerMicrochipISC::bufferReady(FrameBuffer *buffer)
 		return;
 	}
 
-	completeFrameBuffer(data, buffer);
+	completeFrameBuffer(data, buffer, stamp ? 0 : -1);
 }
 
-void PipelineHandlerMicrochipISC::postProcDone(FrameBuffer *buffer)
+void PipelineHandlerMicrochipISC::postProcDone(FrameBuffer *buffer, bool filtered)
 {
 	if (!activeData_) {
 		LOG(MicrochipISC, Error)
@@ -2002,11 +2015,12 @@ void PipelineHandlerMicrochipISC::postProcDone(FrameBuffer *buffer)
 		return;
 	}
 
-	completeFrameBuffer(activeData_, buffer);
+	completeFrameBuffer(activeData_, buffer, filtered ? 1 : 0);
 }
 
 void PipelineHandlerMicrochipISC::completeFrameBuffer(MicrochipISCCameraData *data,
-						      FrameBuffer *buffer)
+						      FrameBuffer *buffer,
+						      int stillProcessed)
 {
 	Request *request = buffer->request();
 	if (!request) {
@@ -2025,6 +2039,10 @@ void PipelineHandlerMicrochipISC::completeFrameBuffer(MicrochipISCCameraData *da
 		LOG(MicrochipISC, Warning) << "No frame info for request "
 					   << request->sequence()
 					   << " — completing as stale";
+		if (stillProcessed >= 0)
+			request->_d()->metadata().set(
+				controls::microchip::IscStillProcess,
+				stillProcessed != 0);
 		completeBuffer(request, buffer);
 		completeRequest(request);
 		return;
@@ -2043,6 +2061,11 @@ void PipelineHandlerMicrochipISC::completeFrameBuffer(MicrochipISCCameraData *da
 	if (!data->latestIpaMetadata_.empty())
 		request->_d()->metadata().merge(data->latestIpaMetadata_,
 						ControlList::MergePolicy::OverwriteExisting);
+
+	/* Set after the merge so it is not clobbered; the IPA never emits it. */
+	if (stillProcessed >= 0)
+		request->_d()->metadata().set(controls::microchip::IscStillProcess,
+					      stillProcessed != 0);
 
 	completeBuffer(request, buffer);
 	info->bufferDone = true;
