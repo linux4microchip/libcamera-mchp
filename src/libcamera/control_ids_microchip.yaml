@@ -86,6 +86,23 @@ controls:
       max: 180
       default: 0
 
+  - IscStillProcess:
+      type: bool
+      direction: inout
+      description: |
+        Request the software still post-processing pass (lens-shading)
+        for this frame. The single-core SAMA7G5 Cortex-A7 cannot sustain
+        the full-frame pass at the video rate, so it is a per-request
+        capture-intent flag rather than an always-on stage: set it true
+        on the frame to keep and leave it unset (or false) on preview
+        frames.
+
+        The pipeline echoes it back in result metadata as true only if
+        the pass actually ran on that frame, and false if the buffer
+        could not be mapped or filtered, so the application can confirm
+        the saved frame was processed.
+      default: false
+
   - IscHistogramMeans:
       type: float
       direction: out
