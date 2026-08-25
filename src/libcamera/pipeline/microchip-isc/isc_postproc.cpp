@@ -8,6 +8,7 @@
 #include "isc_postproc.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <new>
 
@@ -117,6 +118,14 @@ void IscPostProcessor::loadConfig(const YamlObject &config)
 		    r->size() != need || g->size() != need ||
 		    b->size() != need)
 			return false;
+		/* A non-finite gain would poison every interpolated pixel. */
+		auto finite = [](const std::vector<double> &v) {
+			return std::all_of(v.begin(), v.end(), [](double x) {
+				return std::isfinite(x);
+			});
+		};
+		if (!finite(*r) || !finite(*g) || !finite(*b))
+			return false;
 		grid.gw = gw;
 		grid.gh = gh;
 		grid.r.assign(r->begin(), r->end());
@@ -204,7 +213,16 @@ int IscPostProcessor::configure(const PixelFormat &format, const Size &size,
 
 	bool filterable = isFilterableFormat(format);
 
-	/* Lens-shading runs for every role when a gain map is loaded. */
+	/* 2 bytes per pixel: a stride below one packed line would over-read. */
+	if (filterable && stride < size.width * 2u) {
+		LOG(IscPostProc, Warning)
+			<< "stride " << stride << " < " << size.width * 2u
+			<< " for " << size.toString()
+			<< "; post-processing disabled";
+		filterable = false;
+	}
+
+	/* Active when a gain map is loaded; the pass is gated per request. */
 	lscActive_ = filterable && (lscGrid_.valid || !lscPerCt_.empty());
 
 	enabled_ = lscActive_;
