@@ -51,7 +51,6 @@ MchpCamCommon::MchpCamCommon()
 	  manualGain_(-1.0f),
 	  ccmEnabled_(true),
 	  warmupFrames_(12),
-	  maxFrames_(150),
 	  frameCount_(0),
 	  settleFrames_(0),
 	  awbLocked_(false),
@@ -488,63 +487,105 @@ void MchpCamCommon::requestComplete(libcamera::Request *request)
 	}
 
 	auto ct = meta.get(controls::ColourTemperature);
-	if (ct.has_value())
-		colourTemperature_ = *ct;
 
-	frameCount_++;
-
-	bool converged = awbLocked_.load() && aeLocked_.load();
-
-	/* Force convergence after maxFrames_ to guarantee eventual capture */
-	if (frameCount_ >= maxFrames_)
-		converged = true;
-
-	/*
-	 * keypressReceived_ starts as true (normal auto-capture mode).
-	 * setKeypress(true) / setSignalTrigger(true) reset it to false,
-	 * making it a gate: the main thread sets it true again once the
-	 * user presses Enter or SIGUSR1 is received. requestComplete()
-	 * only saves when this gate is open, so savedBuffer_ is always
-	 * set by this path (not by the main thread directly).
-	 */
-	if (frameCount_ >= warmupFrames_ && converged &&
-	    keypressReceived_.load()) {
+	bool holdThis;
+	bool doRequeue;
+	bool wantStillPass;
+	{
 		/*
-		 * ISC WB gain settling: isc_update_profile() commits WB gains
-		 * synchronously via ISC_CTRL_UPPRO polling before the ioctl
-		 * returns.  One pipeline frame is needed for committed gains
-		 * to appear in the DMA output.  kPostLockSettleFrames = 4
-		 * gives 3 frames of headroom above that minimum.
-		 * Settling is bypassed when maxFrames_ forces capture.
+		 * Guard the convergence state shared with the main thread
+		 * (resetConvergenceState()/requeueSavedRequest()) and publish
+		 * savedBuffer_ before captureReady_ so a waiter woken on the
+		 * flag never reads a stale buffer.
 		 */
-		bool settled = (frameCount_ >= maxFrames_) ||
-			       (++settleFrames_ >= kPostLockSettleFrames);
+		std::lock_guard<std::mutex> lock(captureMutex_);
 
-		if (settled) {
+		if (ct.has_value())
+			colourTemperature_ = *ct;
+
+		frameCount_++;
+
+		/*
+		 * AE lock is the hard convergence gate — it latches reliably,
+		 * either from AeStateConverged or the warmup-frame fallback.
+		 * AWB latches only when the scene allows: on a dim or noisy
+		 * scene the 4-frame-latency histogram keeps the inter-frame
+		 * gain delta above the stability threshold, so the IPA may
+		 * never report AWB locked. A still capture must not block on a
+		 * lock that never comes, so give AWB a bounded settle window
+		 * past warmup and then proceed on AE lock alone.
+		 */
+		bool awbSettled = awbLocked_.load() ||
+				  frameCount_ >= warmupFrames_ + kAwbSettleFrames;
+		bool converged = aeLocked_.load() && awbSettled;
+
+		/* Force convergence after maxFrames_ to guarantee capture. */
+		if (frameCount_ >= maxFrames_)
+			converged = true;
+
+		/*
+		 * keypressReceived_ starts true (normal auto-capture) and is a
+		 * gate for --keypress/--signal: reset to false, set true again
+		 * by the main thread on Enter or SIGUSR1. Arm only while the
+		 * gate is open and nothing has been latched yet.
+		 */
+		if (frameCount_ >= warmupFrames_ && converged &&
+		    keypressReceived_.load() && !captureReady_.load()) {
+			/* Anchor the force window to when the gate first opened. */
+			if (!gateOpenFrame_)
+				gateOpenFrame_ = frameCount_;
+
 			/*
-			 * Only the first requestComplete() call that reaches
-			 * this point saves the buffer and wakes the main thread.
-			 * Subsequent in-flight completions see exchange() return
-			 * true and fall through to the unconditional requeue.
+			 * Settle with the cheap preview path first, then ask the
+			 * pipeline for the still pass. Force the grab once the
+			 * window elapses so a scene that never settles, or a
+			 * non-post-processed stream, still captures.
 			 */
-			if (!captureReady_.exchange(true)) {
+			settleFrames_++;
+			bool forced = frameCount_ - gateOpenFrame_ >=
+				      kCaptureForceFrames;
+			if (!stillRequested_ &&
+			    (forced || settleFrames_ >= kPostLockSettleFrames))
+				stillRequested_ = true;
+
+			if (stillRequested_) {
 				/*
-				 * Use stream_-keyed lookup, not begin()->second.
-				 * begin() returns the first entry in pointer-address
-				 * order which is non-deterministic. In a future
-				 * multi-stream config this would silently save the
-				 * wrong buffer.
+				 * On a post-processed stream wait for the frame
+				 * that carries the still pass (IscStillProcess
+				 * echoed true) so the saved image is the corrected
+				 * one. Streams without the pass, and the force
+				 * fallback, save as soon as settling completes.
 				 */
-				savedBuffer_ = request->findBuffer(stream_);
-				savedRequest_ = request;
-				captureNotify_.notify_one();
+				auto flag = meta.get(controls::microchip::IscStillProcess);
+				bool processed = forced || !flag.has_value() || *flag;
+
+				if (processed && !captureReady_.exchange(true)) {
+					/*
+					 * stream_-keyed lookup, not begin(): the
+					 * latter is pointer-address ordered and
+					 * would save the wrong buffer under a
+					 * future multi-stream config.
+					 */
+					savedBuffer_ = request->findBuffer(stream_);
+					savedRequest_ = request;
+					/*
+					 * Latched — stop requesting the costly
+					 * pass on the ring buffers still in flight.
+					 */
+					stillRequested_ = false;
+					captureNotify_.notify_one();
+				}
 			}
 		}
-		/* fall through — always requeue */
+
+		wantStillPass = stillRequested_;
+		holdThis = captureReady_.load() &&
+			   request->findBuffer(stream_) == savedBuffer_;
+		doRequeue = !captureReady_.load() || continuousCapture_;
 	}
 
 	/* Hold the saved buffer out of the ring until the main thread frees it. */
-	if (captureReady_.load() && request->findBuffer(stream_) == savedBuffer_)
+	if (holdThis)
 		return;
 
 	/*
@@ -553,10 +594,16 @@ void MchpCamCommon::requestComplete(libcamera::Request *request)
 	 * Continuous capture keeps the ring in flight so the next shot
 	 * re-converges instead of the pipeline running dry.
 	 */
-	if (!captureReady_.load() || continuousCapture_) {
+	if (doRequeue) {
 		request->reuse(Request::ReuseBuffers);
 		ControlList ctrls(camera_->controls());
 		applyControls(ctrls);
+		/*
+		 * Ask for the still pass only once settling is done; warmup and
+		 * settling frames complete straight from the ISC output, leaving
+		 * the single-core A7 free so 3A converges at the video rate.
+		 */
+		ctrls.set(controls::microchip::IscStillProcess, wantStillPass);
 		request->controls() = ctrls;
 		camera_->queueRequest(request);
 	}
@@ -612,6 +659,9 @@ bool MchpCamCommon::setAwbMode(const std::string &mode)
 
 void MchpCamCommon::resetConvergenceState()
 {
+	/* Serialise with requestComplete() on the camera thread. */
+	std::lock_guard<std::mutex> lock(captureMutex_);
+
 	captureReady_.store(false);
 	/* keypressReceived_ is reset to false by setKeypress()/setSignalTrigger().
 	 * For normal auto-capture and for timelapse (where the caller sets the
@@ -621,6 +671,8 @@ void MchpCamCommon::resetConvergenceState()
 	savedBuffer_ = nullptr;
 	frameCount_ = 0;
 	settleFrames_ = 0;
+	gateOpenFrame_ = 0;
+	stillRequested_ = false;
 	/*
 	 * Keep awbLocked_ / aeLocked_ — they reflect IPA steady state
 	 * which persists between captures in a timelapse session.
@@ -633,11 +685,15 @@ void MchpCamCommon::requeueSavedRequest()
 {
 	using namespace libcamera;
 
-	if (!savedRequest_ || !cameraStarted_.load())
-		return;
-
-	Request *req = savedRequest_;
-	savedRequest_ = nullptr;
+	Request *req;
+	{
+		/* Serialise savedRequest_ with requestComplete(). */
+		std::lock_guard<std::mutex> lock(captureMutex_);
+		if (!savedRequest_ || !cameraStarted_.load())
+			return;
+		req = savedRequest_;
+		savedRequest_ = nullptr;
+	}
 
 	req->reuse(Request::ReuseBuffers);
 	ControlList ctrls(camera_->controls());

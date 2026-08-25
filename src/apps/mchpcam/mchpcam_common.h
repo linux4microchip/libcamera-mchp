@@ -334,10 +334,24 @@ protected:
 	 * adaptive timeout (timeoutSec_) is derived from this value and the
 	 * sensor framerate in captureStill() / captureLoop().
 	 */
-	unsigned int maxFrames_;
+	unsigned int maxFrames_ = 150;
 	unsigned int frameCount_ = 0;
 
 	unsigned int settleFrames_ = 0;
+	/*
+	 * Frame at which the capture gate (past warmup, converged, trigger
+	 * received) first opened. The force-grab window is measured from here,
+	 * not from stream start, so a late --keypress/--signal trigger still
+	 * gets a full settle instead of an immediate unsettled grab.
+	 */
+	unsigned int gateOpenFrame_ = 0;
+	/*
+	 * Set once convergence and WB settling are done, so requeued requests
+	 * ask the pipeline for the still pass (IscStillProcess). The costly CPU
+	 * pass is thus confined to the frame saved, keeping the single-core A7
+	 * free during warmup and settling so 3A converges at the video rate.
+	 */
+	bool stillRequested_ = false;
 	/*
 	 * Post-lock settling: ISC WB registers are double-buffered but
 	 * isc_update_profile() (called from isc_s_ctrl() on every V4L2
@@ -351,6 +365,20 @@ protected:
 	 * the start of the next frame's exposure.
 	 */
 	static constexpr unsigned int kPostLockSettleFrames = 8;
+	/*
+	 * Bounded AWB settle past warmup. AE lock is the hard convergence gate;
+	 * AWB latches only when the scene allows, so a still proceeds on AE lock
+	 * alone once AWB has had this many frames (several ISC histogram cycles)
+	 * to stabilise. Prevents an unlockable dim/noisy scene from deferring
+	 * capture to the maxFrames_ fallback with no headroom for the still pass.
+	 */
+	static constexpr unsigned int kAwbSettleFrames = 24;
+	/*
+	 * Frames after the gate opens before the still grab is forced, whether
+	 * or not a processed frame has arrived. Covers kPostLockSettleFrames of
+	 * WB settling plus a few frames for the still pass to run and return.
+	 */
+	static constexpr unsigned int kCaptureForceFrames = 16;
 
 	std::atomic<bool> awbLocked_{ false };
 	std::atomic<bool> aeLocked_{ false };
