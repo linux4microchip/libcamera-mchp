@@ -564,7 +564,8 @@ void MchpCamCommon::requestComplete(libcamera::Request *request)
 				 * fallback, save as soon as settling completes.
 				 */
 				auto flag = meta.get(controls::microchip::IscStillProcess);
-				bool processed = forced || !flag.has_value() || *flag;
+				bool processed = noPostproc_ || forced ||
+						 !flag.has_value() || *flag;
 
 				if (processed && !captureReady_.exchange(true)) {
 					/*
@@ -585,7 +586,7 @@ void MchpCamCommon::requestComplete(libcamera::Request *request)
 			}
 		}
 
-		wantStillPass = stillRequested_;
+		wantStillPass = stillRequested_ && !noPostproc_;
 		holdThis = captureReady_.load() &&
 			   request->findBuffer(stream_) == savedBuffer_;
 		doRequeue = !captureReady_.load() || continuousCapture_;

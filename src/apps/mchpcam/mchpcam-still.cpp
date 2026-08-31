@@ -1139,6 +1139,7 @@ static void printUsage(const char *argv0)
 					 "  Note: hardware register options bypass the IPA. Use --no-awb.\n"
 					 "\n"
 					 "Colour correction:\n"
+					 "  --no-postproc              Disable software lens-shading on the grab\n"
 					 "  --no-ccm                   Disable IPA Colour Correction Matrix\n"
 					 "  --ccm=a,b,c,d,e,f,g,h,i   Manual CCM: 9 floats, row-major RGB→RGB\n"
 					 "                             e.g. identity: 1,0,0,0,1,0,0,0,1\n"
@@ -1240,6 +1241,7 @@ int main(int argc, char **argv)
 		/* AGC */
 		{ "no-agc", no_argument, nullptr, 0 },
 		/* CCM */
+		{ "no-postproc", no_argument, nullptr, 0 },
 		{ "no-ccm", no_argument, nullptr, 0 },
 		{ "ccm", required_argument, nullptr, 0 },
 		/* Transforms */
@@ -1459,6 +1461,10 @@ int main(int argc, char **argv)
 				cam.setAgcEnabled(false);
 			else if (!strcmp(name, "enable-agc"))
 				cam.setAgcEnabled(true);
+
+			/* Post-processing */
+			else if (!strcmp(name, "no-postproc"))
+				cam.setNoPostproc(true);
 
 			/* CCM */
 			else if (!strcmp(name, "no-ccm") ||

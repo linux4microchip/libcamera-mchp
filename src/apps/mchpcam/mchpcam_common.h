@@ -207,6 +207,9 @@ public:
 	/* CCM */
 	void setCcmEnabled(bool e) { ccmEnabled_ = e; }
 
+	/* Save the raw ISC output: skip the software lens-shading pass. */
+	void setNoPostproc(bool v) { noPostproc_ = v; }
+
 	/*
 	 * Minimum frames before capture is saved; default 12 (covers
 	 * three full ISC 4-frame histogram cycles so AWB and AGC have
@@ -325,6 +328,9 @@ protected:
 
 	/* CCM */
 	bool ccmEnabled_ = true;
+
+	/* Diagnostic: skip the software still post-processing pass on the grab. */
+	bool noPostproc_ = false;
 
 	/* Warmup / convergence */
 	unsigned int warmupFrames_ = 12;
