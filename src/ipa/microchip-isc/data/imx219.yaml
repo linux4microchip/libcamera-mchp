@@ -275,6 +275,10 @@ algorithms:
       smoothing_factor: 0.7
       # Fallback colour temperature (K) used before AWB produces an estimate.
       ct_fallback: 5500
+      # Chroma scale [0-1] for the matrices below. The CC block clamps to the
+      # unsigned pixel range; at full strength it drives green negative (black)
+      # on blue scenes. Blending toward identity bounds it; row sums stay unity.
+      saturation: 0.6
       # Adaptive snap thresholds for CT-change-based matrix transitions.
       # When |ct_delta| > snap_threshold the matrix snaps immediately;
       # when > fast_threshold the transition speed is multiplied by fast_factor.
@@ -289,9 +293,9 @@ algorithms:
       # position as the Pi CCM stage (post-WB, pre-gamma, on linear RGB),
       # so the coefficients transfer directly. Rows sum to 1.0 (white
       # preserving) and the largest coefficient (3.08) is within the ISC
-      # CC range (kCcmScale 256, max 2047 = 8.0x). They are stronger than
-      # the previous hand-extrapolated matrices, so a confirming Macbeth
-      # capture on this board is still worthwhile to fine-tune saturation.
+      # CC range (kCcmScale 256, max 2047 = 8.0x). They are applied at the
+      # reduced chroma set by "saturation" above; a confirming Macbeth
+      # capture on this board is still worthwhile to fine-tune that scale.
       matrices:
         cloudy_daylight:
           ct: 7580

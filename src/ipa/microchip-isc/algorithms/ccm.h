@@ -62,6 +62,12 @@ private:
 	/* Fallback CT before AWB has produced an estimate (YAML: ct_fallback) */
 	float ctFallback_ = 5500.0f;
 
+	/*
+	 * Chroma scale toward identity (YAML: saturation). Bounds the CCM
+	 * off-diagonals so the unsigned ISC CC clamp cannot black out a channel.
+	 */
+	float saturation_ = 0.6f;
+
 	/* ---- Runtime state — NOT tuning params ---- */
 	float lastCt_ = 0.0f;
 };

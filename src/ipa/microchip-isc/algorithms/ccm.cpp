@@ -100,8 +100,10 @@ int Ccm::init(IPAContext &context,
 
 	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
 	ctFallback_ = tuningData["ct_fallback"].get<float>(ctFallback_);
+	saturation_ = tuningData["saturation"].get<float>(saturation_);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
 	ctFallback_ = std::clamp(ctFallback_, 2500.0f, 10000.0f);
+	saturation_ = std::clamp(saturation_, 0.0f, 1.0f);
 
 	if (tuningData.contains("ct_snap")) {
 		const YamlObject &snap = tuningData["ct_snap"];
@@ -310,6 +312,16 @@ void Ccm::process(IPAContext &context,
 		lastCt_ = ct;
 	} else {
 		interpolateMatrix(ct, matrix, offsets);
+
+		/*
+		 * Scale chroma toward identity: I + s*(M - I) shrinks the
+		 * off-diagonals but leaves row sums at unity, so white is
+		 * preserved and no channel underflows the CC clamp.
+		 */
+		for (size_t i = 0; i < 9; i++) {
+			float identity = (i == 0 || i == 4 || i == 8) ? 1.0f : 0.0f;
+			matrix[i] = identity + saturation_ * (matrix[i] - identity);
+		}
 
 		/*
 		 * Adaptive temporal smoothing based on CT rate of change.
