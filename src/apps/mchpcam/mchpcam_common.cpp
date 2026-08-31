@@ -289,6 +289,13 @@ int MchpCamCommon::init(const std::string &cameraId)
 		hwGains_.blueOffset = 0;
 		hwGains_.greenRedOffset = 0;
 		hwGains_.greenBlueOffset = 0;
+		/*
+		 * Raw AGC meters to a higher linear target and the histogram
+		 * updates once per 4-frame Bayer cycle, so give it more warmup
+		 * cycles to converge before the capture gate opens.
+		 */
+		if (warmupFrames_ < 40)
+			warmupFrames_ = 40;
 	}
 
 	/* Stream configuration */
