@@ -89,6 +89,7 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	/* Default EV offset in stops; combined with runtime ExposureValue. */
 	evBias_ = std::clamp(tuningData["ev_default"].get<float>(0.0f), -2.0f, 2.0f);
 	flickerHz_ = tuningData["flicker_hz"].get<float>(flickerHz_);
+	minFrameRate_ = tuningData["min_frame_rate"].get<float>(minFrameRate_);
 	/* Only 50 Hz and 60 Hz are valid mains frequencies; anything else disables. */
 	if (flickerHz_ != 50.0f && flickerHz_ != 60.0f)
 		flickerHz_ = 0.0f;
@@ -879,9 +880,39 @@ void Agc::process(IPAContext &context,
 	 * Truncation would cap at N-1 lines when the true limit is N due to
 	 * floating-point representation, underexposing dark scenes by one line.
 	 */
+	const auto &sensorCfg = context.configuration.sensor;
 	uint32_t maxExposureLimit = static_cast<uint32_t>(
 		std::round(agcConfig.maxShutterSpeed.get<std::nano>() /
 			   context.configuration.sensor.lineDuration.get<std::nano>()));
+
+	/*
+	 * Low-light frame extension: the exposure ceiling is governed by the
+	 * longest frame we are allowed to run, not the default frame length.
+	 * Grow the frame down to the min_frame_rate floor (or the sensor's
+	 * VBLANK max, whichever is shorter) so shutter is preferred over gain
+	 * in dim scenes; a manual frame-rate pin caps the extension. The
+	 * default ceiling is a floor here so the range never shrinks. Needs a
+	 * VBLANK control and auto exposure.
+	 */
+	if (!exposureManual && sensorCfg.vblankMax > sensorCfg.vblankMin &&
+	    minFrameRate_ > 0.0f) {
+		double lineUs = context.configuration.sensor.lineDuration
+					.get<std::micro>();
+		double floorFrameDurUs = 1e6 / minFrameRate_;
+		double sensorMaxFrameDurUs =
+			(sensorCfg.outputHeight + sensorCfg.vblankMax) * lineUs;
+		double maxFrameDurUs = std::min(floorFrameDurUs, sensorMaxFrameDurUs);
+		if (agcState.frameDurationUs > 0)
+			maxFrameDurUs = std::min(maxFrameDurUs,
+						 static_cast<double>(agcState.frameDurationUs));
+		uint32_t maxFrameLines =
+			static_cast<uint32_t>(std::round(maxFrameDurUs / lineUs));
+		uint32_t extended = maxFrameLines > sensorCfg.exposureMargin
+					    ? maxFrameLines - sensorCfg.exposureMargin
+					    : 1;
+		maxExposureLimit = std::max({ maxExposureLimit, extended,
+					      sensorCfg.maxExposureLinesDefault });
+	}
 	/*
 	 * Hardware limit detection: true when both exposure and gain are at
 	 * (or very close to) their sensor maximums and cannot increase further.

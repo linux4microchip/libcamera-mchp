@@ -63,6 +63,17 @@ struct IPASessionConfiguration {
 		int32_t vblankMin;
 		int32_t vblankMax;
 		/*
+		 * Default VBLANK and the exposure/frame-length margin, captured
+		 * at configure() time. exposureMargin is the fixed line gap the
+		 * sensor keeps between frame length and max exposure
+		 * ((outputHeight + vblankDefault) - maxExposureLinesDefault; ~4
+		 * on IMX219). Together with vblankMax they let the AGC extend the
+		 * frame in low light to raise the exposure ceiling before gain.
+		 */
+		int32_t vblankDefault = 0;
+		uint32_t exposureMargin = 0;
+		uint32_t maxExposureLinesDefault = 0;
+		/*
 		 * Sensor black level in 10-bit units (e.g. 64 for IMX219).
 		 * Per-channel values fall back to blackLevel when absent in YAML.
 		 * On SAMA7G5 (hasDpc=true) these are not applied to WB offsets

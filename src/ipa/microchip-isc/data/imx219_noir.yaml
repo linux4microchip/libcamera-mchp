@@ -162,6 +162,10 @@ algorithms:
     ae_luminance_floor: 5.0
       # Mains flicker avoidance. 0 = disabled.
     flicker_hz: 0
+      # Slowest auto frame rate (fps) for low-light frame extension. The AGC
+      # grows the frame to prefer a longer shutter over gain, down to this
+      # floor; gain covers anything below it. 0 = disabled.
+    min_frame_rate: 10
       # CentreWeighted metering Gaussian parameters (histogram bin units, 0-511).
     lux_reference:
       reference_Y: 119.03

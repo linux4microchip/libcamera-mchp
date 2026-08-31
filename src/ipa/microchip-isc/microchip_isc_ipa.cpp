@@ -582,6 +582,28 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 				v4l2VBlank.min().get<int32_t>();
 			context_.configuration.sensor.vblankMax =
 				v4l2VBlank.max().get<int32_t>();
+
+			/*
+			 * Geometry for AGC low-light frame extension: the fixed
+			 * line gap the sensor keeps between frame length and max
+			 * exposure at the default VBLANK, plus that default
+			 * ceiling. The exposure max in lines is recovered from the
+			 * advertised max shutter (maxExpUs) and the line duration.
+			 */
+			double lineUs = lineDuration.get<std::micro>();
+			int32_t maxExpLines = lineUs > 0.0
+				? static_cast<int32_t>(std::lround(maxExpUs / lineUs))
+				: 0;
+			int32_t vblankDef = v4l2VBlank.def().get<int32_t>();
+			int32_t defFrameLines =
+				vblankDef + static_cast<int32_t>(info.outputSize.height);
+			context_.configuration.sensor.vblankDefault = vblankDef;
+			context_.configuration.sensor.maxExposureLinesDefault =
+				static_cast<uint32_t>(maxExpLines);
+			context_.configuration.sensor.exposureMargin =
+				defFrameLines > maxExpLines
+					? static_cast<uint32_t>(defFrameLines - maxExpLines)
+					: 0;
 		} else {
 			/* Fallback: derive from shutter speed limits */
 			int64_t minDur = static_cast<int64_t>(minExpUs);
@@ -597,6 +619,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 				info.outputSize.height;
 			context_.configuration.sensor.vblankMin = 0;
 			context_.configuration.sensor.vblankMax = 0;
+			context_.configuration.sensor.vblankDefault = 0;
+			context_.configuration.sensor.exposureMargin = 0;
+			context_.configuration.sensor.maxExposureLinesDefault = 0;
 		}
 	}
 
@@ -979,24 +1004,40 @@ void IPAMicrochipISC::setSensorControls()
 	const auto &sensorCfg = context_.configuration.sensor;
 
 	/*
-	 * Manual frame-rate lock: convert the requested frame duration to a
-	 * sensor VBLANK. VBLANK is the number of blanking lines beyond the
-	 * active output height, so vblank = frameLines - outputHeight, clamped
-	 * to the sensor's advertised range. The AGC exposure clamp is separate
-	 * (maxShutterSpeed), so a longer frame does not widen the exposure
-	 * budget here — the intent is only to pin the frame rate.
+	 * Frame length: size the frame to the chosen exposure so a low-light
+	 * shutter longer than the default frame can integrate. VBLANK is the
+	 * blanking lines beyond the active output height, so
+	 * vblank = frameLines - outputHeight. The frame must hold the exposure
+	 * plus the sensor's exposure/frame-length margin; a manual frame-rate
+	 * pin (frameDurationUs) raises that floor. The AGC has already clamped
+	 * exposure to the extension ceiling, so frameLines stays within range
+	 * and the sensor does not re-clamp exposure. Applied VBLANK-first in
+	 * the pipeline handler so the widened exposure max takes effect.
 	 */
-	if (agcState.frameDurationUs > 0 &&
-	    sensorCfg.vblankMax > sensorCfg.vblankMin &&
+	if (sensorCfg.vblankMax > sensorCfg.vblankMin &&
 	    sensorControls_.find(V4L2_CID_VBLANK) != sensorControls_.end()) {
 		double lineUs = sensorCfg.lineDuration.get<std::micro>();
 		if (lineUs > 0.0) {
-			int32_t frameLines = static_cast<int32_t>(
-				std::round(agcState.frameDurationUs / lineUs));
+			int32_t frameLines =
+				static_cast<int32_t>(agcState.exposure) +
+				static_cast<int32_t>(sensorCfg.exposureMargin);
+			if (agcState.frameDurationUs > 0)
+				frameLines = std::max(frameLines,
+						      static_cast<int32_t>(std::round(
+							      agcState.frameDurationUs / lineUs)));
+			/*
+			 * Auto never runs faster than the default frame rate, so
+			 * the floor is the default blanking; only low-light
+			 * extension pushes it up toward vblankMax. A manual pin
+			 * may request a faster frame, so it floors at vblankMin.
+			 */
+			int32_t vblankFloor = agcState.frameDurationUs > 0
+						      ? sensorCfg.vblankMin
+						      : sensorCfg.vblankDefault;
 			int32_t vblank = std::clamp(
 				frameLines -
 					static_cast<int32_t>(sensorCfg.outputHeight),
-				sensorCfg.vblankMin, sensorCfg.vblankMax);
+				vblankFloor, sensorCfg.vblankMax);
 			ctrls.set(V4L2_CID_VBLANK, vblank);
 		}
 	}

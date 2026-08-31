@@ -110,6 +110,14 @@ private:
 	/* Mains flicker avoidance: 50.0 or 60.0 Hz, 0.0 = disabled (YAML: flicker_hz) */
 	float flickerHz_ = 0.0f; /* disabled by default */
 
+	/*
+	 * Slowest auto frame rate for low-light frame extension (YAML:
+	 * min_frame_rate). The AGC grows the frame to raise the exposure
+	 * ceiling before engaging gain, down to this floor; gain covers
+	 * anything below it. 0 disables extension.
+	 */
+	float minFrameRate_ = 10.0f;
+
 	/* Lux estimator calibration (YAML: lux_reference.*) — luxRefY_=0 disables */
 	float luxRefY_ = 0.0f; /* 0 = uncalibrated, use fallback lux */
 	float luxRefExposureUs_ = 0.0f;

@@ -164,6 +164,12 @@ algorithms:
       # nearest multiple of the mains half-period. 0 = disabled (outdoor/DC).
       flicker_hz: 0
 
+      # Slowest auto frame rate (fps). In low light the AGC extends the frame
+      # (raising the exposure ceiling) to prefer a longer, lower-noise shutter
+      # over analogue gain, down to this floor; gain covers anything below it.
+      # An app FrameDurationLimits pin caps the extension. 0 = disabled.
+      min_frame_rate: 10
+
       convergence:
         speed: 0.3
         stability_threshold: 10.0
