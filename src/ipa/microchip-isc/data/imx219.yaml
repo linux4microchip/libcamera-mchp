@@ -41,9 +41,9 @@ algorithms:
       # r_b_min/max bound R and B gains; gb_min/max bound the GR/GB
       # green-balance ratio. Tighten for more stable but slower adaptation.
       gain_limits:
+        # R/B gains clamp to [r_b_min, r_b_max]. Warm illuminants need
+        # rGain below unity, so keep the floor under 1.0.
         r_b_min: 0.2
-        # Maximum R/B WB gain. The code clamps to [1.0, 8.0] regardless
-        # of this value; set to 8.0 to match what is actually applied.
         r_b_max: 8.0
         gb_min: 0.9
         gb_max: 1.1
@@ -57,25 +57,22 @@ algorithms:
       # 5500 K covers outdoor daylight and typical indoor LED.
       ct_fallback: 5500
 
-      # Per-CT reference gain table — interpolated at configure() from the
-      # last-known CT so the first frame has near-correct white balance for
-      # any illuminant (indoor tungsten → outdoor daylight → overcast sky)
-      # without waiting for the AWB loop to converge.
-      #
-      # Recalibrated 2026-04-25: matched against mobile reference at CT=4745K.
-      # Measured correction: R×0.952 (−4.8%), B×1.096 (+9.6%) vs previous.
-      # Applied proportionally across all CT entries.
-      # Root cause: NoIR sensor B channel depleted by IR, bGain too low.
+      # Per-CT reference WB gains, interpolated in MRD space from the AWB CT
+      # estimate so the first frame is near-correct for any illuminant. rGain
+      # rises and bGain falls with CT: warm light is red-rich (attenuate red,
+      # boost blue); cool light is blue-rich (the reverse). Anchored to a
+      # neutral-grey capture at ~6500 K (R=1.10, B=1.05); other CTs follow the
+      # trend and want per-CT grey-card calibration.
       reference_gains_table:
-        - { ct: 2500, r: 2.191, b: 0.630 }  # Candlelight / deep tungsten
-        - { ct: 3000, r: 1.982, b: 0.720 }  # Tungsten lamp
-        - { ct: 3500, r: 1.773, b: 0.840 }  # Halogen / warm LED
-        - { ct: 4000, r: 1.565, b: 0.990 }  # Cool fluorescent / neutral LED
-        - { ct: 4500, r: 1.461, b: 1.110 }  # Midday window light
-        - { ct: 5500, r: 1.330, b: 1.260 }  # Daylight / noon sun
-        - { ct: 6500, r: 1.200, b: 1.441 }  # D65 / overcast
-        - { ct: 7500, r: 1.095, b: 1.650 }  # Heavily overcast / open shade
-        - { ct: 9000, r: 0.965, b: 1.920 }  # Blue sky / deep shade
+        - { ct: 2500, r: 0.533, b: 2.472 }  # Candlelight / deep tungsten
+        - { ct: 3000, r: 0.628, b: 2.070 }  # Tungsten lamp
+        - { ct: 3500, r: 0.695, b: 1.782 }  # Halogen / warm LED
+        - { ct: 4000, r: 0.746, b: 1.567 }  # Cool fluorescent / neutral LED
+        - { ct: 4500, r: 0.793, b: 1.401 }  # Midday window light
+        - { ct: 5500, r: 0.978, b: 1.190 }  # Daylight / noon sun
+        - { ct: 6500, r: 1.105, b: 1.044 }  # D65 / overcast
+        - { ct: 7500, r: 1.199, b: 0.937 }  # Heavily overcast / open shade
+        - { ct: 9000, r: 1.301, b: 0.821 }  # Blue sky / deep shade
 
       # Scalar fallback used only when reference_gains_table is absent.
       reference_gains:
