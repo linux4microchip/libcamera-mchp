@@ -408,6 +408,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	context_.configuration.hw.statsAvailable =
 		(bayerOrder != kBayerOrderInvalid) && ipaConfig.hwCaps.statsAvailable;
 
+	/* Raw Bayer output is linear: AGC meters to a mid-grey target. */
+	context_.configuration.hw.isRawOutput = ipaConfig.hwCaps.isRawOutput;
+
 	/*
 	 * Initialize activeState defaults BEFORE calling algo->configure() so
 	 * that algorithms can safely read activeState during their configure()

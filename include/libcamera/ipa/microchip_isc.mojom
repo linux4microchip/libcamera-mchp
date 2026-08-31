@@ -19,6 +19,8 @@ struct IPAHwCapabilities {
 	bool hasCbhs;
 	/* True when the ISC stats node was opened and histogram data is valid. */
 	bool statsAvailable;
+	/* True when the negotiated capture format is raw Bayer (linear output). */
+	bool isRawOutput;
 };
 
 struct IPAConfigInfo {

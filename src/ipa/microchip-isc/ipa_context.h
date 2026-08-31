@@ -113,6 +113,14 @@ struct IPASessionConfiguration {
 		bool statsAvailable;
 
 		/*
+		 * isRawOutput: the negotiated capture format is raw Bayer,
+		 * so the pipeline emits linear pixels with no gamma/tone/WB
+		 * lift. AGC meters to a linear mid-grey target instead of the
+		 * gamma-tuned lux curve.
+		 */
+		bool isRawOutput = false;
+
+		/*
 		 * contrastUnityHw: hardware register value that represents
 		 * unity contrast (output = input, no gain applied).
 		 * SAMA7G5 CBHS: 16  (output = (contrast/16) * input)

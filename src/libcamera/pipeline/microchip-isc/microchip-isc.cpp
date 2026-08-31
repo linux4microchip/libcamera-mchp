@@ -37,6 +37,7 @@
 #include "libcamera/internal/camera_manager.h"
 #include "libcamera/internal/camera_sensor.h"
 #include "libcamera/internal/device_enumerator.h"
+#include "libcamera/internal/formats.h"
 #include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/ipa_manager.h"
 #include "libcamera/internal/media_device.h"
@@ -1026,6 +1027,9 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		ipaConfig.hwCaps.hasBipartiteGamma = isXisc;
 		ipaConfig.hwCaps.hasCbhs = isXisc;
 		ipaConfig.hwCaps.statsAvailable = data->statsEnabled_;
+		ipaConfig.hwCaps.isRawOutput =
+			PixelFormatInfo::info(pipeConfig->captureFormat).colourEncoding ==
+			PixelFormatInfo::ColourEncodingRAW;
 
 		uint8_t bayerOrder = static_cast<uint8_t>(
 			data->sensor_->bayerOrder(Transform::Identity));
