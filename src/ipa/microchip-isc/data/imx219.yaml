@@ -94,6 +94,10 @@ algorithms:
       # 18% grey card → L=117/255. WB factor=1.1481, net_18pct=60 bins.
       # WB-normalised target = 60 × 1.1481 = 68.9 → 69
       target_brightness: 69
+      # Linear mid-grey target (net histogram bins) for raw Bayer output.
+      # Raw frames bypass gamma/tone/WB, so metering to target_brightness
+      # leaves them near-black. ~0.18 × 511 puts 18% grey at mid-scale.
+      raw_target_brightness: 90
       # Calibrated 2026-04-25: gain=1.0 at 2370 lux, exposure=16433us
       lux_reference:
         reference_Y: 60.50

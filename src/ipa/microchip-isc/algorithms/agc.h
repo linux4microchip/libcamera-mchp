@@ -64,6 +64,13 @@ private:
 	/* Fallback fixed target when y_target table is absent (YAML: target_brightness) */
 	float targetBrightness_ = 60.0f; /* 18% grey net bins, bl=64 DN */
 
+	/*
+	 * Linear mid-grey target for raw Bayer output (YAML: raw_target_brightness).
+	 * Raw frames have no gamma/tone lift, so metering to the gamma-tuned lux
+	 * curve leaves them near-black. ~0.18 x kHistogramMax net bins.
+	 */
+	float rawTargetBrightness_ = 90.0f;
+
 	/* IIR convergence speed in steady state (YAML: convergence.speed) */
 	float convergenceSpeed_ = 0.2f; /* default steady-state IIR rate */
 

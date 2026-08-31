@@ -78,6 +78,7 @@ static float interpolateYTarget(const std::vector<Agc::YTargetPoint> &table,
 int Agc::init(IPAContext &context, const YamlObject &tuningData)
 {
 	targetBrightness_ = tuningData["target_brightness"].get<float>(targetBrightness_);
+	rawTargetBrightness_ = tuningData["raw_target_brightness"].get<float>(rawTargetBrightness_);
 	clipThreshold_ = tuningData["clip_threshold"].get<float>(clipThreshold_);
 	aeLuminanceFloor_ = tuningData["ae_luminance_floor"].get<float>(aeLuminanceFloor_);
 	highlightP85Threshold_ = tuningData["highlight_p85_threshold"].get<float>(highlightP85Threshold_);
@@ -708,8 +709,18 @@ void Agc::process(IPAContext &context,
 	 *
 	 * Apply EV compensation on top of the lux-derived target.
 	 */
+	/*
+	 * Raw Bayer output is linear: no downstream gamma/tone/WB lift. Meter to
+	 * a fixed mid-grey and skip the target modifiers below (scene EV, zone,
+	 * CBC, highlight scalings) that assume the gamma output pipeline, else a
+	 * correctly-metered linear frame comes out near-black. Keep only the
+	 * user EV bias.
+	 */
+	bool rawOutput = context.configuration.hw.isRawOutput;
 	float currentLux = context.activeState.lux.lux;
-	float baseTarget = interpolateYTarget(yTargetTable_, currentLux,
+	float baseTarget = rawOutput
+			 ? rawTargetBrightness_
+			 : interpolateYTarget(yTargetTable_, currentLux,
 					      targetBrightness_);
 
 	/*
@@ -745,7 +756,7 @@ void Agc::process(IPAContext &context,
 	 * under-exposure to create headroom for the CDF tone mapping.
 	 */
 	float sceneEvAdjust = 0.0f;
-	if (stats && !inStartup) {
+	if (stats && !inStartup && !rawOutput) {
 		float p10 = calculateHistogramPercentile(stats, 0.10f);
 		float entNorm = calculateHistogramEntropy(stats);
 		if ((p10 > sceneBrightP10_) && (entNorm < sceneEvThreshold_))
@@ -754,7 +765,7 @@ void Agc::process(IPAContext &context,
 
 	float totalEv = evBias_ + sceneEvAdjust + agcState.exposureValue;
 	float evScale = (totalEv == 0.0f) ? 1.0f : std::pow(2.0f, totalEv);
-	float zoneScale = context.activeState.agc.zoneRatio;
+	float zoneScale = rawOutput ? 1.0f : context.activeState.agc.zoneRatio;
 	float effectiveTarget = std::clamp(baseTarget * evScale * zoneScale,
 					   aeLuminanceFloor_, kHistogramMax);
 
@@ -774,7 +785,7 @@ void Agc::process(IPAContext &context,
 	 * runs this is a safe no-op.
 	 */
 	float cbcGain = context.activeState.cbc.contrastGainLinear;
-	if (cbcGain > 1.0f)
+	if (cbcGain > 1.0f && !rawOutput)
 		effectiveTarget = std::clamp(effectiveTarget / cbcGain,
 					     aeLuminanceFloor_, kHistogramMax);
 
@@ -785,7 +796,7 @@ void Agc::process(IPAContext &context,
 	 * to the threshold, preserving headroom for highlights.
 	 */
 	float p85Scale = 1.0f;
-	if (stats && highlightP85Threshold_ > 0.0f) {
+	if (stats && highlightP85Threshold_ > 0.0f && !rawOutput) {
 		float p85Bin = calculateHistogramPercentile(stats, 0.85f);
 		float threshBin = highlightP85Threshold_ * kHistogramMax;
 		if (p85Bin > threshBin && p85Bin > 0.0f) {
@@ -801,7 +812,7 @@ void Agc::process(IPAContext &context,
 
 	/* Legacy hist_max highlight protection (single bright object) */
 	float highlightFrac = frameContext.scene.clipping;
-	if (stats) {
+	if (stats && !rawOutput) {
 		static constexpr unsigned int kHiThreshold = 350;
 		unsigned int maxBin = 0;
 		for (unsigned int ch = 0; ch < 4; ch++) {

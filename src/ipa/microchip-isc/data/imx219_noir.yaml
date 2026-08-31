@@ -103,6 +103,9 @@ algorithms:
       # Slightly lower target to avoid over-exposure; IR adds extra
       # effective brightness not visible in the final image.
     target_brightness: 56
+      # Linear mid-grey target (net bins) for raw Bayer output, which
+      # bypasses gamma/tone/WB. ~0.18 × 511 keeps 18% grey at mid-scale.
+    raw_target_brightness: 90
       # EMPIRICAL CALIBRATION — SAMA7G5 + IMX219 NoIR:
       # AGC uses normalised-WB-corrected BT.601 luminance.
       # Histogram tap is pre-WB, pre-DPC (confirmed by BLCEN toggle test).
