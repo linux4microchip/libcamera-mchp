@@ -373,6 +373,24 @@ void MicrochipISCCameraData::setSensorControls(const ControlList &controls)
 	for (const auto &ctrl : controls)
 		sensorControls.set(ctrl.first, ctrl.second);
 
+	/*
+	 * VBLANK changes the exposure control's range (frame length bounds the
+	 * max integration time). There is no DelayedControls here, so apply
+	 * VBLANK first in its own call: a longer frame then widens the exposure
+	 * max before the new, longer exposure is set, and a shorter frame stays
+	 * consistent. Without this the framework would clamp a grown exposure to
+	 * the old frame length for one frame.
+	 */
+	if (sensorControls.contains(V4L2_CID_VBLANK)) {
+		ControlList vblankOnly(sensor_->controls());
+		vblankOnly.set(V4L2_CID_VBLANK,
+			       sensorControls.get(V4L2_CID_VBLANK));
+		int ret = sensor_->setControls(&vblankOnly);
+		if (ret < 0)
+			LOG(MicrochipISC, Error)
+				<< "Failed to apply VBLANK: " << ret;
+	}
+
 	int ret = sensor_->setControls(&sensorControls);
 	if (ret < 0)
 		LOG(MicrochipISC, Error) << "Failed to apply sensor controls: " << ret;
