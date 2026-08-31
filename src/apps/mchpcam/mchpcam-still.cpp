@@ -52,6 +52,15 @@ static void onSigTerm([[maybe_unused]] int)
 	g_sigTerm.store(true);
 }
 
+/*
+ * Slowest frame rate the auto capture actually runs at: the AGC low-light
+ * frame extension floors near the IPA min_frame_rate (default 10 fps) before
+ * analogue gain takes over. Used as the floor for the auto-timeout estimate so
+ * it tracks the AGC's real limit, not the sensor's far slower absolute VBLANK
+ * ceiling.
+ */
+static constexpr float kAutoLowLightFps = 10.0f;
+
 /* ------------------------------------------------------------------ */
 /* Filename helpers                                                     */
 /* ------------------------------------------------------------------ */
@@ -212,23 +221,28 @@ public:
 
 		/*
 		 * Adaptive per-capture timeout.
-		 * timeoutSec_==0 (default): derive from maxFrames_ and sensor fps
-		 * so the timeout scales correctly at any framerate.
-		 * Formula: (maxFrames / fps) * 1.5 + 2 s.
-		 * At 30fps, maxFrames_=150: (150/30)*1.5+2 = 9.5 s.
-		 * At 5fps,  maxFrames_=150: (150/5)*1.5+2  = 47 s.
+		 * timeoutSec_==0 (default): size from maxFrames_ and the slowest
+		 * frame rate the capture will actually run at. In dim scenes the
+		 * AGC low-light frame extension floors near min_frame_rate
+		 * (~10 fps) before gain takes over. The sensor's advertised
+		 * FrameDurationLimits.max() is its absolute VBLANK ceiling (well
+		 * under 1 fps), far slower than the AGC ever drives, so clamp the
+		 * assumed rate to the low-light floor to avoid a multi-minute
+		 * timeout.
+		 * Formula: (maxFrames / fps) * 1.5 + 2 s -> ~24.5 s at 10 fps.
 		 * A user-supplied --timeout always overrides.
 		 */
 		unsigned int effectiveTimeout = timeoutSec_;
 		if (effectiveTimeout == 0) {
-			float fps = 30.0f;
+			float fps = kAutoLowLightFps;
 			auto &controls = camera_->controls();
 			auto it = controls.find(
 				&libcamera::controls::FrameDurationLimits);
 			if (it != controls.end()) {
-				int64_t minDurUs = it->second.min().get<int64_t>();
-				if (minDurUs > 0)
-					fps = 1.0e6f / static_cast<float>(minDurUs);
+				int64_t maxDurUs = it->second.max().get<int64_t>();
+				if (maxDurUs > 0)
+					fps = std::max(1.0e6f / static_cast<float>(maxDurUs),
+						       kAutoLowLightFps);
 			}
 			effectiveTimeout = static_cast<unsigned int>(
 				(static_cast<float>(maxFrames_) / fps) * 1.5f + 2.0f);
@@ -329,15 +343,16 @@ public:
 		/* Derive adaptive timeout (same logic as captureStill) */
 		unsigned int effectiveTimeout = timeoutSec_;
 		if (effectiveTimeout == 0) {
-			float fps = 30.0f;
+			float fps = kAutoLowLightFps;
 			auto &controls = camera_->controls();
 			auto it = controls.find(
 				&libcamera::controls::FrameDurationLimits);
 			if (it != controls.end()) {
-				int64_t minDurUs = it->second.min().get<int64_t>();
-				if (minDurUs > 0)
-					fps = 1.0e6f /
-					      static_cast<float>(minDurUs);
+				int64_t maxDurUs = it->second.max().get<int64_t>();
+				if (maxDurUs > 0)
+					fps = std::max(1.0e6f /
+						       static_cast<float>(maxDurUs),
+						       kAutoLowLightFps);
 			}
 			effectiveTimeout = static_cast<unsigned int>(
 				(static_cast<float>(maxFrames_) / fps) * 1.5f + 2.0f);
