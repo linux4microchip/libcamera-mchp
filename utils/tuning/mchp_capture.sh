@@ -36,7 +36,9 @@
 #   -r, --resolution WxH  Capture resolution (default: 1920x1080)
 #   -n, --frames <N>      Frames per (CCT, gain) point (default: 3). Each frame
 #                         is saved individually so the noise tool can measure
-#                         temporal per-pixel variance across the N frames.
+#                         temporal per-pixel variance across the N frames. Frame
+#                         0 lets AE settle; the repeats lock its exposure so all
+#                         N sit at one operating point (noise, not AE jitter).
 #       --no-awb          Disable AWB (use for colorchecker captures)
 #       --noir            Use NoIR tuning file (imx219_noir.yaml)
 #       --raw             Capture 10-bit Bayer PGM instead of JPEG.
@@ -111,6 +113,10 @@ N_FRAMES=3
 # Print the capture plan (filenames + mchpcam-still commands) without touching
 # the camera. Use to verify a sweep before committing board time.
 DRY_RUN=0
+# Refuse to capture over an SSH session by default: a disconnect delivers
+# SIGHUP/SIGKILL mid-capture and locks up the ISC/sensor. Run on the board
+# console, or under tmux/screen/nohup, or pass --allow-ssh to override.
+ALLOW_SSH=0
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -130,6 +136,7 @@ while [ $# -gt 0 ]; do
         --noir)         NOIR=1;       shift   ;;
         --raw)          RAW=1;        shift   ;;
         --dry-run)      DRY_RUN=1;    shift   ;;
+        --allow-ssh)    ALLOW_SSH=1;  shift   ;;
         --timeout)      TIMEOUT="$2"; shift 2 ;;
         -h|--help)
             sed -n '3,/^# =\{10,\}/p' "$0" | sed 's/^# \{0,1\}//'
@@ -195,6 +202,16 @@ fi
 # ── Check prerequisites ───────────────────────────────────────────────────────
 # A dry-run only prints the plan, so it needs neither the app nor the camera.
 if [ "$DRY_RUN" -eq 0 ]; then
+    # Refuse an SSH session unless explicitly overridden: a disconnect kills the
+    # capture mid-stream and locks up the ISC/sensor.
+    if [ "$ALLOW_SSH" -eq 0 ] && \
+       { [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; }; then
+        echo "ERROR: refusing to capture over SSH (a disconnect locks the sensor)." >&2
+        echo "  Run on the board console, or under tmux/screen/nohup, or pass" >&2
+        echo "  --allow-ssh if you have a persistent session." >&2
+        exit 1
+    fi
+
     if ! command -v mchpcam-still > /dev/null 2>&1; then
         echo "ERROR: mchpcam-still not found" >&2
         echo "  Deploy libcamera-mchp to the board first." >&2
@@ -220,12 +237,19 @@ LUX_TAG=""
 
 # ── capture_one: capture, name and validate one frame ─────────────────────────
 # Args: req_gain gain_index frame_index total_gains total_frames do_validate
+#       [lock_exp_us]
 # Captures a single frame at the requested analogue-gain lock, parses the
 # metadata block from mchpcam-still's stdout, writes the calibration sidecar
 # (with gain_index/frame_index and a per-channel noise_stats block), and — on the
 # representative frame of each gain — runs the capture-quality validation. With
 # --dry-run it prints the planned command and filename and returns without
 # touching the camera.
+#
+# lock_exp_us (optional): when set, the shutter is fixed to this exposure (µs)
+# instead of letting AE re-converge. The loop passes frame 0's AE-settled value
+# to the sibling repeats so every frame at a gain point shares one operating
+# point — temporal variance then measures sensor noise, not AE jitter. On
+# return, the measured exposure is left in the global LAST_EXP_US.
 capture_one() {
     req_gain="$1"
     gain_index="$2"
@@ -233,6 +257,7 @@ capture_one() {
     total_gains="$4"
     total_frames="$5"
     do_validate="$6"
+    lock_exp_us="${7:-}"
 
     # Per-frame timestamp: provenance plus filename uniqueness inside a sweep
     # (the _gN_fM tokens guarantee uniqueness even at sub-second capture rates).
@@ -258,6 +283,12 @@ capture_one() {
     # fixes the gain knob while AE keeps adjusting exposure to reach the target.
     if [ "$req_gain" != "auto" ]; then
         MCHP_CMD="$MCHP_CMD --gain-mode=manual --analoggain=$req_gain"
+    fi
+    # Sibling repeats reuse frame 0's converged exposure so the whole gain point
+    # sits at one operating point (manual shutter also engages manual exposure
+    # mode). Frame 0 has no lock and lets AE settle.
+    if [ -n "$lock_exp_us" ] && [ "$lock_exp_us" -gt 0 ] 2>/dev/null; then
+        MCHP_CMD="$MCHP_CMD --shutter=$lock_exp_us"
     fi
     # IscHistogramBins (512-bin full histogram per channel) rides alongside
     # IscHistogramMeans unconditionally — no special flag needed.
@@ -372,6 +403,8 @@ PYEOF
 
     # Parse key values for filename tagging (measured, not requested).
     EXP_US=$(echo "$SIDECAR_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('exposure_us',0)))")
+    # Publish the measured exposure so the loop can lock sibling repeats to it.
+    LAST_EXP_US="$EXP_US"
     ACT_GAIN=$(echo "$SIDECAR_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('analogue_gain',1.0))")
 
     # Build final filename. A flat field carries an 'alsc' token so the tuner's
@@ -444,10 +477,16 @@ if 'hist_bins' in meta:
     sidecar['hist_bins'] = meta['hist_bins']
 
 # Per-channel quick-look noise stats from the histogram: mean and variance in
-# bin units (0..511, each bin = raw16 >> 7). This is a WHOLE-FRAME statistic, so
-# on a flat field it also carries spatial shading — the noise tool uses it as a
-# cross-check and derives the real read/shot terms from temporal per-pixel
-# variance across the frame_index repeats.
+# bin units (0..511, each bin = raw16 >> 7, i.e. pixel10 >> 1). This is a
+# WHOLE-FRAME statistic, so on a flat field it also carries spatial shading —
+# the noise tool uses it as a cross-check and derives the real read/shot terms
+# from temporal per-pixel variance across the frame_index repeats.
+#
+# The raw bins carry the sensor pedestal (IMX219 RAW10 black level 64 = 32 bins);
+# subtract it from the mean so 'mean' is the net signal on the same scale as
+# hist_means (a shot-noise var-vs-signal fit reads mean as signal). Variance is
+# invariant to the constant offset, so it is left as-is.
+PEDESTAL_BINS = 64 >> 1
 def _chan_stats(counts):
     n = 0
     s1 = 0.0
@@ -460,7 +499,8 @@ def _chan_stats(counts):
         return None
     mean = s1 / n
     var = s2 / n - mean * mean
-    return {'mean': mean, 'var': var if var > 0.0 else 0.0, 'n': n}
+    return {'mean': mean - PEDESTAL_BINS, 'var': var if var > 0.0 else 0.0,
+            'n': n, 'pedestal_bins': PEDESTAL_BINS}
 
 if 'hist_bins' in meta:
     ns = {}
@@ -677,12 +717,19 @@ echo "  total frames  : $((NGAINS * N_FRAMES))"
 gain_index=0
 for g in $GAIN_LIST; do
     frame_index=0
+    # Cleared each gain point: frame 0 runs AE-auto and republishes it, so a
+    # failed frame 0 never leaks the previous gain's exposure into the repeats.
+    LAST_EXP_US=""
     while [ "$frame_index" -lt "$N_FRAMES" ]; do
         # Validate only the first frame of each gain: the remaining repeats are
         # siblings for temporal noise and share the same operating point.
         do_validate=0
         [ "$frame_index" -eq 0 ] && do_validate=1
-        capture_one "$g" "$gain_index" "$frame_index" "$NGAINS" "$N_FRAMES" "$do_validate"
+        # Frame 0 lets AE settle (no lock); siblings reuse its exposure so the
+        # temporal variance reflects sensor noise rather than AE re-convergence.
+        lock_exp=""
+        [ "$frame_index" -ne 0 ] && lock_exp="$LAST_EXP_US"
+        capture_one "$g" "$gain_index" "$frame_index" "$NGAINS" "$N_FRAMES" "$do_validate" "$lock_exp"
         frame_index=$((frame_index + 1))
     done
     gain_index=$((gain_index + 1))
