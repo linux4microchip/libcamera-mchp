@@ -34,7 +34,7 @@ MchpCamCommon::MchpCamCommon()
 	  savedBuffer_(nullptr),
 	  width_(1920),
 	  height_(1080),
-	  pixelFormat_(libcamera::formats::RGB565),
+	  pixelFormat_(libcamera::formats::XRGB8888),
 	  brightness_(0.0f),
 	  contrast_(1.0f),
 	  gamma_(2.2f),
@@ -76,7 +76,9 @@ void MchpCamCommon::setResolution(unsigned int width, unsigned int height)
 
 void MchpCamCommon::setFormat(const std::string &formatStr)
 {
-	if (formatStr == "YUYV")
+	if (formatStr == "XRGB8888")
+		pixelFormat_ = libcamera::formats::XRGB8888;
+	else if (formatStr == "YUYV")
 		pixelFormat_ = libcamera::formats::YUYV;
 	else if (formatStr == "RGB565")
 		pixelFormat_ = libcamera::formats::RGB565;
@@ -90,9 +92,9 @@ void MchpCamCommon::setFormat(const std::string &formatStr)
 		return;
 	} else {
 		std::cerr << "Unknown format '" << formatStr
-			  << "'. Supported: YUYV RGB565 BGR888 RGB888."
-			  << " Using RGB565.\n";
-		pixelFormat_ = libcamera::formats::RGB565;
+			  << "'. Supported: XRGB8888 YUYV RGB565 BGR888 RGB888."
+			  << " Using XRGB8888.\n";
+		pixelFormat_ = libcamera::formats::XRGB8888;
 	}
 }
 

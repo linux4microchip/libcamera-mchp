@@ -651,13 +651,14 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 		return;
 	}
 
-	if (pixelFormat_ != formats::RGB565 &&
+	if (pixelFormat_ != formats::XRGB8888 &&
+	    pixelFormat_ != formats::RGB565 &&
 	    pixelFormat_ != formats::YUYV &&
 	    pixelFormat_ != formats::BGR888 &&
 	    pixelFormat_ != formats::RGB888) {
 		std::cerr << "Unsupported format for encoding: "
 			  << pixelFormat_.toString()
-			  << " — choose RGB565 (default), YUYV, BGR888 or RGB888\n";
+			  << " — choose XRGB8888 (default), YUYV, RGB565, BGR888 or RGB888\n";
 		munmap(mapped, plane.length);
 		return;
 	}
@@ -665,7 +666,21 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 	/* Convert to packed RGB888 for JPEG/PNG encoder */
 	std::vector<uint8_t> rgb(static_cast<size_t>(width_) * height_ * 3);
 
-	if (pixelFormat_ == formats::RGB888) {
+	if (pixelFormat_ == formats::XRGB8888) {
+		/* ISC XBGR32: pre-CSC RGB, 8-bit/channel, memory order B,G,R,X */
+		if (plane.length < static_cast<size_t>(width_) * height_ * 4) {
+			std::cerr << "XRGB8888 plane too small for "
+				  << width_ << "x" << height_ << "\n";
+			munmap(mapped, plane.length);
+			return;
+		}
+		for (unsigned int i = 0; i < width_ * height_; ++i) {
+			rgb[i * 3 + 0] = data[i * 4 + 2];
+			rgb[i * 3 + 1] = data[i * 4 + 1];
+			rgb[i * 3 + 2] = data[i * 4 + 0];
+		}
+
+	} else if (pixelFormat_ == formats::RGB888) {
 		std::copy(data, data + rgb.size(), rgb.begin());
 
 	} else if (pixelFormat_ == formats::BGR888) {
@@ -1110,8 +1125,8 @@ static void printUsage(const char *argv0)
 					 "  --metadata-format=FMT      json | txt (default: txt)\n"
 					 "\n"
 					 "Stream:\n"
-					 "  -f, --format=FMT           RGB565 | YUYV | BGR888 | RGB888\n"
-					 "                             (default: RGB565)\n"
+					 "  -f, --format=FMT           XRGB8888 | YUYV | RGB565 | BGR888 | RGB888\n"
+					 "                             (default: XRGB8888)\n"
 					 "  --raw                      Capture 10-bit Bayer (SRGGB10/RGGB) as 16-bit PGM.\n"
 					 "                             Forces unity WB gains (512) so the ISC WB\n"
 					 "                             block is a mathematical no-op (datasheet\n"

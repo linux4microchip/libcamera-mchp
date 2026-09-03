@@ -278,7 +278,7 @@ protected:
 	/* Stream geometry */
 	unsigned int width_ = 1920;
 	unsigned int height_ = 1080;
-	libcamera::PixelFormat pixelFormat_ = libcamera::formats::RGB565;
+	libcamera::PixelFormat pixelFormat_ = libcamera::formats::XRGB8888;
 
 	/* Image controls */
 	float brightness_ = 0.0f;
