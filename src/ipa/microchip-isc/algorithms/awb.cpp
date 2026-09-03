@@ -281,6 +281,50 @@ void Awb::queueRequest(IPAContext &context,
 	}
 }
 
+/*
+ * Emit the pre-WB histogram as vendor metadata.
+ *
+ * The ISC histogram tap (ISC_HIS_CFG_RAR) is before the WB block, so these
+ * values are unaffected by the IPA gain registers. They represent the raw
+ * scene illuminant chromaticity and are the primary data source for the
+ * microchip_isc.py calibration tool. Exposing them through the standard
+ * metadata path — rather than debug log scraping — provides a stable,
+ * versioned interface that survives log format changes and level suppression.
+ *
+ * The histogram state is populated by processStats() independently of the AWB
+ * mode, so this runs on manual/AWB-off (raw and calibration) captures too, not
+ * only on the auto path: the calibration tool locks gains and disables AWB yet
+ * still needs the means and bins.
+ *
+ * Means array order: [GR, R, GB, B] — matches ISC hardware channel indices
+ * ISC_HIS_CFG_MODE_GR=0, R=1, GB=2, B=3. The bins payload is 8 KB per frame
+ * (2048 × int32); only the metered still and calibration captures request it,
+ * so it is not a burden on the normal preview path.
+ */
+static void emitHistogramMetadata(const IPAContext &context,
+				  ControlList &metadata)
+{
+	const auto &histState = context.activeState.histogram;
+	std::array<float, 4> histMeans = {
+		histState.channelMeans[kHistChannelGR],
+		histState.channelMeans[kHistChannelR],
+		histState.channelMeans[kHistChannelGB],
+		histState.channelMeans[kHistChannelB],
+	};
+	metadata.set(controls::microchip::IscHistogramMeans, histMeans);
+
+	std::array<int32_t, kIscHistChannels * kHistBins> bins;
+	const unsigned int channels[kIscHistChannels] = {
+		kHistChannelGR, kHistChannelR, kHistChannelGB, kHistChannelB
+	};
+	for (unsigned int ch = 0; ch < kIscHistChannels; ch++) {
+		const auto &raw = histState.bins[channels[ch]];
+		for (unsigned int i = 0; i < kHistBins; i++)
+			bins[ch * kHistBins + i] = static_cast<int32_t>(raw[i]);
+	}
+	metadata.set(controls::microchip::IscHistogramBins, bins);
+}
+
 /**
  * \brief Process statistics and compute white balance gains
  * \param[in] context The IPA context
@@ -337,6 +381,11 @@ void Awb::process(IPAContext &context,
 		if (awb.ct > 0)
 			metadata.set(controls::ColourTemperature,
 				     static_cast<int32_t>(awb.ct));
+		/*
+		 * Still emit the pre-WB histogram: the calibration tool runs
+		 * with AWB off (fixed gains) and needs the raw means and bins.
+		 */
+		emitHistogramMetadata(context, metadata);
 		return;
 	}
 
@@ -718,53 +767,7 @@ void Awb::process(IPAContext &context,
 	if (awb.ct > 0)
 		metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
 
-	/*
-	 * Emit pre-WB histogram channel means as vendor metadata.
-	 *
-	 * The ISC histogram tap (ISC_HIS_CFG_RAR) is before the WB block so
-	 * these values are unaffected by the IPA gain registers. They represent
-	 * the raw scene illuminant chromaticity and are the primary data source
-	 * for the microchip_isc.py calibration tool.
-	 *
-	 * Exposing them here through the standard metadata path — rather than
-	 * relying on debug log scraping — provides a stable, versioned interface
-	 * that survives log format changes and log level suppression.
-	 *
-	 * Array order: [GR, R, GB, B] — matches ISC hardware channel indices
-	 * ISC_HIS_CFG_MODE_GR=0, R=1, GB=2, B=3.
-	 */
-	const auto &histState = context.activeState.histogram;
-	std::array<float, 4> histMeans = {
-		histState.channelMeans[kHistChannelGR],
-		histState.channelMeans[kHistChannelR],
-		histState.channelMeans[kHistChannelGB],
-		histState.channelMeans[kHistChannelB],
-	};
-	metadata.set(controls::microchip::IscHistogramMeans, histMeans);
-
-	/*
-	 * Emit full histogram bins only on the first frame after the IPA
-	 * starts, and on every frame where the frameContext flags it as
-	 * requested.  The payload is 8 KB per frame (2048 × int32); emitting
-	 * it unconditionally imposes 240 KB/s of unnecessary IPC overhead in
-	 * the normal capture path.
-	 *
-	 * TODO: gate on a per-request opt-in control once libcamera supports
-	 * request-level vendor control forwarding to IPA process().
-	 */
-	if (frameContext.agc.exposure == 0 ||
-	    context.activeState.awb.autoEnabled) {
-		std::array<int32_t, kIscHistChannels * kHistBins> bins;
-		const unsigned int channels[kIscHistChannels] = {
-			kHistChannelGR, kHistChannelR, kHistChannelGB, kHistChannelB
-		};
-		for (unsigned int ch = 0; ch < kIscHistChannels; ch++) {
-			const auto &raw = histState.bins[channels[ch]];
-			for (unsigned int i = 0; i < kHistBins; i++)
-				bins[ch * kHistBins + i] = static_cast<int32_t>(raw[i]);
-		}
-		metadata.set(controls::microchip::IscHistogramBins, bins);
-	}
+	emitHistogramMetadata(context, metadata);
 }
 
 /**
