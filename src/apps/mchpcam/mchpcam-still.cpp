@@ -692,25 +692,25 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 			rgb[i * 3 + 2] = (b << 3) | (b >> 2);
 		}
 
-	} else { /* YUYV — packed 4:2:2 */
+	} else { /* YUYV — packed 4:2:2, ISC CSC emits BT.601 studio range */
 		auto clamp8 = [](float v) -> uint8_t {
 			return static_cast<uint8_t>(std::clamp(v, 0.0f, 255.0f));
 		};
 		for (unsigned int row = 0; row < height_; ++row) {
 			for (unsigned int col = 0; col < width_; col += 2) {
 				size_t yuvIdx = (row * width_ + col) * 2;
-				int y0 = data[yuvIdx + 0];
-				int u = data[yuvIdx + 1] - 128;
-				int y1 = data[yuvIdx + 2];
-				int v = data[yuvIdx + 3] - 128;
+				float c0 = data[yuvIdx + 0] - 16.0f;
+				float d = data[yuvIdx + 1] - 128.0f;
+				float c1 = data[yuvIdx + 2] - 16.0f;
+				float e = data[yuvIdx + 3] - 128.0f;
 
 				size_t rgbIdx = (row * width_ + col) * 3;
-				rgb[rgbIdx + 0] = clamp8(y0 + 1.402f * v);
-				rgb[rgbIdx + 1] = clamp8(y0 - 0.344f * u - 0.714f * v);
-				rgb[rgbIdx + 2] = clamp8(y0 + 1.772f * u);
-				rgb[rgbIdx + 3] = clamp8(y1 + 1.402f * v);
-				rgb[rgbIdx + 4] = clamp8(y1 - 0.344f * u - 0.714f * v);
-				rgb[rgbIdx + 5] = clamp8(y1 + 1.772f * u);
+				rgb[rgbIdx + 0] = clamp8(1.164f * c0 + 1.596f * e);
+				rgb[rgbIdx + 1] = clamp8(1.164f * c0 - 0.392f * d - 0.813f * e);
+				rgb[rgbIdx + 2] = clamp8(1.164f * c0 + 2.017f * d);
+				rgb[rgbIdx + 3] = clamp8(1.164f * c1 + 1.596f * e);
+				rgb[rgbIdx + 4] = clamp8(1.164f * c1 - 0.392f * d - 0.813f * e);
+				rgb[rgbIdx + 5] = clamp8(1.164f * c1 + 2.017f * d);
 			}
 		}
 	}
