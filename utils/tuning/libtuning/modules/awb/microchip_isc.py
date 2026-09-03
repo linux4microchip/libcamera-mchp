@@ -553,7 +553,7 @@ def check_awb_curve(table):
       - single illuminant: with only one CT point the IPA extrapolates every
         other colour temperature from it, so those off-CT gains are not
         measured.
-      - monotonicity: rGain (GR/R) must fall and bGain (GR/B) must rise as CT
+      - monotonicity: rGain (GR/R) must rise and bGain (GR/B) must fall as CT
         increases (the Planckian trend). An inversion points to a mislabelled
         ct<K> tag, mixed illumination, or a non-neutral grey card.
       - fit residual: the largest deviation of each gain from a straight line
@@ -578,23 +578,23 @@ def check_awb_curve(table):
     r = [e['r'] for e in table]
     b = [e['b'] for e in table]
 
-    # rGain must fall and bGain must rise as CT increases. Use a small epsilon
+    # rGain must rise and bGain must fall as CT increases. Use a small epsilon
     # so rounding noise at the 4th decimal is not flagged as an inversion.
     eps = 1e-4
-    r_inv = [(cts[i], cts[i + 1]) for i in range(n - 1) if r[i + 1] > r[i] + eps]
-    b_inv = [(cts[i], cts[i + 1]) for i in range(n - 1) if b[i + 1] < b[i] - eps]
+    r_inv = [(cts[i], cts[i + 1]) for i in range(n - 1) if r[i + 1] < r[i] - eps]
+    b_inv = [(cts[i], cts[i + 1]) for i in range(n - 1) if b[i + 1] > b[i] + eps]
 
     if r_inv:
-        logger.warning(f'AWB: rGain (GR/R) rises with CT between {r_inv} -- it '
-                       f'should fall as CT increases. Check the ct<K> tags and '
-                       f'single-illuminant lighting for those captures.')
-    if b_inv:
-        logger.warning(f'AWB: bGain (GR/B) falls with CT between {b_inv} -- it '
+        logger.warning(f'AWB: rGain (GR/R) falls with CT between {r_inv} -- it '
                        f'should rise as CT increases. Check the ct<K> tags and '
                        f'single-illuminant lighting for those captures.')
+    if b_inv:
+        logger.warning(f'AWB: bGain (GR/B) rises with CT between {b_inv} -- it '
+                       f'should fall as CT increases. Check the ct<K> tags and '
+                       f'single-illuminant lighting for those captures.')
     if not r_inv and not b_inv:
-        logger.info('AWB: reference_gains_table is monotonic in CT (rGain falls, '
-                    'bGain rises) -- consistent with the Planckian trend.')
+        logger.info('AWB: reference_gains_table is monotonic in CT (rGain rises, '
+                    'bGain falls) -- consistent with the Planckian trend.')
 
     # Two points fit a line exactly, so a residual is only meaningful from
     # three CT points up. Gains are close to linear against mired (1e6/CT).
