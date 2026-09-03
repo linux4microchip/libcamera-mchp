@@ -99,7 +99,7 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 
 	damping_ = std::clamp(damping_, 0.0f, 1.0f);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
-	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 255.0f);
+	darkSceneThreshold_ = std::clamp(darkSceneThreshold_, 0.0f, 511.0f);
 	gainMin_ = std::clamp(gainMin_, 0.1f, 1.0f);
 	gainMax_ = std::clamp(gainMax_, 1.0f, 32.0f);
 	gbGainMin_ = std::clamp(gbGainMin_, 0.5f, 1.0f);
