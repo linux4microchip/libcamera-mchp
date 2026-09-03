@@ -78,23 +78,11 @@ algorithms:
       # spectral response; the X row gets extra R contribution, Z row extra B.
       # Calibrated relative to standard IMX219 to account for the spectral shift.
     ct_color_matrix: [0.5200, 0.2800, 0.1000, 0.2400, 0.6400, 0.0800, 0.0300, 0.1200, 0.8500]
-# Robertson CT correction PWL — calibrated 2026-04-21.
-#       # 3 calibration points.
-# Robertson CT correction PWL — calibrated 2026-04-21.
-#       # 3 calibration points.
+      # Robertson CT correction PWL — 3 calibration points.
     ct_correction_pwl: [4049, 2850, 5222, 4450, 6905, 6450]
-# Per-CT AWB seed gains -- calibrated 2026-04-21.
-#       # Method: grey card under single-illuminant lightbox, 3 CT points.
-#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
-# Per-CT AWB seed gains -- calibrated 2026-04-21.
-#       # Method: grey card under single-illuminant lightbox, 5 CT points.
-#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
-# Per-CT AWB seed gains -- calibrated 2026-04-21.
-#       # Method: grey card under single-illuminant lightbox, 5 CT points.
-#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
-# Per-CT AWB seed gains -- calibrated 2026-04-21.
-#       # Method: grey card under single-illuminant lightbox, 3 CT points.
-#       # Formula: rGain=meanGR/meanR, bGain=meanGR/meanB (matches IPA awb.cpp).
+      # Per-CT AWB seed gains — 3 calibration points, grey card under a
+      # single-illuminant lightbox. rGain=meanGR/meanR, bGain=meanGR/meanB
+      # (matches IPA awb.cpp).
     reference_gains_table:
     - {ct: 2850, r: 0.9556, b: 3.1012}
     - {ct: 4450, r: 1.2394, b: 2.0153}

@@ -246,12 +246,13 @@ algorithms:
       #        on scenes where the full histogram is not used.
       # 1.0 = full histogram equalisation (maximum local contrast).
       cdf_strength: 0.0
-      # Scene-adaptive CDF boost.
-      # Automatically increases CDF blend strength when scene spread is low
-      # (flat/over-bright scene). Stretches compressed histogram to full range.
-      #   trigger:   0.25 = boost when P5-P95 spread < 25% of histogram
-      #   max_boost: 0.45 = maximum additional CDF strength to add
-      # With base cdf_strength=0.10 and boost 0.45: effective up to 0.55
+      # Scene-adaptive CDF boost: raises CDF blend strength when the scene
+      # spread is low (flat/over-bright), stretching a compressed histogram
+      # toward full range.
+      #   trigger:   boost when P5-P95 spread < this fraction of histogram
+      #   max_boost: maximum additional CDF strength to add
+      # max_boost 0.0 disables the boost, so cdf_strength=0.0 above means CDF
+      # equalisation is off; the trigger is retained for tuning.
       adaptive_cdf_trigger: 0.30
       adaptive_cdf_max_boost: 0.0
       # CLAHE clip limit: bins above this multiple of mean frequency
