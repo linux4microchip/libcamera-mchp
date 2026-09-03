@@ -900,7 +900,8 @@ void Agc::process(IPAContext &context,
 					.get<std::micro>();
 		double floorFrameDurUs = 1e6 / minFrameRate_;
 		double sensorMaxFrameDurUs =
-			(sensorCfg.outputHeight + sensorCfg.vblankMax) * lineUs;
+			static_cast<double>(static_cast<int64_t>(sensorCfg.outputHeight) +
+					    sensorCfg.vblankMax) * lineUs;
 		double maxFrameDurUs = std::min(floorFrameDurUs, sensorMaxFrameDurUs);
 		if (agcState.frameDurationUs > 0)
 			maxFrameDurUs = std::min(maxFrameDurUs,
@@ -910,8 +911,18 @@ void Agc::process(IPAContext &context,
 		uint32_t extended = maxFrameLines > sensorCfg.exposureMargin
 					    ? maxFrameLines - sensorCfg.exposureMargin
 					    : 1;
-		maxExposureLimit = std::max({ maxExposureLimit, extended,
-					      sensorCfg.maxExposureLinesDefault });
+		/*
+		 * A manual frame-rate pin governs the ceiling in both
+		 * directions: extended already reflects the pinned frame, so a
+		 * pin faster than the default lowers the ceiling too. Only the
+		 * unpinned auto case floors at the default so its range never
+		 * shrinks below what the sensor reaches at the default frame.
+		 */
+		if (agcState.frameDurationUs > 0)
+			maxExposureLimit = extended;
+		else
+			maxExposureLimit = std::max({ maxExposureLimit, extended,
+						      sensorCfg.maxExposureLinesDefault });
 	}
 	/*
 	 * Hardware limit detection: true when both exposure and gain are at

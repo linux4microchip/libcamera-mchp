@@ -112,6 +112,14 @@ private:
 	uint32_t nativeSensorWidth_ = 0;
 	ControlInfoMap ispControls_;
 
+	/*
+	 * Last VBLANK written to the sensor. setSensorControls() emits VBLANK
+	 * only when the frame length changes, avoiding a redundant per-frame
+	 * sensor write in a static scene. -1 forces the first frame after
+	 * configure() to emit; reset there.
+	 */
+	int32_t lastVblank_ = -1;
+
 	std::unique_ptr<CameraSensorHelper> camHelper_;
 
 	struct IPAContext context_;
@@ -391,6 +399,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 
 	updateSessionConfiguration(info, ipaConfig);
 
+	/* Force the first frame after configure() to emit VBLANK. */
+	lastVblank_ = -1;
+
 	/*
 	 * Hardware capability flags come from the pipeline handler via IPC.
 	 * Re-apply on each configure() in case the IPA is shared across
@@ -591,19 +602,46 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 			 * advertised max shutter (maxExpUs) and the line duration.
 			 */
 			double lineUs = lineDuration.get<std::micro>();
-			int32_t maxExpLines = lineUs > 0.0
-				? static_cast<int32_t>(std::lround(maxExpUs / lineUs))
-				: 0;
 			int32_t vblankDef = v4l2VBlank.def().get<int32_t>();
 			int32_t defFrameLines =
 				vblankDef + static_cast<int32_t>(info.outputSize.height);
+			int32_t maxExpLines = lineUs > 0.0
+				? static_cast<int32_t>(std::lround(maxExpUs / lineUs))
+				: 0;
+			/*
+			 * The exposure max cannot exceed the default frame length
+			 * at the default VBLANK. Clamp it so a volatile V4L2
+			 * exposure-max query (left extended by a prior un-reset
+			 * session) cannot inflate the recorded default ceiling.
+			 */
+			maxExpLines = std::min(maxExpLines, defFrameLines);
 			context_.configuration.sensor.vblankDefault = vblankDef;
 			context_.configuration.sensor.maxExposureLinesDefault =
-				static_cast<uint32_t>(maxExpLines);
+				static_cast<uint32_t>(std::max(maxExpLines, 0));
 			context_.configuration.sensor.exposureMargin =
 				defFrameLines > maxExpLines
 					? static_cast<uint32_t>(defFrameLines - maxExpLines)
 					: 0;
+
+			/*
+			 * Advertise the exposure range the low-light extension can
+			 * reach: a manual ExposureTime may integrate up to the
+			 * longest frame the sensor allows (vblankMax), not just the
+			 * default frame. VBLANK is applied before exposure in the
+			 * pipeline handler, so the widened range is valid.
+			 */
+			if (lineUs > 0.0) {
+				int32_t maxFrameLines =
+					static_cast<int32_t>(info.outputSize.height) +
+					v4l2VBlank.max().get<int32_t>();
+				int32_t extMaxExpUs = static_cast<int32_t>(std::lround(
+					(maxFrameLines -
+					 static_cast<int32_t>(context_.configuration.sensor.exposureMargin)) *
+					lineUs));
+				if (extMaxExpUs > maxExpUs)
+					context_.ctrlMap[&controls::ExposureTime] =
+						ControlInfo(minExpUs, extMaxExpUs, defExpUs);
+			}
 		} else {
 			/* Fallback: derive from shutter speed limits */
 			int64_t minDur = static_cast<int64_t>(minExpUs);
@@ -1038,7 +1076,16 @@ void IPAMicrochipISC::setSensorControls()
 				frameLines -
 					static_cast<int32_t>(sensorCfg.outputHeight),
 				vblankFloor, sensorCfg.vblankMax);
-			ctrls.set(V4L2_CID_VBLANK, vblank);
+			/*
+			 * Emit VBLANK only when the frame length changes. In a
+			 * static scene it holds steady, so this avoids a
+			 * redundant per-frame sensor write (the pipeline handler
+			 * applies VBLANK in a separate ioctl before exposure).
+			 */
+			if (vblank != lastVblank_) {
+				ctrls.set(V4L2_CID_VBLANK, vblank);
+				lastVblank_ = vblank;
+			}
 		}
 	}
 
