@@ -290,7 +290,7 @@ void Ccm::process(IPAContext &context,
 	std::array<float, 3> offsets;
 
 	/*
-	 * Colour temperature computed by AWB from gain-undone channel means.
+	 * Colour temperature computed by AWB from the raw pre-WB channel means.
 	 * AWB is the single authority for CT estimation, so both the AWB gains
 	 * and the interpolated CCM track the same illuminant. Falls back to
 	 * 5500 K (neutral daylight) before AWB has produced an estimate.

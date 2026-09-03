@@ -302,8 +302,8 @@ void Gamma::process(IPAContext &context,
 
 	/*
 	 * Use the raw scene luminance derived from the pre-WB histogram.
-	 * The ISC histogram taps vp_data (pre-DPC, pre-WB), so channel
-	 * means are raw sensor values independent of the hardware WB gains.
+	 * The ISC histogram taps pre-WB (post-DPC), so channel means are
+	 * raw sensor values independent of the hardware WB gains.
 	 */
 	float lum = frameContext.scene.luminance;
 	float lumNorm = lum / kHistogramMax;

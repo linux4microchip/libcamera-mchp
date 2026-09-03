@@ -60,7 +60,7 @@ static constexpr uint32_t kMaxFrameContexts = 16;
  * - CCM interpolates a 3×3 colour correction matrix from the AWB CT
  * - AGC adjusts sensor exposure and analogue gain to hit target brightness
  * - CBC corrects residual brightness/contrast error after AGC has converged
- * - Gamma applies adaptive tone mapping using gain-undone scene luminance
+ * - Gamma applies adaptive tone mapping using the raw pre-WB scene luminance
  *
  * Platform capabilities (DPC, bipartite gamma, CBHS saturation) are read
  * from the YAML tuning file hardware section at init() time.
@@ -836,54 +836,20 @@ void IPAMicrochipISC::processStats(unsigned int request,
 	    stats->valid_channels == 0x0f) {
 		auto &hist = context_.activeState.histogram;
 		/*
-		 * The ISC histogram taps vp_data — the PFE output, which is
-		 * pre-DPC, pre-BLC and pre-WB raw sensor data. This is confirmed
-		 * empirically: toggling ISC_DPC_CFG.BLCEN has zero effect on
-		 * histogram means (tested 2026-04-16 on SAMA7G5EK with IMX219).
+		 * The ISC histogram taps pre-WB, downstream of DPC: channel
+		 * means are raw sensor values (independent of the WB gains) with
+		 * the black-level pedestal already removed when DPC BLCEN is
+		 * active. Toggling ISC_DPC_CTRL.BLCEN shifts the means by the
+		 * pedestal, confirming the tap sits after the black-level block.
 		 *
-		 * The sensor black level pedestal (IMX219: 64 DN = 32 histogram
-		 * bins) is therefore present in every channel mean and must be
-		 * subtracted before AWB, AGC and lux calculations. Without it:
-		 *   - AWB grey-world gains have a ~3-4% error at mid-scene
-		 *   - AGC overestimates scene brightness by ~32 bins (~6%)
-		 *   - Lux estimator reference_Y is miscalibrated
-		 *
-		 * The histogram has 512 bins over 10-bit (0-1023) data:
-		 *   bin_index = pixel_value >> 1
-		 * so pedestal in histogram units = blackLevel / 2, applied
-		 * per Bayer channel so a sensor with an asymmetric pedestal is
-		 * corrected exactly (all channels equal for IMX219).
-		 * Clamp to 0: noise in a very dark scene can pull the mean
-		 * below the pedestal floor.
-		 *
-		 * All YAML threshold and target values (darkSceneThreshold,
-		 * target_brightness, lux_reference.reference_Y, y_target) are
-		 * calibrated against these pedestal-subtracted (net) means.
-		 */
-		/*
-		 * Pedestal subtraction.
-		 *
-		 * The IMX219 adds its black-level pedestal (64 DN) digitally
-		 * in the ADC output path — AFTER analogue gain is applied to
-		 * the photoelectron count.  The ISC histogram taps the raw
-		 * MIPI data before any ISC processing (pre-DPC, pre-WB), so
-		 * it sees: histogram_bin = (signal * gain + pedestal) / 2.
-		 *
-		 * The pedestal is therefore FIXED at blackLevel/2 bins
-		 * regardless of analogue gain.  Scaling by gain was wrong and
-		 * caused net=0 for all channels at high gain (>= gain 5×).
-		 *
-		 * Reference: CLAUDE.md "Bin conversion: bin = pixel >> 1
-		 * → IMX219 pedestal 64 DN = 32 histogram bins"
-		 */
-		/*
-		 * On hasDpc platforms (SAMA7G5) the DPC BLCEN block already
-		 * subtracts the black-level pedestal from vp_data — the
-		 * histogram tap — in hardware.  Subtracting it again here would
-		 * double-count the pedestal and floor the low-signal R/B channel
-		 * means to zero, collapsing luminance to a green-only value and
-		 * breaking AE/AWB metering.  Only subtract in software when the
-		 * hardware is not already doing it.
+		 * On hasDpc platforms (SAMA7G5) DPC subtracts the pedestal in
+		 * hardware, so no software subtraction is needed; doing it again
+		 * would floor the low-signal R/B channels to zero and collapse
+		 * luminance to green. Elsewhere the pedestal is present, fixed at
+		 * blackLevel/2 bins regardless of analogue gain (bin = pixel >>
+		 * 1); subtract it per Bayer channel and clamp to 0 for dark-scene
+		 * noise. YAML targets (darkSceneThreshold, target_brightness,
+		 * lux_reference.reference_Y) are calibrated against these means.
 		 */
 		const auto &sensor = context_.configuration.sensor;
 		const bool swPedestal = !context_.configuration.hw.hasDpc;

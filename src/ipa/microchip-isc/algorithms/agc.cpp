@@ -525,7 +525,7 @@ void Agc::process(IPAContext &context,
 	 * Compute WB-corrected luminance, mirroring the reference
 	 * computeInitialY() approach.
 	 *
-	 * The ISC histogram taps pre-WB Bayer data (vp_data, pre-DPC).
+	 * The ISC histogram taps pre-WB Bayer data (post-DPC).
 	 * Luminance metering: pre-WB histogram with normalised WB correction.
 	 *
 	 * This mirrors the reference computeInitialY() when the stats tap

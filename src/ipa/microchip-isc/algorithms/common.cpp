@@ -603,9 +603,9 @@ static constexpr std::array<RobertsonEntry, 32> kRobertsonTable = { {
 
 /**
  * \brief Estimate correlated colour temperature using Robertson's (1968) method
- * \param[in] meanR Red channel mean (gain-undone, any linear scale)
- * \param[in] meanG Green channel mean (gain-undone, same scale)
- * \param[in] meanB Blue channel mean (gain-undone, same scale)
+ * \param[in] meanR Red channel mean (raw pre-WB, any linear scale)
+ * \param[in] meanG Green channel mean (raw pre-WB, same scale)
+ * \param[in] meanB Blue channel mean (raw pre-WB, same scale)
  * \param[in] ctColorMatrix Optional 3×3 row-major sensor-to-XYZ matrix.
  *   Row 0 = [X←R, X←G, X←B], row 1 = Y, row 2 = Z.
  *   When nullptr, a built-in approximation for typical CMOS sensors is used.

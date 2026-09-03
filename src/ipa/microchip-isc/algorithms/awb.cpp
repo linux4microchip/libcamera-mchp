@@ -469,12 +469,10 @@ void Awb::process(IPAContext &context,
 	}
 
 	/*
-	 * Guard against AWB updates in near-dark scenes. The check uses
-	 * gain-applied histogram values so that darkSceneThreshold_ is
-	 * calibrated directly in histogram units (0–511), matching the
-	 * YAML documentation. Using gain-undone values would make the
-	 * effective threshold dependent on the current AWB gains and would
-	 * produce premature freezing whenever rGain or bGain exceed ~1.0.
+	 * Guard against AWB updates in near-dark scenes. The pre-WB
+	 * histogram means are raw sensor values in histogram units
+	 * (0–511), the scale darkSceneThreshold_ is calibrated in, so
+	 * the comparison is direct.
 	 */
 	float meanGApplied = (meanGR + meanGB) / 2.0f;
 	float lumApplied = 0.299f * meanR + 0.587f * meanGApplied + 0.114f * meanB;
@@ -484,12 +482,12 @@ void Awb::process(IPAContext &context,
 	if (lumApplied >= darkSceneThreshold_) {
 		/*
 		 * Blend full-frame grey-world means with highlight-based means.
-		 * Near-saturated pixels (top 20% intensity, gain-undone) better
+		 * Near-saturated pixels (top 20% intensity in the raw pre-WB means) better
 		 * approximate the illuminant colour than the full-frame mean in
 		 * scenes with strong dominant colours (sky, foliage, skin tones).
 		 * highlightWeight_ = 0 gives pure grey-world.
 		 *
-		 * Dynamic weight: when the gain-undone scene mean has a large
+		 * Dynamic weight: when the raw scene mean has a large
 		 * chromatic divergence from neutral (|R/G - 1| or |B/G - 1|
 		 * exceeds 0.2), the scene has a dominant colour and grey-world
 		 * is unreliable. In that case the highlight estimate — which

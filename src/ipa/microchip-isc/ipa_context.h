@@ -185,7 +185,7 @@ struct IPAActiveState {
 		bool autoEnabled;
 		/*
 		 * Estimated scene colour temperature in Kelvin, computed by AWB
-		 * from gain-undone channel means. Single source of truth shared
+		 * from the raw pre-WB channel means. Single source of truth shared
 		 * with CCM so both modules track the same illuminant estimate.
 		 */
 		unsigned int ct;
@@ -354,9 +354,9 @@ struct IPAFrameContext : public FrameContext {
 	 *
 	 * luminance:      BT.601-weighted mean from the pre-WB histogram
 	 *                 (histogram units 0–511). The ISC histogram taps
-	 *                 vp_data (pre-DPC, pre-WB), so channel means are
-	 *                 raw sensor values independent of AWB gains. Used
-	 *                 by AGC, CBC, and Gamma.
+	 *                 pre-WB (post-DPC), so channel means are raw sensor
+	 *                 values independent of AWB gains. Used by AGC, CBC,
+	 *                 and Gamma.
 	 * spread:         P5–P95 inter-percentile range / 512 (0–1).
 	 * clipping:       fraction of pixels in the top 4 bins (0–1).
 	 */

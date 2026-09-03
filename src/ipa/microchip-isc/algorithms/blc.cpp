@@ -56,7 +56,7 @@ namespace ipa::microchip_isc {
  * from the sensor helper (camHelper->blackLevel()), matching RkISP1's BLC.
  *
  * BLC signal flow on SAMA7G5:
- *   Sensor → PFE → [histogram tap] → DPC(BLOFF=64) → WB(offsets=0) → ...
+ *   Sensor → PFE → DPC(BLOFF=64) → [histogram tap] → WB(offsets=0) → ...
  *                                                          ↑
  *                                              IPA sets WB offsets to 0
  *                                              because DPC already handles BL

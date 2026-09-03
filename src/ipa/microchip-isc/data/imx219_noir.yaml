@@ -96,7 +96,7 @@ algorithms:
     raw_target_brightness: 90
       # EMPIRICAL CALIBRATION — SAMA7G5 + IMX219 NoIR:
       # AGC uses normalised-WB-corrected BT.601 luminance.
-      # Histogram tap is pre-WB, pre-DPC (confirmed by BLCEN toggle test).
+      # Histogram tap is pre-WB, post-DPC (BLCEN toggle shifts the means).
       # 18% grey requires ≈195 lines exposure at 4450K.
       # At 195 lines: GR_net ≈ 22 net bins in the pre-WB histogram.
       # The normalised-WB luminance at target=22 → correct 18% grey output.
