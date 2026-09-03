@@ -117,6 +117,37 @@ static std::string makeFilename(const std::string &tmpl,
 	return out;
 }
 
+/* True if the template already varies per shot via a %d/%t/%T token. */
+static bool templateHasCounterToken(const std::string &tmpl)
+{
+	for (size_t i = 0; i + 1 < tmpl.size(); i++) {
+		if (tmpl[i] != '%')
+			continue;
+		char tok = tmpl[i + 1];
+		if (tok == 'd' || tok == 't' || tok == 'T')
+			return true;
+		i++;
+	}
+	return false;
+}
+
+/*
+ * A multi-shot capture whose template has no counter token would write every
+ * frame to the same path; insert a %d counter before the extension so the
+ * frames don't clobber one another.
+ */
+static std::string ensureCounterToken(const std::string &tmpl)
+{
+	if (templateHasCounterToken(tmpl))
+		return tmpl;
+
+	size_t slash = tmpl.find_last_of('/');
+	size_t dot = tmpl.find_last_of('.');
+	if (dot != std::string::npos && (slash == std::string::npos || dot > slash))
+		return tmpl.substr(0, dot) + "-%d" + tmpl.substr(dot);
+	return tmpl + "-%d";
+}
+
 /* ------------------------------------------------------------------ */
 /* Software image transforms                                            */
 /* ------------------------------------------------------------------ */
@@ -373,6 +404,14 @@ public:
 		unsigned int total = (captureCount_ > 0) ? captureCount_
 							 : UINT_MAX;
 
+		/*
+		 * Burst/timelapse (more than one shot) needs a per-shot
+		 * counter or the frames overwrite each other.
+		 */
+		std::string tmpl = (total != 1)
+					   ? ensureCounterToken(outputTemplate)
+					   : outputTemplate;
+
 		while (shot < total && !g_sigTerm.load()) {
 			/* Wait for IPA convergence (or timeout) before each shot.
 			 * On the first iteration captureReady_ is already set by
@@ -410,7 +449,7 @@ public:
 				break;
 			}
 
-			std::string fname = makeFilename(outputTemplate, shot);
+			std::string fname = makeFilename(tmpl, shot);
 			std::cout << "Shot " << (shot + 1);
 			if (total != UINT_MAX)
 				std::cout << "/" << total;
