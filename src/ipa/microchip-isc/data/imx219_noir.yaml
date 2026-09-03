@@ -251,17 +251,9 @@ algorithms:
         ct: 4000
         ccm: [1.6966, -0.5871, -0.1095, -0.4553, 1.9291, -0.4738, -0.0791, -0.7693, 1.8484]
 
+        # Coolest calibrated profile; scenes below 3000 K clamp to it.
+        # Add candlelight (~2700 K) / deep tungsten (~2500 K) once measured
+        # against a warm source with a Macbeth chart.
       tungsten:
         ct: 3000
         ccm: [1.6354, -0.3997, -0.2358, -0.5197, 1.9418, -0.4221, -0.1046, -1.2895, 2.3941]
-
-      candlelight:
-        ct: 2700
-        ccm: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-
-        # Deep tungsten / candlelight (~2500 K) for NoIR sensor. IR energy
-        # at warm CTs is strongest; strong B row and low R diagonal required.
-        # Extrapolated from 2700 K; calibrate against a candle/tungsten source.
-      deep_tungsten:
-        ct: 2500
-        ccm: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
