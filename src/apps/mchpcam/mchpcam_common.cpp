@@ -82,17 +82,13 @@ void MchpCamCommon::setFormat(const std::string &formatStr)
 		pixelFormat_ = libcamera::formats::YUYV;
 	else if (formatStr == "RGB565")
 		pixelFormat_ = libcamera::formats::RGB565;
-	else if (formatStr == "BGR888")
-		pixelFormat_ = libcamera::formats::BGR888;
-	else if (formatStr == "RGB888")
-		pixelFormat_ = libcamera::formats::RGB888;
 	else if (formatStr == "SRGGB10" || formatStr == "SRGGB8") {
 		std::cerr << "Error: use --raw instead of -f SRGGB10 for raw Bayer capture.\n"
 			  << "--raw enables unity WB gains so the ISC WB block is a no-op.\n";
 		return;
 	} else {
 		std::cerr << "Unknown format '" << formatStr
-			  << "'. Supported: XRGB8888 YUYV RGB565 BGR888 RGB888."
+			  << "'. Supported: XRGB8888 YUYV RGB565."
 			  << " Using XRGB8888.\n";
 		pixelFormat_ = libcamera::formats::XRGB8888;
 	}

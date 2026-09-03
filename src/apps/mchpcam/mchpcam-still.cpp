@@ -591,18 +591,6 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 					++n;
 				}
 			}
-		} else if (pixelFormat_ == libcamera::formats::RGB888 ||
-			   pixelFormat_ == libcamera::formats::BGR888) {
-			bool bgr = (pixelFormat_ == libcamera::formats::BGR888);
-			for (unsigned int y = y0; y < y1; ++y) {
-				for (unsigned int x = x0; x < x1; ++x) {
-					size_t idx = (y * width_ + x) * 3;
-					sumR += bgr ? data[idx + 2] : data[idx + 0];
-					sumG += data[idx + 1];
-					sumB += bgr ? data[idx + 0] : data[idx + 2];
-					++n;
-				}
-			}
 		}
 
 		if (n > 0) {
@@ -653,12 +641,10 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 
 	if (pixelFormat_ != formats::XRGB8888 &&
 	    pixelFormat_ != formats::RGB565 &&
-	    pixelFormat_ != formats::YUYV &&
-	    pixelFormat_ != formats::BGR888 &&
-	    pixelFormat_ != formats::RGB888) {
+	    pixelFormat_ != formats::YUYV) {
 		std::cerr << "Unsupported format for encoding: "
 			  << pixelFormat_.toString()
-			  << " — choose XRGB8888 (default), YUYV, RGB565, BGR888 or RGB888\n";
+			  << " — choose XRGB8888 (default), YUYV or RGB565\n";
 		munmap(mapped, plane.length);
 		return;
 	}
@@ -678,16 +664,6 @@ void MchpCamStill::saveFrame(const libcamera::FrameBuffer *buffer,
 			rgb[i * 3 + 0] = data[i * 4 + 2];
 			rgb[i * 3 + 1] = data[i * 4 + 1];
 			rgb[i * 3 + 2] = data[i * 4 + 0];
-		}
-
-	} else if (pixelFormat_ == formats::RGB888) {
-		std::copy(data, data + rgb.size(), rgb.begin());
-
-	} else if (pixelFormat_ == formats::BGR888) {
-		for (unsigned int i = 0; i < width_ * height_; ++i) {
-			rgb[i * 3 + 0] = data[i * 3 + 2];
-			rgb[i * 3 + 1] = data[i * 3 + 1];
-			rgb[i * 3 + 2] = data[i * 3 + 0];
 		}
 
 	} else if (pixelFormat_ == formats::RGB565) {
@@ -1125,7 +1101,7 @@ static void printUsage(const char *argv0)
 					 "  --metadata-format=FMT      json | txt (default: txt)\n"
 					 "\n"
 					 "Stream:\n"
-					 "  -f, --format=FMT           XRGB8888 | YUYV | RGB565 | BGR888 | RGB888\n"
+					 "  -f, --format=FMT           XRGB8888 | YUYV | RGB565\n"
 					 "                             (default: XRGB8888)\n"
 					 "  --raw                      Capture 10-bit Bayer (SRGGB10/RGGB) as 16-bit PGM.\n"
 					 "                             Forces unity WB gains (512) so the ISC WB\n"
