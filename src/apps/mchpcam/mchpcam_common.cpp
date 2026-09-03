@@ -132,12 +132,20 @@ void MchpCamCommon::applyControls(libcamera::ControlList &controls)
 	controls.set(controls::AeMeteringMode, meteringMode_);
 	controls.set(controls::AeEnable, agcEnabled_);
 
-	if (!agcEnabled_) {
-		if (manualExposureUs_ >= 0)
-			controls.set(controls::ExposureTime, manualExposureUs_);
-		if (manualGain_ >= 0.0f)
-			controls.set(controls::AnalogueGain, manualGain_);
-	}
+	/*
+	 * Send each manual setpoint when its own knob is manual: either the
+	 * master AeEnable is off, or the per-knob mode was set to manual (1).
+	 * This mirrors the IPA's independent exposure/gain arbitration, so a
+	 * locked gain does not also freeze the auto shutter.
+	 */
+	bool exposureManual = !agcEnabled_ ||
+			      (exposureTimeModeSet_ && exposureTimeMode_ == 1);
+	bool gainManual = !agcEnabled_ ||
+			  (gainModeSet_ && gainMode_ == 1);
+	if (exposureManual && manualExposureUs_ >= 0)
+		controls.set(controls::ExposureTime, manualExposureUs_);
+	if (gainManual && manualGain_ >= 0.0f)
+		controls.set(controls::AnalogueGain, manualGain_);
 
 	/*
 	 * Independent per-knob auto/manual: lock the shutter while gain
@@ -381,7 +389,12 @@ int MchpCamCommon::init(const std::string &cameraId)
 	if (hwGains_.hasAny())
 		std::cout << "HW register WB bypass active"
 			  << (rawCapture_ ? " (unity — WB is no-op)" : "") << "\n";
-	std::cout << "AGC:  " << (agcEnabled_ ? "auto" : "manual") << "\n";
+	bool expManual = !agcEnabled_ ||
+			 (exposureTimeModeSet_ && exposureTimeMode_ == 1);
+	bool gainManual = !agcEnabled_ ||
+			  (gainModeSet_ && gainMode_ == 1);
+	std::cout << "AGC:  exposure=" << (expManual ? "manual" : "auto")
+		  << " gain=" << (gainManual ? "manual" : "auto") << "\n";
 	std::cout << "CCM:  " << (ccmEnabled_ ? "on" : "off") << "\n";
 	std::cout << "Warmup frames: " << warmupFrames_ << "\n";
 

@@ -193,15 +193,21 @@ public:
 
 	/* AGC / exposure */
 	void setAgcEnabled(bool e) { agcEnabled_ = e; }
+	/*
+	 * A manual setpoint locks only its own knob via the per-knob mode
+	 * (1 = manual), leaving the other on auto — so --analoggain=1.0 fixes
+	 * gain while AE still servos the shutter (the calibration path). Full
+	 * manual is --no-agc, which clears agcEnabled_ for both knobs.
+	 */
 	void setManualExposure(int32_t us)
 	{
 		manualExposureUs_ = us;
-		agcEnabled_ = false;
+		setExposureTimeMode(1);
 	}
 	void setManualGain(float g)
 	{
 		manualGain_ = g;
-		agcEnabled_ = false;
+		setGainMode(1);
 	}
 
 	/* CCM */
