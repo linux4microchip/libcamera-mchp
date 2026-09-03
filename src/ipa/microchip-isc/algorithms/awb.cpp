@@ -500,11 +500,13 @@ void Awb::process(IPAContext &context,
 		 */
 		if (highlightWeight_ > 0.0f) {
 			/*
-			 * The grey-world means are net (pedestal subtracted);
-			 * sample the highlight means on the same zero-point so
-			 * the blend does not re-add the sensor pedestal.
+			 * Sample the highlight means on the same zero-point as
+			 * the grey-world channelMeans they blend with: subtract
+			 * the pedestal only when the DPC block has not already
+			 * removed it (mirrors processStats()).
 			 */
 			unsigned int pedestalBins =
+				context.configuration.hw.hasDpc ? 0 :
 				context.configuration.sensor.blackLevel / 2;
 			float hlGR = calculateHighlightMean(stats, kHistChannelGR, pedestalBins);
 			float hlR = calculateHighlightMean(stats, kHistChannelR, pedestalBins);

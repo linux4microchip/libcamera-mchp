@@ -358,6 +358,7 @@ void Gamma::process(IPAContext &context,
 		 * Bayer channel mean is corrected individually (processStats()).
 		 */
 		unsigned int pedestalBins =
+			context.configuration.hw.hasDpc ? 0 :
 			context.configuration.sensor.blackLevel / 2;
 		calculateLuminanceCdf(stats, lutCdf, pedestalBins);
 		cdfPtr = &lutCdf;
