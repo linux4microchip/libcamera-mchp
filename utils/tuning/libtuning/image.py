@@ -224,7 +224,9 @@ class Image:
         # correct default rather than the sensor's flipped SGRBG phase. The 'S'
         # prefix on a V4L2 fourcc (e.g. SRGGB10) denotes a mosaic; strip it.
         fmt = str(self.metadata.get('format', ''))
-        bayer = fmt.split('_')[-1].upper() if '_' in fmt else ''
+        # Strip only the leading "PGM_" tag; keep the rest so a packed fourcc
+        # (e.g. PGM_SGRBG10_CSI2P) still resolves its S<RGGB> phase below.
+        bayer = fmt.split('_', 1)[1].upper() if '_' in fmt else ''
         if bayer.startswith('S'):
             bayer = bayer[1:]
         cfa = _BAYER_NAME_TO_CFA.get(bayer[:4], _BAYER_NAME_TO_CFA['RGGB'])
