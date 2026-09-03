@@ -587,16 +587,13 @@ void Agc::process(IPAContext &context,
 	float wbB = (awb.bGain > 0.0f) ? awb.bGain : 1.0f;
 
 	/*
-	 * Normalise all WB gains relative to the minimum (the highest-signal
-	 * channel, typically GR ≈ 1.0 after AWB converges).  The old
-	 * std::max(..., 1.0f) floor prevented normalisation whenever any
-	 * channel gain was below 1.0 — which is common during AWB startup —
-	 * biasing currentLuminance systematically low.  Guard against zero
-	 * only (to avoid divide-by-zero), not against below-unity values.
+	 * Histogram is pre-WB: means are raw, so post-WB output luminance is
+	 * meanCh * wbCh. Floor the normalising min gain at 1.0 — the green
+	 * reference sits at unity, and a sub-unity R/B gain (warm/cool CTs)
+	 * must not scale the estimate up and starve exposure (also guards
+	 * the divide).
 	 */
-	float minWb = std::min({ wbR, wbGR, wbGB, wbB });
-	if (minWb < 1e-6f)
-		minWb = 1.0f;
+	float minWb = std::max(std::min({ wbR, wbGR, wbGB, wbB }), 1.0f);
 	float nR = std::min(meanR * (wbR / minWb), kHistogramMax);
 	float nGR = std::min(meanGR * (wbGR / minWb), kHistogramMax);
 	float nGB = std::min(meanGB * (wbGB / minWb), kHistogramMax);
