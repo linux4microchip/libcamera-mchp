@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -67,6 +68,13 @@ public:
 	 * pre-calibration behaviour.
 	 */
 	void loadConfig(const YamlObject &config);
+	/**
+	 * \brief Load the auto-levels stretch parameters from a module block
+	 * \param[in] config The 'AutoLevels' module sub-block
+	 *
+	 * An absent or disabled block leaves the stretch inactive.
+	 */
+	void loadAutoLevelsConfig(const YamlObject &config);
 	/**
 	 * \brief Configure the stage for a stream format
 	 * \param[in] format Output pixel format of the ISC capture buffer
@@ -162,7 +170,29 @@ private:
 	const LscGrid &selectLscGrid(unsigned int colourTemperature) const;
 
 	void applyLscRgb565(uint8_t *data, const LscGrid &grid) const;
+	void applyLscXrgb8888(uint8_t *data, const LscGrid &grid) const;
 	void applyLscYuv422(uint8_t *data, const LscGrid &grid, bool uyvy) const;
+
+	/*
+	 * Output-domain contrast stretch. The IPA only sees the pre-WB histogram;
+	 * this is the only stage that sees the final output, so it expands a
+	 * compressed distribution to fill the range. Anchored on luma percentiles
+	 * and applied to R, G, B alike — contrast, not colour (AWB owns colour).
+	 */
+	struct AutoLevels {
+		float loPct = 0.01f;
+		float hiPct = 0.99f;
+		float maxGain = 4.0f;
+		unsigned int blackTarget = 62;
+		unsigned int whiteTarget = 213;
+		unsigned int sample = 4;
+		bool enable = false;
+	};
+
+	/* Build the 256-entry stretch map from a luma histogram; false if degenerate. */
+	bool buildAutoLevelsMap(const uint8_t *data,
+				std::array<uint8_t, 256> &map) const;
+	void applyAutoLevels(uint8_t *data) const;
 
 	std::unique_ptr<Worker> worker_;
 	Thread thread_;
@@ -181,8 +211,10 @@ private:
 
 	LscGrid lscGrid_;
 	std::vector<CtLscGrid> lscPerCt_;
+	AutoLevels autoLevels_;
 
 	bool lscActive_ = false;
+	bool autoLevelsActive_ = false;
 	bool enabled_ = false;
 	bool running_ = false;
 };

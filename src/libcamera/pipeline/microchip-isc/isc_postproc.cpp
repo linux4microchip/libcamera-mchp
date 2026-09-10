@@ -8,6 +8,7 @@
 #include "isc_postproc.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <new>
@@ -30,8 +31,20 @@ namespace {
 /* Only packed formats the filters understand are candidates for processing. */
 bool isFilterableFormat(const PixelFormat &format)
 {
-	return format == formats::RGB565 || format == formats::YUYV ||
-	       format == formats::UYVY;
+	return format == formats::RGB565 || format == formats::XRGB8888 ||
+	       format == formats::YUYV || format == formats::UYVY;
+}
+
+/* Bytes per pixel of the packed output formats the stage handles. */
+unsigned int bytesPerPixel(const PixelFormat &format)
+{
+	return format == formats::XRGB8888 ? 4u : 2u;
+}
+
+/* BT.601 luma of an 8-bit RGB triplet. */
+inline unsigned int luma(unsigned int r, unsigned int g, unsigned int b)
+{
+	return (77u * r + 150u * g + 29u * b) >> 8;
 }
 
 /*
@@ -171,6 +184,31 @@ void IscPostProcessor::loadConfig(const YamlObject &config)
 		<< "Loaded " << gw << "x" << gh << " lens-shading map";
 }
 
+void IscPostProcessor::loadAutoLevelsConfig(const YamlObject &config)
+{
+	AutoLevels al;
+	al.enable = config["enable"].get<bool>(false);
+	al.loPct = config["lo_percentile"].get<double>(al.loPct);
+	al.hiPct = config["hi_percentile"].get<double>(al.hiPct);
+	al.maxGain = config["max_gain"].get<double>(al.maxGain);
+	al.blackTarget = config["black_target"].get<uint32_t>(al.blackTarget);
+	al.whiteTarget = config["white_target"].get<uint32_t>(al.whiteTarget);
+	al.sample = std::max(1u, config["sample"].get<uint32_t>(al.sample));
+
+	/* Reject a nonsensical block rather than stretching to garbage. */
+	if (al.hiPct <= al.loPct || al.whiteTarget <= al.blackTarget ||
+	    al.maxGain < 1.0f) {
+		LOG(IscPostProc, Warning) << "Invalid AutoLevels block; disabled";
+		return;
+	}
+
+	autoLevels_ = al;
+	LOG(IscPostProc, Info)
+		<< "AutoLevels " << (al.enable ? "enabled" : "disabled")
+		<< " black=" << al.blackTarget << " white=" << al.whiteTarget
+		<< " maxGain=" << al.maxGain;
+}
+
 /*
  * Pick the per-CT lens-shading map nearest the scene colour temperature. With a
  * single-map calibration (lscPerCt_ empty) the one loaded map is returned
@@ -213,10 +251,11 @@ int IscPostProcessor::configure(const PixelFormat &format, const Size &size,
 
 	bool filterable = isFilterableFormat(format);
 
-	/* 2 bytes per pixel: a stride below one packed line would over-read. */
-	if (filterable && stride < size.width * 2u) {
+	/* A stride below one packed line would over-read. */
+	unsigned int minStride = size.width * bytesPerPixel(format);
+	if (filterable && stride < minStride) {
 		LOG(IscPostProc, Warning)
-			<< "stride " << stride << " < " << size.width * 2u
+			<< "stride " << stride << " < " << minStride
 			<< " for " << size.toString()
 			<< "; post-processing disabled";
 		filterable = false;
@@ -224,13 +263,14 @@ int IscPostProcessor::configure(const PixelFormat &format, const Size &size,
 
 	/* Active when a gain map is loaded; the pass is gated per request. */
 	lscActive_ = filterable && (lscGrid_.valid || !lscPerCt_.empty());
+	autoLevelsActive_ = filterable && autoLevels_.enable;
 
-	enabled_ = lscActive_;
+	enabled_ = lscActive_ || autoLevelsActive_;
 
 	LOG(IscPostProc, Debug)
 		<< "configure " << format.toString() << " " << size.toString()
 		<< " stride=" << stride << " lsc=" << lscActive_
-		<< " enabled=" << enabled_;
+		<< " autolevels=" << autoLevelsActive_ << " enabled=" << enabled_;
 
 	return 0;
 }
@@ -359,11 +399,17 @@ void IscPostProcessor::applyFilters(uint8_t *data,
 		const LscGrid &grid = selectLscGrid(colourTemperature);
 		if (format_ == formats::RGB565)
 			applyLscRgb565(data, grid);
+		else if (format_ == formats::XRGB8888)
+			applyLscXrgb8888(data, grid);
 		else if (format_ == formats::YUYV)
 			applyLscYuv422(data, grid, false);
 		else if (format_ == formats::UYVY)
 			applyLscYuv422(data, grid, true);
 	}
+
+	/* Contrast stretch runs last, on the (optionally shading-corrected) pixels. */
+	if (autoLevelsActive_)
+		applyAutoLevels(data);
 }
 
 /*
@@ -417,6 +463,40 @@ void IscPostProcessor::applyLscRgb565(uint8_t *data, const LscGrid &grid) const
 				((ri >> 3) << 11) | ((gi >> 2) << 5) | (bi >> 3));
 			p[0] = out & 0xff;
 			p[1] = out >> 8;
+		}
+	}
+}
+
+/* Lens-shading for packed XRGB8888 (memory order B, G, R, X). */
+void IscPostProcessor::applyLscXrgb8888(uint8_t *data, const LscGrid &grid) const
+{
+	const unsigned int w = size_.width;
+	const unsigned int h = size_.height;
+	const unsigned int gw = grid.gw;
+	const unsigned int gh = grid.gh;
+
+	for (unsigned int py = 0; py < h; ++py) {
+		float gy = std::clamp((py + 0.5f) * gh / h - 0.5f,
+				      0.0f, static_cast<float>(gh - 1));
+		unsigned int j0 = static_cast<unsigned int>(gy);
+		unsigned int j1 = std::min(j0 + 1, gh - 1);
+		float fy = gy - j0;
+
+		uint8_t *row = data + static_cast<size_t>(py) * stride_;
+		for (unsigned int px = 0; px < w; ++px) {
+			float gx = std::clamp((px + 0.5f) * gw / w - 0.5f,
+					      0.0f, static_cast<float>(gw - 1));
+			unsigned int i0 = static_cast<unsigned int>(gx);
+			unsigned int i1 = std::min(i0 + 1, gw - 1);
+			float fx = gx - i0;
+
+			uint8_t *p = row + px * 4;
+			float b = p[0] * bilinear(grid.b, gw, i0, i1, fx, j0, j1, fy);
+			float g = p[1] * bilinear(grid.g, gw, i0, i1, fx, j0, j1, fy);
+			float r = p[2] * bilinear(grid.r, gw, i0, i1, fx, j0, j1, fy);
+			p[0] = static_cast<uint8_t>(std::clamp(b, 0.0f, 255.0f));
+			p[1] = static_cast<uint8_t>(std::clamp(g, 0.0f, 255.0f));
+			p[2] = static_cast<uint8_t>(std::clamp(r, 0.0f, 255.0f));
 		}
 	}
 }
@@ -492,6 +572,123 @@ void IscPostProcessor::applyLscYuv422(uint8_t *data, const LscGrid &grid,
 				uint8_t *y = blk + k * 2 + yOff;
 				*y = static_cast<uint8_t>(
 					std::clamp(*y * ly, 0.0f, 255.0f));
+			}
+		}
+	}
+}
+
+bool IscPostProcessor::buildAutoLevelsMap(const uint8_t *data,
+					  std::array<uint8_t, 256> &map) const
+{
+	const unsigned int w = size_.width;
+	const unsigned int h = size_.height;
+	const unsigned int s = autoLevels_.sample;
+
+	/* Subsampled luma histogram: percentiles are stable well below full res. */
+	std::array<uint32_t, 256> hist = {};
+	uint64_t total = 0;
+	for (unsigned int py = 0; py < h; py += s) {
+		const uint8_t *row = data + static_cast<size_t>(py) * stride_;
+		for (unsigned int px = 0; px < w; px += s) {
+			unsigned int y;
+			if (format_ == formats::XRGB8888) {
+				const uint8_t *p = row + px * 4;
+				y = luma(p[2], p[1], p[0]);
+			} else if (format_ == formats::RGB565) {
+				const uint8_t *p = row + px * 2;
+				uint16_t v = p[0] | (p[1] << 8);
+				unsigned int r5 = (v >> 11) & 0x1f;
+				unsigned int g6 = (v >> 5) & 0x3f;
+				unsigned int b5 = v & 0x1f;
+				y = luma((r5 << 3) | (r5 >> 2),
+					 (g6 << 2) | (g6 >> 4),
+					 (b5 << 3) | (b5 >> 2));
+			} else {
+				/* 4:2:2 — Y is the first byte of YUYV, second of UYVY. */
+				const uint8_t *p = row + px * 2;
+				y = (format_ == formats::UYVY) ? p[1] : p[0];
+			}
+			hist[y]++;
+			total++;
+		}
+	}
+
+	if (total == 0)
+		return false;
+
+	auto percentile = [&](float frac) {
+		uint64_t target = static_cast<uint64_t>(frac * total);
+		uint64_t cum = 0;
+		for (unsigned int i = 0; i < 256; ++i) {
+			cum += hist[i];
+			if (cum >= target)
+				return i;
+		}
+		return 255u;
+	};
+
+	unsigned int lo = percentile(autoLevels_.loPct);
+	unsigned int hi = percentile(autoLevels_.hiPct);
+	if (hi <= lo)
+		return false;
+
+	float gain = static_cast<float>(autoLevels_.whiteTarget - autoLevels_.blackTarget) /
+		     static_cast<float>(hi - lo);
+	gain = std::clamp(gain, 1.0f, autoLevels_.maxGain);
+
+	for (unsigned int i = 0; i < 256; ++i) {
+		float v = autoLevels_.blackTarget +
+			  (static_cast<float>(i) - lo) * gain;
+		map[i] = static_cast<uint8_t>(std::clamp(v, 0.0f, 255.0f));
+	}
+	return true;
+}
+
+/*
+ * Expand the output luma range with a single affine map applied to each colour
+ * channel. Built from the frame's own luma percentiles, so a compressed
+ * distribution is stretched toward the black/white targets without touching
+ * the IPA-owned white balance.
+ */
+void IscPostProcessor::applyAutoLevels(uint8_t *data) const
+{
+	std::array<uint8_t, 256> map;
+	if (!buildAutoLevelsMap(data, map))
+		return;
+
+	const unsigned int w = size_.width;
+	const unsigned int h = size_.height;
+
+	for (unsigned int py = 0; py < h; ++py) {
+		uint8_t *row = data + static_cast<size_t>(py) * stride_;
+		if (format_ == formats::XRGB8888) {
+			for (unsigned int px = 0; px < w; ++px) {
+				uint8_t *p = row + px * 4;
+				p[0] = map[p[0]];
+				p[1] = map[p[1]];
+				p[2] = map[p[2]];
+			}
+		} else if (format_ == formats::RGB565) {
+			for (unsigned int px = 0; px < w; ++px) {
+				uint8_t *p = row + px * 2;
+				uint16_t v = p[0] | (p[1] << 8);
+				unsigned int r5 = (v >> 11) & 0x1f;
+				unsigned int g6 = (v >> 5) & 0x3f;
+				unsigned int b5 = v & 0x1f;
+				unsigned int r = map[(r5 << 3) | (r5 >> 2)];
+				unsigned int g = map[(g6 << 2) | (g6 >> 4)];
+				unsigned int b = map[(b5 << 3) | (b5 >> 2)];
+				uint16_t out = static_cast<uint16_t>(
+					((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+				p[0] = out & 0xff;
+				p[1] = out >> 8;
+			}
+		} else {
+			/* 4:2:2 — stretch luma only, leave chroma. */
+			int yOff = (format_ == formats::UYVY) ? 1 : 0;
+			for (unsigned int px = 0; px < w; ++px) {
+				uint8_t *y = row + px * 2 + yOff;
+				*y = map[*y];
 			}
 		}
 	}

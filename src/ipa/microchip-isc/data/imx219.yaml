@@ -311,4 +311,24 @@ algorithms:
         candlelight:
           ct: 2860
           ccm: [2.12089, -0.52461, -0.59629, -0.85342, 2.80445, -0.95103, -0.26897, -1.14788, 2.41685]
+
+# Output-path post-processing (pipeline handler, gated by IscStillProcess).
+modules:
+  # Output-domain contrast stretch. The IPA meters on the pre-WB histogram and
+  # cannot see the final distribution; this expands a compressed output to fill
+  # the range. Luma percentiles [lo, hi] map to [black_target, white_target];
+  # max_gain caps the stretch so flat/noisy scenes are not blown up. One affine
+  # map is applied to R, G, B alike, so it changes contrast, not white balance.
+  - AutoLevels:
+      enable: true
+      lo_percentile: 0.01
+      hi_percentile: 0.99
+      # black_target low so the stretch anchors the floor to near-black and
+      # removes haze. max_gain high so a compressed input still reaches
+      # white_target. Authored "look", not measured.
+      max_gain: 6.5
+      black_target: 12
+      white_target: 205
+      # Histogram subsample step (1/sample^2 of pixels); percentiles stay stable.
+      sample: 4
 ...

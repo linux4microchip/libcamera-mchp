@@ -886,6 +886,9 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 					if (module.contains("LensShadingCorrection"))
 						data->postproc_->loadConfig(
 							module["LensShadingCorrection"]);
+					if (module.contains("AutoLevels"))
+						data->postproc_->loadAutoLevelsConfig(
+							module["AutoLevels"]);
 				}
 			}
 		}
