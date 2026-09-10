@@ -21,6 +21,8 @@ struct IPAHwCapabilities {
 	bool statsAvailable;
 	/* True when the negotiated capture format is raw Bayer (linear output). */
 	bool isRawOutput;
+	/* True when the output is YUV, so the post-CSC CBC/CBHS block is in the datapath. */
+	bool isYuvOutput;
 };
 
 struct IPAConfigInfo {

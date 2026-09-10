@@ -422,6 +422,9 @@ int IPAMicrochipISC::configure(const IPAConfigInfo &ipaConfig,
 	/* Raw Bayer output is linear: AGC meters to a mid-grey target. */
 	context_.configuration.hw.isRawOutput = ipaConfig.hwCaps.isRawOutput;
 
+	/* CBC/CBHS is post-CSC: its registers are only live on YUV output. */
+	context_.configuration.hw.isYuvOutput = ipaConfig.hwCaps.isYuvOutput;
+
 	/*
 	 * Initialize activeState defaults BEFORE calling algo->configure() so
 	 * that algorithms can safely read activeState during their configure()
@@ -1166,31 +1169,36 @@ void IPAMicrochipISC::setIspControls()
 	ctrls.set(V4L2_CID_ISC_CC_OG, static_cast<int32_t>(std::round(ccm.offsets[1])));
 	ctrls.set(V4L2_CID_ISC_CC_OB, static_cast<int32_t>(std::round(ccm.offsets[2])));
 
-	/* CBC: adaptive brightness and contrast (ISC CBC/CBHS block, post-gamma) */
-	ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);
-	ctrls.set(V4L2_CID_CONTRAST, context_.activeState.cbc.contrast);
-
 	/*
-	 * Saturation and Hue are only available on SAMA7G5 CBHS hardware.
-	 * SAMA5D2 CBC exposes brightness and contrast only.
+	 * CBC/CBHS sits post-CSC, so its registers only reach pixels on YUV
+	 * output; on RGB the block is bypassed and the writes are inert.
 	 */
-	if (context_.configuration.hw.hasCbhs) {
+	if (context_.configuration.hw.isYuvOutput) {
+		ctrls.set(V4L2_CID_BRIGHTNESS, context_.activeState.cbc.brightness);
+		ctrls.set(V4L2_CID_CONTRAST, context_.activeState.cbc.contrast);
+
 		/*
-		 * The active CCM already boosts saturation through its
-		 * off-diagonals; divide it back out of the CBHS register so the
-		 * combined CCM x CBHS saturation stays near the intended value.
-		 * Compensate the nominal each frame here rather than in the CBC
-		 * active state, which would feed the divided value back in and
-		 * decay the register geometrically toward zero.
+		 * Saturation and Hue are only available on SAMA7G5 CBHS hardware.
+		 * SAMA5D2 CBC exposes brightness and contrast only.
 		 */
-		int32_t saturation = context_.activeState.cbc.saturation;
-		float satBoost = context_.activeState.ccm.satBoost;
-		if (satBoost > 1.0f)
-			saturation = static_cast<int32_t>(std::clamp(
-				saturation / satBoost, 0.0f,
-				kSaturationScale * 2.0f));
-		ctrls.set(V4L2_CID_SATURATION, saturation);
-		ctrls.set(V4L2_CID_HUE, context_.activeState.cbc.hue);
+		if (context_.configuration.hw.hasCbhs) {
+			/*
+			 * The active CCM already boosts saturation through its
+			 * off-diagonals; divide it back out of the CBHS register so the
+			 * combined CCM x CBHS saturation stays near the intended value.
+			 * Compensate the nominal each frame here rather than in the CBC
+			 * active state, which would feed the divided value back in and
+			 * decay the register geometrically toward zero.
+			 */
+			int32_t saturation = context_.activeState.cbc.saturation;
+			float satBoost = context_.activeState.ccm.satBoost;
+			if (satBoost > 1.0f)
+				saturation = static_cast<int32_t>(std::clamp(
+					saturation / satBoost, 0.0f,
+					kSaturationScale * 2.0f));
+			ctrls.set(V4L2_CID_SATURATION, saturation);
+			ctrls.set(V4L2_CID_HUE, context_.activeState.cbc.hue);
+		}
 	}
 
 	/* Gamma LUT: per-channel 64-entry 10-bit tone curves */

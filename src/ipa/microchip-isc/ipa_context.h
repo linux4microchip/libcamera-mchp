@@ -131,6 +131,9 @@ struct IPASessionConfiguration {
 		 */
 		bool isRawOutput = false;
 
+		/* YUV output traverses the post-CSC CBC/CBHS block; RGB bypasses it. */
+		bool isYuvOutput = false;
+
 		/*
 		 * contrastUnityHw: hardware register value that represents
 		 * unity contrast (output = input, no gain applied).

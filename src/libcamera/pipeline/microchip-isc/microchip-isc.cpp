@@ -1048,6 +1048,9 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 		ipaConfig.hwCaps.isRawOutput =
 			PixelFormatInfo::info(pipeConfig->captureFormat).colourEncoding ==
 			PixelFormatInfo::ColourEncodingRAW;
+		ipaConfig.hwCaps.isYuvOutput =
+			PixelFormatInfo::info(pipeConfig->captureFormat).colourEncoding ==
+			PixelFormatInfo::ColourEncodingYUV;
 
 		uint8_t bayerOrder = static_cast<uint8_t>(
 			data->sensor_->bayerOrder(Transform::Identity));
