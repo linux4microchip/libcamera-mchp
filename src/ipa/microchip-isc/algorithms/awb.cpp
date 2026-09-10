@@ -496,6 +496,17 @@ void Awb::process(IPAContext &context,
 		 * Increase the effective weight proportionally to divergence,
 		 * capped at 0.8 to retain some grey-world stability.
 		 */
+
+		/*
+		 * Pre-blend means for CT estimation. The highlight blend skews
+		 * chromaticity toward near-saturated pixels and rails the CT
+		 * estimate on mixed-lit scenes; gains still use the blend below.
+		 */
+		float ctMeanR = meanR;
+		float ctMeanGR = meanGR;
+		float ctMeanGB = meanGB;
+		float ctMeanB = meanB;
+
 		if (highlightWeight_ > 0.0f) {
 			/*
 			 * Sample the highlight means on the same zero-point as
@@ -541,16 +552,15 @@ void Awb::process(IPAContext &context,
 		}
 
 		/* avgGreen for Robertson CT estimation only */
-		float meanG = (meanGR + meanGB) / 2.0f;
+		float ctMeanG = (ctMeanGR + ctMeanGB) / 2.0f;
 
 		/*
-		 * Estimate colour temperature from gain-undone channel means
-		 * using Robertson's (1968) 31-point Planckian locus method
-		 * with the sensor-to-XYZ matrix from the tuning file. AWB is
-		 * the single authority for CT; CCM reads activeState.awb.ct.
+		 * Robertson (1968) CT from the raw pre-WB means and the
+		 * tuning-file sensor-to-XYZ matrix. AWB owns CT; CCM reads
+		 * activeState.awb.ct.
 		 */
 		rawCt = estimateColorTemperature(
-			meanR, meanG, meanB,
+			ctMeanR, ctMeanG, ctMeanB,
 			&context.configuration.sensor.ctColorMatrix);
 
 		/*
