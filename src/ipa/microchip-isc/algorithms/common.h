@@ -81,9 +81,6 @@ constexpr std::array<float, 9> kDefaultCtMatrix = {
 float calculateChannelMean(const mchp_isc_stat_buffer *stats, unsigned int channel);
 float calculateHighlightMean(const mchp_isc_stat_buffer *stats, unsigned int channel,
 			     unsigned int pedestalBins = 0);
-void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			   std::array<float, 64> &lutCdf,
-			   unsigned int pedestalBins = 0);
 
 float calculateClipping(const mchp_isc_stat_buffer *stats);
 float calculateHistogramSpread(const mchp_isc_stat_buffer *stats,

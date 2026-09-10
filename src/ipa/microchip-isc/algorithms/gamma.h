@@ -38,10 +38,7 @@ private:
 			       bool bipartite,
 			       float toeInput,
 			       float rolloffStart,
-			       const std::array<float, 64> *cdf,
-			       float cdfStrength,
-			       float rolloffSlopeFactor = 0.35f,
-			       float cdfClipLimit = 3.0f);
+			       float rolloffSlopeFactor = 0.35f);
 
 	/*
 	 * Tuning parameters — all set by init() from YAML.
@@ -71,15 +68,6 @@ private:
 	/* Highlight roll-off start normalised [0.5-1.0], 1.0=disabled (YAML: tone_rolloff_start) */
 	float toneRolloffStart_ = 0.85f;
 	float rolloffSlopeFactor_ = 0.35f;
-	/* CLAHE clip limit: bin freq above this multiple of mean is redistributed.
-	 * 1.0 = no clipping (full equalisation, harsh). 3.0 = gentle (default). */
-	float cdfClipLimit_ = 3.0f;
-
-	/* CDF blend strength [0-1] (YAML: cdf_strength) */
-	float cdfStrength_ = 0.05f;
-	/* Scene-adaptive CDF boost for flat/over-bright scenes */
-	float adaptiveCdfTrigger_ = 0.25f;  // spread below this triggers boost
-	float adaptiveCdfMaxBoost_ = 0.50f;  // maximum boost to add
 };
 
 } /* namespace ipa::microchip_isc */

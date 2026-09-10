@@ -99,8 +99,8 @@ float calculateHighlightMean(const mchp_isc_stat_buffer *stats,
  * \param[out] combined 512-element array of weighted per-bin counts
  * \param[out] total    Sum of all weighted counts
  *
- * Shared by calculateHistogramSpread(), calculateLuminanceCdf(), and
- * calculateWeightedLuminance() to avoid rebuilding the same combined
+ * Shared by calculateHistogramSpread() and calculateWeightedLuminance()
+ * to avoid rebuilding the same combined
  * histogram independently in each caller. The loop is channel-outer /
  * bin-inner so each channel's contiguous bin array is read sequentially,
  * maximising cache efficiency on the Cortex-A7.
@@ -121,80 +121,6 @@ static void buildCombinedLuminanceHistogram(const mchp_isc_stat_buffer *stats,
 			combined[i] += v;
 			total += v;
 		}
-	}
-}
-
-/**
- * \brief Compute a 64-point normalised luminance CDF aligned to LUT entries
- * \param[in] stats Pointer to ISC statistics buffer
- * \param[out] lutCdf 64-element array filled with CDF values in [0, 1]
- *
- * Builds a combined luminance histogram by weighting the four Bayer channels
- * with BT.601 coefficients (same as calculateHistogramSpread), then computes
- * the normalised cumulative distribution function (CDF) at the midpoint of
- * each of the 64 gamma LUT input ranges.
- *
- * The ISC gamma LUT has 64 entries; entry i covers the 10-bit input range
- * [i*16 .. (i+1)*16 - 1].  The ISC histogram has 512 bins; bin k represents
- * input values [k*2 .. k*2+1].  Therefore LUT entry i corresponds to
- * histogram bins [i*8 .. (i+1)*8 - 1].  The CDF is sampled at the midpoint
- * bin i*8 + 4, giving the fraction of pixels with luminance below the
- * centre of that LUT entry's input range.
- *
- * lutCdf[j] = fraction of pixels with intensity ≤ (j*16 + 8) / 1023
- *
- * When blended with a power-law tone curve in computeLut(), a cdf_strength
- * of 1.0 produces full histogram equalisation (uniform output distribution),
- * while 0.0 leaves the power law unchanged.  Intermediate values give a
- * locally-adaptive curve that stretches low-contrast histogram regions.
- *
- * Degenerate case (all bins zero): fills lutCdf with a linear ramp [0..1]
- * so computeLut() degenerates gracefully to the pure power-law path.
- */
-void calculateLuminanceCdf(const mchp_isc_stat_buffer *stats,
-			   std::array<float, 64> &lutCdf,
-			   unsigned int pedestalBins)
-{
-	std::array<float, kHistBins> combined;
-	float total;
-	buildCombinedLuminanceHistogram(stats, combined, total);
-
-	/*
-	 * Exclude the black-level pedestal from the CDF.  The pedestal bins
-	 * hold the sensor black floor, not scene content; counting them
-	 * inflates the low end of the CDF and, once blended into the tone
-	 * curve, lifts true blacks off zero.  Accumulate and normalise over
-	 * signal pixels only (bins >= pedestalBins), matching the pedestal
-	 * handling in calculateHistogramSpread().
-	 */
-	float pedestalCount = 0.0f;
-	for (unsigned int i = 0; i < std::min(pedestalBins, (unsigned int)kHistBins); i++)
-		pedestalCount += combined[i];
-	float signalTotal = total - pedestalCount;
-
-	if (signalTotal < 1.0f) {
-		/* Degenerate: produce a linear ramp so the power-law takes over */
-		for (unsigned int j = 0; j < 64; j++)
-			lutCdf[j] = static_cast<float>(j) / 63.0f;
-		return;
-	}
-
-	/*
-	 * Build cumulative sum over signal bins, then sample at midpoint of
-	 * each LUT entry.  LUT entry j midpoint → histogram bin j*8 + 4.
-	 * Entries whose midpoint falls in the pedestal region accumulate
-	 * nothing and map to ~0, keeping shadows anchored at black.
-	 */
-	float cumulative = 0.0f;
-	unsigned int histBin = pedestalBins;
-	for (unsigned int j = 0; j < 64; j++) {
-		unsigned int midBin = j * 8 + 4;
-		/* Accumulate up to (and including) the midpoint bin */
-		while (histBin <= midBin && histBin < kHistBins) {
-			cumulative += combined[histBin];
-			histBin++;
-		}
-		lutCdf[j] = cumulative / signalTotal;
 	}
 }
 

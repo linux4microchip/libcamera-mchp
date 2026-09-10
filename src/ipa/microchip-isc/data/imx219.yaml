@@ -238,26 +238,6 @@ algorithms:
       target_output: 0.447
       # Temporal smoothing [0.0-1.0]. Higher values reduce flicker.
       smoothing_factor: 0.3
-      # Histogram CDF blend strength [0.0-1.0].
-      # 0.0 = pure power-law (no local adaptation).
-      # 0.25 = 25% histogram equalisation blended with 75% power-law.
-      #        Compresses bright bunched pixels (L=180-220) downward,
-      #        lifts shadow detail — gives mobile-like dynamic range
-      #        on scenes where the full histogram is not used.
-      # 1.0 = full histogram equalisation (maximum local contrast).
-      cdf_strength: 0.0
-      # Scene-adaptive CDF boost: raises CDF blend strength when the scene
-      # spread is low (flat/over-bright), stretching a compressed histogram
-      # toward full range.
-      #   trigger:   boost when P5-P95 spread < this fraction of histogram
-      #   max_boost: maximum additional CDF strength to add
-      # max_boost 0.0 disables the boost, so cdf_strength=0.0 above means CDF
-      # equalisation is off; the trigger is retained for tuning.
-      adaptive_cdf_trigger: 0.30
-      adaptive_cdf_max_boost: 0.0
-      # CLAHE clip limit: bins above this multiple of mean frequency
-      # are redistributed. 3.0=gentle natural. 1.5=stronger.
-      cdf_clip_limit: 2.0
       # Normalised luminance floor below which adaptive gamma update is skipped.
       dark_scene_threshold: 0.01
       # Normalised input breakpoint for bipartite linear toe (SAMA7G5 only).
@@ -270,7 +250,6 @@ algorithms:
       #   0.75 = aggressive (mobile-like, ~L=190/255 maps to ~L=168)
       #   0.85 = moderate  (outdoor default, less compression)
       #   1.0  = disabled  (pure gamma 2.2, no tone mapping)
-      # Use 0.75 with cdf_strength=0.25 for mobile-like rendering.
       tone_rolloff_start: 0.75
       # Shoulder slope compression factor [0.05, 1.0].
       # The gamma derivative at rolloffStart is multiplied by this.

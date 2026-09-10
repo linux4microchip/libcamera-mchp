@@ -53,14 +53,6 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 	rolloffSlopeFactor_ = std::clamp(
 		tuningData["tone_rolloff_slope"].get<float>(rolloffSlopeFactor_),
 		0.05f, 1.0f);
-	cdfStrength_ = tuningData["cdf_strength"].get<float>(cdfStrength_);
-	cdfStrength_ = std::clamp(cdfStrength_, 0.0f, 1.0f);
-	adaptiveCdfTrigger_ = tuningData["adaptive_cdf_trigger"].get<float>(adaptiveCdfTrigger_);
-	adaptiveCdfMaxBoost_ = tuningData["adaptive_cdf_max_boost"].get<float>(adaptiveCdfMaxBoost_);
-	adaptiveCdfTrigger_ = std::clamp(adaptiveCdfTrigger_, 0.0f, 1.0f);
-	adaptiveCdfMaxBoost_ = std::clamp(adaptiveCdfMaxBoost_, 0.0f, 0.70f);
-	cdfClipLimit_ = std::clamp(
-		tuningData["cdf_clip_limit"].get<float>(cdfClipLimit_), 1.0f, 10.0f);
 
 	LOG(ISC_Gamma, Debug)
 		<< "Gamma initialized: gamma=" << gamma_
@@ -84,7 +76,7 @@ int Gamma::configure(IPAContext &context,
 	context.activeState.gamma.gammaEff = gamma_;
 	/* No histogram available at configure time — pure power-law only */
 	computeLut(gamma_, context.activeState.gamma.lutB, bipartite,
-		   toeInput_, toneRolloffStart_, nullptr, 0.0f);
+		   toeInput_, toneRolloffStart_);
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutValid = true;
@@ -123,8 +115,7 @@ int Gamma::configure(IPAContext &context,
  */
 void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 		       bool bipartite, float toeInput, float rolloffStart,
-		       const std::array<float, 64> *cdf, float cdfStrength,
-		       float rolloffSlopeFactor, float cdfClipLimit)
+		       float rolloffSlopeFactor)
 {
 	constexpr float kInputMax = 1023.0f;
 	const float invGamma = 1.0f / gammaExp;
@@ -176,48 +167,6 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 			y = std::pow(x, invGamma);
 		}
 
-		/*
-		 * CLAHE-style clipped CDF blend.
-		 *
-		 * Standard CDF blend (cdfClipLimit=0) maps the histogram CDF
-		 * directly as a tone curve. For strongly bunched histograms
-		 * (low entropy / flat scenes) this over-equalises: a single
-		 * tone range occupies the entire output, causing posterisation.
-		 *
-		 * Clip limiting (CLAHE's key innovation): any histogram bin
-		 * whose frequency exceeds cdfClipLimit × mean_frequency is
-		 * clipped and the excess redistributed uniformly. This bounds
-		 * the local contrast amplification and produces a natural-
-		 * looking redistribution even at high cdfStrength values.
-		 *
-		 * cdfClipLimit=1.0: full equalization (harsh, for flat scenes)
-		 * cdfClipLimit=3.0: gentle (default, natural-looking)
-		 * cdfClipLimit=0.0: disabled (same as no CDF blend)
-		 */
-		if (cdf != nullptr && cdfStrength > 0.0f) {
-			float cdfVal = (*cdf)[i];
-
-			/* Apply clip limit if requested */
-			if (cdfClipLimit > 0.0f) {
-				/*
-				 * cdf[] contains per-entry CDF values. Compute
-				 * the per-bin frequency as the gradient of the
-				 * CDF and clip it. Use the pre-computed CDF as
-				 * an approximation of the clipped CDF.
-				 * For the LUT purpose we linearly compress the
-				 * CDF values above 0.5 to prevent the upper
-				 * range from being over-stretched.
-				 */
-				float limit = cdfClipLimit / (cdfClipLimit + 1.0f);
-				if (cdfVal > limit)
-					cdfVal = limit +
-						 (cdfVal - limit) /
-							 (1.0f + (cdfVal - limit) / (1.0f - limit));
-			}
-
-			y = (1.0f - cdfStrength) * y + cdfStrength * cdfVal;
-		}
-
 		lut[i] = static_cast<uint32_t>(
 			std::clamp(std::round(y * kInputMax), 0.0f, kInputMax));
 	}
@@ -243,7 +192,7 @@ void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 void Gamma::process(IPAContext &context,
 		    const uint32_t frame,
 		    IPAFrameContext &frameContext,
-		    const mchp_isc_stat_buffer *stats,
+		    [[maybe_unused]] const mchp_isc_stat_buffer *stats,
 		    [[maybe_unused]] ControlList &metadata)
 {
 	auto &gammaState = context.activeState.gamma;
@@ -257,47 +206,10 @@ void Gamma::process(IPAContext &context,
 		return;
 
 	/*
-	 * Scene-adaptive CDF boost.
-	 *
-	 * When the scene histogram is narrow (flat/over-bright scene, e.g.
-	 * all pixels bunched at L=180-220 giving spread < adaptiveCdfTrigger_),
-	 * automatically increase the effective CDF blend strength beyond the
-	 * base cdfStrength_ value.  This redistributes the compressed histogram
-	 * to use the full output range, matching what CLAHE does in software.
-	 *
-	 * Adaptive boost formula:
-	 *   boost = max(0, (adaptiveCdfTrigger_ - spread) / adaptiveCdfTrigger_)
-	 *           * adaptiveCdfMaxBoost_
-	 *
-	 * Example (adaptiveCdfTrigger_=0.25, maxBoost_=0.50):
-	 *   spread=0.04 (flat scene):  boost = (0.25-0.04)/0.25 * 0.50 = 0.42
-	 *   spread=0.25 (normal):      boost = 0
-	 *   spread=0.50 (good range):  boost = 0
-	 *
-	 * The effective cdf strength = min(cdfStrength_ + boost, 0.60) to
-	 * prevent over-equalisation artefacts.
+	 * Nothing to adapt without a gamma nudge — the LUT from configure()
+	 * (pure power-law) is used as-is.
 	 */
-	float spread = frameContext.scene.spread;
-	float adaptiveCdfBoost = 0.0f;
-	/*
-	 * cdf_strength is the master switch for histogram equalisation. When
-	 * it is zero the scene-adaptive boost stays off too, so cdf_strength: 0
-	 * fully disables CDF blending rather than leaving flat scenes to
-	 * silently re-enable it.
-	 */
-	if (cdfStrength_ > 0.0f && adaptiveCdfTrigger_ > 0.0f &&
-	    spread < adaptiveCdfTrigger_) {
-		float flatness = (adaptiveCdfTrigger_ - spread) / adaptiveCdfTrigger_;
-		adaptiveCdfBoost = flatness * adaptiveCdfMaxBoost_;
-	}
-	float cdfStrengthEffective = std::clamp(cdfStrength_ + adaptiveCdfBoost,
-						0.0f, 0.60f);
-
-	/*
-	 * When both strength and effective cdf are zero there is nothing to
-	 * adapt — the LUT from configure() (pure power-law) is used as-is.
-	 */
-	if (strength_ == 0.0f && cdfStrengthEffective == 0.0f)
+	if (strength_ == 0.0f)
 		return;
 
 	/*
@@ -308,15 +220,7 @@ void Gamma::process(IPAContext &context,
 	float lum = frameContext.scene.luminance;
 	float lumNorm = lum / kHistogramMax;
 
-	/*
-	 * Adaptive gamma exponent update (only when strength_ > 0).
-	 * When strength_==0 but cdfStrength_>0 we skip this block and keep
-	 * gammaEff at its current smoothed value, applying only CDF blending.
-	 * This allows pure CDF-driven local contrast without global gamma shift.
-	 */
-	if (strength_ > 0.0f &&
-	    lumNorm > darkSceneThreshold_ &&
-	    lumNorm > 0.0f && lumNorm < 1.0f) {
+	if (lumNorm > darkSceneThreshold_ && lumNorm > 0.0f && lumNorm < 1.0f) {
 		/*
 		 * Compute the gamma exponent that maps the current linear
 		 * luminance to targetOutput_:
@@ -336,44 +240,20 @@ void Gamma::process(IPAContext &context,
 			<< " lumNorm=" << lumNorm
 			<< " gammaAdapt=" << gammaAdapt
 			<< " gammaEff=" << gammaEff
-			<< " cdfStrength=" << cdfStrength_
 			<< " bipartite=" << context.configuration.hw.hasBipartiteGamma;
-	} else if (strength_ > 0.0f && lumNorm <= darkSceneThreshold_) {
+	} else if (lumNorm <= darkSceneThreshold_) {
 		LOG(ISC_Gamma, Debug) << "Scene too dark, skipping gamma adapt";
 	}
 
 	bool bipartite = context.configuration.hw.hasBipartiteGamma;
 
 	/*
-	 * CDF computation (only when cdfStrength_ > 0).
-	 * Shared by both the adaptive-gamma path and the pure-CDF path.
-	 */
-	std::array<float, 64> lutCdf;
-	const std::array<float, 64> *cdfPtr = nullptr;
-	if (cdfStrengthEffective > 0.0f) {
-		/*
-		 * The CDF is a single cross-channel luminance distribution, so a
-		 * scalar pedestal (not the per-channel black levels) is the right
-		 * zero-point here — the per-channel offsets only matter when each
-		 * Bayer channel mean is corrected individually (processStats()).
-		 */
-		unsigned int pedestalBins =
-			context.configuration.hw.hasDpc ? 0 :
-			context.configuration.sensor.blackLevel / 2;
-		calculateLuminanceCdf(stats, lutCdf, pedestalBins);
-		cdfPtr = &lutCdf;
-	}
-
-	/*
-	 * Compute the new LUT from the (updated) gammaEff and CDF, then
-	 * blend with the previous LUT for temporal smoothing.
-	 * Use cdfStrengthEffective (base + adaptive boost) so the LUT
-	 * automatically stretches flat/over-bright scenes.
+	 * Compute the new LUT from the updated gammaEff, then blend with the
+	 * previous LUT for temporal smoothing.
 	 */
 	std::array<uint32_t, 64> newLut;
 	computeLut(gammaState.gammaEff, newLut, bipartite, toeInput_,
-		   toneRolloffStart_, cdfPtr, cdfStrengthEffective,
-		   rolloffSlopeFactor_, cdfClipLimit_);
+		   toneRolloffStart_, rolloffSlopeFactor_);
 
 	for (unsigned int i = 0; i < 64; i++) {
 		float smoothed = smoothingFactor_ * static_cast<float>(gammaState.lutB[i]) +
