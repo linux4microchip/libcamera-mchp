@@ -728,30 +728,11 @@ void Agc::process(IPAContext &context,
 	 */
 
 	/*
-	 * Scene entropy-based automatic EV bias.
-	 *
-	 * Uniformly bright scenes (white walls, overcast sky, lit studio)
-	 * have low histogram entropy: nearly all pixels cluster at one
-	 * luminance level. The AGC correctly exposes for the mean, but the
-	 * result looks washed-out because there is no headroom for highlights.
-	 *
-	 * When entropy falls below scene_ev_threshold AND the luminance is
-	 * above 1.5× the metering target, the scene is globally over-bright.
-	 * Apply scene_ev_bias (default -1.5 stops) to under-expose and create
-	 * headroom for the gamma CDF stretch that follows.
-	 *
-	 * The combined effect with an aggressive CDF blend is equivalent to
-	 * the first pass of CLAHE: reduce exposure to avoid clipping, then
-	 * redistribute the histogram to fill the full output range.
-	 */
-	/*
-	 * Dual-condition scene classifier for flat/bright scenes.
-	 *
-	 * When P10 of the pre-gamma histogram exceeds scene_bright_p10 (few
-	 * shadow pixels) AND the normalised histogram entropy is below
-	 * scene_ev_threshold (compressed luminance distribution), the scene
-	 * is globally over-bright.  Apply scene_ev_bias stops of deliberate
-	 * under-exposure to create headroom for the CDF tone mapping.
+	 * Flat/over-bright scene classifier: few shadow pixels (P10 above
+	 * scene_bright_p10) and a compressed luminance distribution (entropy
+	 * below scene_ev_threshold) mean the scene is globally over-bright.
+	 * Under-expose by scene_ev_bias stops to keep highlight headroom for
+	 * the gamma contrast S-curve and avoid clipping.
 	 */
 	float sceneEvAdjust = 0.0f;
 	if (stats && !inStartup && !rawOutput) {

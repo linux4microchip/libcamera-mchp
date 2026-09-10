@@ -127,9 +127,11 @@ algorithms:
       #   threshold: 0.55 = 55% of 511 bins (~bin 281, L=170/255 post-gamma)
       #   strength:  1.0  = full correction
       highlight_p85_threshold: 0.35
-      highlight_p85_strength: 1.0
-      # EV bias: -0.5 stops under-exposes by design, like mobile.
-      # Combined with P85 protection this gives mobile-like metering.
+      # Partial correction: full strength stacked with scene_ev_bias drove the
+      # metered mean onto the noise floor (was 1.0).
+      highlight_p85_strength: 0.5
+      # Global operator EV lever, applied once on top of the lux target.
+      # 0 = neutral; one lens for overall exposure without touching the biases.
       ev_default: 0.0
       # Zone metering: highlight-avoidance weight strength [0-1].
       # 0=uniform mean (traditional), 1=full highlight de-emphasis (mobile).
@@ -149,7 +151,9 @@ algorithms:
       # When entropy < threshold AND luminance > 1.5x target,
       # the scene is flat/bright. Apply scene_ev_bias stops.
       scene_ev_threshold: 1.0  # always use P10 check only
-      scene_ev_bias: -1.5
+      # -0.5 stop: enough headroom for flat/bright scenes without pulling the
+      # metered mean down onto the histogram noise floor (was -1.5).
+      scene_ev_bias: -0.5
       # P10 of pre-gamma luminance above this = no shadow detail.
       # Calibrated 2026-04-26: bright white-wall indoor scene has P10=24 net bins.
       # Threshold=10 fires on any scene where the shadow floor is above 10 bins
