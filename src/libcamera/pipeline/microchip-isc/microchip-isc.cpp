@@ -1286,8 +1286,7 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 		break;
 	}
 	default:
-		controls->set(cid, 0);
-		break;
+		return -EINVAL;
 	}
 
 	return 0;
