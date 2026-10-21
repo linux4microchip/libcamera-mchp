@@ -130,12 +130,17 @@ def test_single_frame_no_spread():
     print('test_single_frame_no_spread: OK (n=1 => no spread, no raise)')
 
 
-def _emit_awb_yaml(tmp, section):
-    """Emit just the Awb section through the real YAML writer; return bytes."""
+def _emit_awb_yaml(tmp, name, section):
+    """Emit just the Awb section through the real YAML writer; return bytes.
+
+    Each call targets a fresh, absent file so both variants take the writer's
+    first-time full-write path -- comparing two merge-into-existing passes would
+    test the writer's round-trip styling, not the diagnostic stripping.
+    """
     class _Stub:
         out_name = 'Awb'
     m = _Stub()
-    out_path = tmp / 'awb.yaml'
+    out_path = tmp / name
     MicrochipYamlOutput().write(str(out_path), {m: section}, [m])
     return out_path.read_bytes()
 
@@ -146,9 +151,10 @@ def test_yaml_byte_identical(tmp):
     section = awb.process({'awb': {}}, images, {})
     assert '_awb_variance' in section, 'diagnostic missing from module output'
 
-    with_var = _emit_awb_yaml(tmp, section)
-    without = _emit_awb_yaml(tmp, {k: v for k, v in section.items()
-                                   if k != '_awb_variance'})
+    with_var = _emit_awb_yaml(tmp, 'awb_with.yaml', section)
+    without = _emit_awb_yaml(tmp, 'awb_without.yaml',
+                             {k: v for k, v in section.items()
+                              if k != '_awb_variance'})
     assert with_var == without, 'variance diagnostic changed the emitted YAML'
     assert b'reference_gains_table' in with_var, 'AWB table missing from YAML'
     assert b'_awb_variance' not in with_var and b'r_rel_std' not in with_var, \

@@ -14,10 +14,10 @@
 #   recovery      read_noise_var, shot_slope and gain_exponent are recovered from
 #                 synthetic flats generated with known injected read+shot noise
 #                 that amplifies as gain**(2*exp).
-#   byte-identity the per-gain fits / fit-quality diagnostics never reach the
-#                 emitted YAML; the tuning file's 'modules:' NoiseReduction block
-#                 carries only the three runtime constants and the IPA
-#                 'algorithms:' list carries no noise section at all.
+#   parked        the still-path denoiser has no runtime consumer, so the writer
+#                 is parked: the profile never reaches the emitted YAML (no
+#                 'modules:' block, no noise section in 'algorithms:') and no
+#                 sibling file is written. The fit still runs for the advisory.
 #   single-gain   one gain emits the read/shot terms but leaves the exponent at
 #                 the runtime default (not measurable from a single point).
 #   health        the noise advisory passes on a clean fit and warns on a loose
@@ -147,7 +147,7 @@ def test_no_repeats_returns_none(tmp):
     print('test_no_repeats_returns_none: OK (n=1 per gain => nothing emitted)')
 
 
-def test_yaml_stripped_and_diverted(tmp):
+def test_yaml_parked_and_dropped(tmp):
     images = _sweep(tmp, (1.0, 2.0, 3.0), n=12, seed=4)
     out = NoiseMicrochipISC(debug=[]).process({'noise': {}}, images, {})
     assert out is not None and '_per_gain' in out, 'diagnostic missing'
@@ -159,23 +159,22 @@ def test_yaml_stripped_and_diverted(tmp):
     MicrochipYamlOutput().write(str(main), {m: out}, [m])
 
     data = main.read_bytes()
-    # The noise profile lands in the main file's 'modules:' block keyed
-    # NoiseReduction (the key the pipeline handler reads), never in the IPA
-    # 'algorithms:' list and never in a sibling file.
+    # The still-path denoiser has no runtime consumer, so the writer is parked:
+    # the profile is dropped from the file entirely. It appears neither in the
+    # IPA 'algorithms:' list nor in a 'modules:' block, and no sibling file is
+    # written. Only the fit (feeding the health advisory) survives.
     assert b'algorithms:' in data, 'IPA algorithms list missing'
-    algos = data.split(b'modules:')[0]
-    assert b'NoiseReduction' not in algos and b'NoiseProfile' not in algos, \
-        'noise section leaked into the IPA algorithms list'
-    assert b'modules:' in data, 'modules block missing from the tuning file'
-    assert b'NoiseReduction:' in data, 'NoiseReduction module block missing'
-    assert b'read_noise_var' in data and b'gain_exponent' in data, \
-        'module block missing the runtime constants'
+    assert b'modules:' not in data, 'parked noise profile emitted a modules block'
+    assert b'NoiseReduction' not in data and b'NoiseProfile' not in data, \
+        'parked noise section leaked into the tuning file'
+    assert b'read_noise_var' not in data and b'gain_exponent' not in data, \
+        'parked noise constants leaked into the tuning file'
     assert b'_per_gain' not in data and b'gain_exp_r2' not in data, \
         'diagnostic leaked into the emitted YAML'
     assert not main.with_name('imx219_noise.yaml').exists(), \
-        'sibling _noise.yaml must no longer be written'
-    print(f'test_yaml_stripped_and_diverted: OK ({len(data)} bytes, noise in '
-          'modules block, diagnostics stripped, algorithms list clean)')
+        'sibling _noise.yaml must not be written'
+    print(f'test_yaml_parked_and_dropped: OK ({len(data)} bytes, parked '
+          'noise profile dropped from the file, algorithms list clean)')
 
 
 def test_health_advisory():
@@ -218,6 +217,6 @@ if __name__ == '__main__':
         test_recovery(tmp)
         test_single_gain_no_exponent(tmp)
         test_no_repeats_returns_none(tmp)
-        test_yaml_stripped_and_diverted(tmp)
+        test_yaml_parked_and_dropped(tmp)
         test_health_advisory()
     print('all noise-profile tests passed')
