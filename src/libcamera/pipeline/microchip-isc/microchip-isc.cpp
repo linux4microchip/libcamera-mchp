@@ -658,9 +658,7 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	std::unique_ptr<MicrochipISCCameraData> data = std::make_unique<MicrochipISCCameraData>(this, media);
 
 	/* Initialize IPA first */
-	if (data->ipa_) {
-		LOG(MicrochipISC, Debug) << "IPA module loaded successfully";
-	} else {
+	if (!data->ipa_) {
 		LOG(MicrochipISC, Error) << "Failed to load IPA module";
 		return false;
 	}
@@ -675,8 +673,6 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 		case MEDIA_ENT_F_IO_V4L:
 			if (entity->name().find("stats") != std::string::npos) {
 				/* Handle stats device */
-				LOG(MicrochipISC, Debug) << "Found stats device: " << entity->name();
-
 				data->statsDevice_ = std::make_unique<V4L2VideoDevice>(entity);
 				ret = data->statsDevice_->open();
 				if (ret < 0) {
@@ -684,8 +680,6 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 					data->statsDevice_.reset();
 					data->statsEnabled_ = false;
 				} else {
-					LOG(MicrochipISC, Debug) << "Opened stats device: " << entity->name();
-
 					/* Set up stats format immediately after opening */
 					V4L2DeviceFormat statsFormat;
 					statsFormat.fourcc = V4L2PixelFormat(v4l2_fourcc('I', 'S', 'C', 'S'));
@@ -693,34 +687,23 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 					statsFormat.planesCount = 1;
 
 					ret = data->statsDevice_->setFormat(&statsFormat);
-					if (ret < 0) {
+					if (ret < 0)
 						LOG(MicrochipISC, Warning) << "Failed to set stats format: " << ret;
-						/* Continue anyway - format might be set later */
-					} else {
-						LOG(MicrochipISC, Debug) << "Stats device format configured successfully";
-					}
 
-					/* Connect the  bufferReady signal AFTER successful open and format setup */
+					/* Connect bufferReady after open and format setup */
 					data->statsDevice_->bufferReady.connect(this,
 										&PipelineHandlerMicrochipISC::statsBufferReady);
 					data->statsEnabled_ = true;
 					foundStatsVideo = true;
-
-					LOG(MicrochipISC, Debug) << "Connected stats buffer ready signal";
-					LOG(MicrochipISC, Debug) << "Hardware histogram support enabled and ready";
 				}
 			} else {
 				/* Handle main video device (capture) */
-				LOG(MicrochipISC, Debug) << "Found main video device: " << entity->name();
-
 				data->iscVideo_ = std::make_unique<V4L2VideoDevice>(entity);
 				ret = data->iscVideo_->open();
 				if (ret < 0) {
 					LOG(MicrochipISC, Error) << "Failed to open video device: " << strerror(-ret);
 					return false;
 				}
-
-				LOG(MicrochipISC, Debug) << "Opened video device: " << entity->name();
 
 				/* Connect the bufferReady signal for main video */
 				data->iscVideo_->bufferReady.connect(this, &PipelineHandlerMicrochipISC::bufferReady);
@@ -730,7 +713,6 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 
 		case MEDIA_ENT_F_CAM_SENSOR:
 			/* Handle camera sensor */
-			LOG(MicrochipISC, Debug) << "Found camera sensor: " << entity->name();
 			ret = data->initSubdev(entity);
 			if (ret < 0) {
 				LOG(MicrochipISC, Error) << "Failed to initialize sensor: " << entity->name();
@@ -742,7 +724,6 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 		case MEDIA_ENT_F_PROC_VIDEO_SCALER:
 		case MEDIA_ENT_F_PROC_VIDEO_PIXEL_FORMATTER:
 			/* Handle ISC subdevices (scaler, CSI2DC, etc.) */
-			LOG(MicrochipISC, Debug) << "Found ISC subdevice: " << entity->name();
 			ret = data->initSubdev(entity);
 			if (ret < 0) {
 				LOG(MicrochipISC, Error) << "Failed to initialize subdevice: " << entity->name();
@@ -754,12 +735,9 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 			/* Handle any other entities (including unknown types) */
 			if (entity->deviceNode().empty()) {
 				/* Skip entities without device nodes (pure media entities) */
-				LOG(MicrochipISC, Debug) << "Skipping entity without device node: " << entity->name();
 				continue;
 			}
 
-			LOG(MicrochipISC, Debug) << "Processing entity: " << entity->name()
-						 << " (function: 0x" << std::hex << entity->function() << ")";
 			ret = data->initSubdev(entity);
 			if (ret < 0) {
 				LOG(MicrochipISC, Warning) << "Failed to initialize entity: " << entity->name()
@@ -784,14 +762,6 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	if (data->iscSubdev_.size() < 2) { /* Reduced requirement */
 		LOG(MicrochipISC, Error) << "Insufficient ISC subdevices found: " << data->iscSubdev_.size();
 		return false;
-	}
-
-	/* Log stats device status */
-	if (foundStatsVideo) {
-		LOG(MicrochipISC, Debug) << "Hardware histogram support: enabled";
-		LOG(MicrochipISC, Debug) << "Stats device ready for 512-bin Bayer histograms";
-	} else {
-		LOG(MicrochipISC, Debug) << "Hardware histogram support: disabled (stats device not found)";
 	}
 
 	/* Tuning file resolved below; also read for the post-processing modules. */
@@ -901,14 +871,9 @@ bool PipelineHandlerMicrochipISC::match(DeviceEnumerator *enumerator)
 	std::shared_ptr<Camera> camera = Camera::create(std::move(data), cameraId, streams);
 	registerCamera(std::move(camera));
 
-	LOG(MicrochipISC, Info) << "Registered camera '" << cameraId << "'";
-
-	/* Final status summary */
-	if (foundStatsVideo) {
-		LOG(MicrochipISC, Info) << " Camera registration complete with HARDWARE HISTOGRAM support";
-	} else {
-		LOG(MicrochipISC, Info) << " Camera registration complete without hardware histogram support";
-	}
+	LOG(MicrochipISC, Info)
+		<< "Registered camera '" << cameraId << "'"
+		<< (foundStatsVideo ? " with hardware histogram" : "");
 
 	return true;
 }
@@ -957,19 +922,12 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	sensorFormat.code = pipeConfig->code;
 	sensorFormat.size = pipeConfig->nativeSensorSize;
 
-	LOG(MicrochipISC, Debug) << "Configuring subdev chain: native="
-				 << sensorFormat.size.width << "x" << sensorFormat.size.height
-				 << " capture=" << pipeConfig->captureSize.width
-				 << "x" << pipeConfig->captureSize.height;
-
 	/* Configure sensor + full subdevice chain at native sensor size */
 	ret = data->setupFormats(&sensorFormat, V4L2Subdevice::ActiveFormat);
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to setup ISC formats: " << ret;
 		return ret;
 	}
-
-	LOG(MicrochipISC, Debug) << "Sensor/subdev format negotiated: " << sensorFormat.toString();
 
 	V4L2DeviceFormat captureFormat;
 	captureFormat.fourcc = data->iscVideo_->toV4L2PixelFormat(pipeConfig->captureFormat);
@@ -985,9 +943,7 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 	    pipeConfig->captureFormat == formats::YUV420)
 		captureFormat.colorSpace = ColorSpace::Srgb;
 
-	LOG(MicrochipISC, Debug) << "Using validated config: capture="
-				 << captureFormat.size.width << "x" << captureFormat.size.height;
-	LOG(MicrochipISC, Debug) << "Capture format configured: " << captureFormat.toString();
+	LOG(MicrochipISC, Debug) << "Capture format: " << captureFormat.toString();
 
 	ret = data->iscVideo_->setFormat(&captureFormat);
 	if (ret < 0) {
@@ -1084,7 +1040,7 @@ int PipelineHandlerMicrochipISC::configure(Camera *camera, CameraConfiguration *
 					   captureFormat.size,
 					   captureFormat.planes[0].bpl);
 
-	LOG(MicrochipISC, Info) << "Camera configuration complete: " << camera->id();
+	LOG(MicrochipISC, Debug) << "Camera configuration complete: " << camera->id();
 	return 0;
 }
 
@@ -1105,9 +1061,6 @@ int PipelineHandlerMicrochipISC::exportFrameBuffers(Camera *camera, Stream *stre
 {
 	unsigned int count = stream->configuration().bufferCount;
 	MicrochipISCCameraData *data = cameraData(camera);
-
-	LOG(MicrochipISC, Debug) << "Exporting " << count << " frame buffers for stream "
-				 << stream->configuration().toString();
 
 	/* Export buffers for the specified stream */
 	int ret = data->iscVideo_->exportBuffers(count, buffers);
@@ -1350,7 +1303,6 @@ int PipelineHandlerMicrochipISC::processControl(ControlList *controls, unsigned 
 		break;
 	}
 	default:
-		LOG(MicrochipISC, Debug) << "Control not yet supported";
 		controls->set(cid, 0);
 		break;
 	}
@@ -1366,15 +1318,8 @@ int PipelineHandlerMicrochipISC::processControls(MicrochipISCCameraData *data, R
 		processControl(&controls, id, value);
 	}
 
-	if (controls.empty()) {
-		LOG(MicrochipISC, Debug) << "No controls to set";
+	if (controls.empty())
 		return 0;
-	}
-
-	for (const auto &ctrl : controls)
-		LOG(MicrochipISC, Debug)
-			<< "Setting control 0x" << std::hex << ctrl.first
-			<< " to " << ctrl.second.toString();
 
 	int ret = data->iscVideo_->setControls(&controls);
 	if (ret) {
@@ -1413,8 +1358,6 @@ int MicrochipISCCameraData::initSubdev(MediaEntity *entity)
 
 int MicrochipISCCameraData::init()
 {
-	LOG(MicrochipISC, Debug) << "Initializing camera data";
-
 	properties_ = sensor_->properties();
 
 	/* Find maximum supported resolution for the video device */
@@ -1431,8 +1374,6 @@ int MicrochipISCCameraData::init()
 				maxVideoSize.height = sizeRange.max.height;
 		}
 	}
-
-	LOG(MicrochipISC, Debug) << "Maximum video device resolution: " << maxVideoSize.toString();
 
 	/*
 	 * If the video device reports no formats, maxVideoSize stays 0×0.
@@ -1529,7 +1470,6 @@ int MicrochipISCCameraData::init()
 		}
 	}
 
-	LOG(MicrochipISC, Debug) << "About to initialize ControlInfoMap";
 	/* Initialize controlInfo_ */
 	/*
 	 * Static ControlInfoMap advertised to applications.
@@ -1571,15 +1511,11 @@ int MicrochipISCCameraData::init()
 				      },
 				      controls::controls);
 
-	LOG(MicrochipISC, Debug) << "ControlInfoMap initialized";
-
-	LOG(MicrochipISC, Debug) << "Camera data initialized successfully";
-
 	/* Initialize hardware stats device */
 	int ret = initStatsDevice();
-	if (ret < 0) {
+	if (ret < 0)
 		LOG(MicrochipISC, Warning) << "Stats device initialization failed !";
-	}
+
 	return 0;
 }
 
@@ -1607,8 +1543,6 @@ int MicrochipISCCameraData::setupFormats(V4L2SubdeviceFormat *format,
 
 int MicrochipISCCameraData::setupLinks()
 {
-	LOG(MicrochipISC, Debug) << "Setting up links";
-
 	int ret = media_->disableLinks();
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to disable links";
@@ -1636,7 +1570,6 @@ int MicrochipISCCameraData::setupLinks()
 		}
 	}
 
-	LOG(MicrochipISC, Debug) << "Links set up successfully";
 	return 0;
 }
 
@@ -1654,21 +1587,9 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size,
 	 */
 	Size captureSize = size;
 	if (maxVideoSize.width > 0 && maxVideoSize.height > 0) {
-		if (captureSize.width > maxVideoSize.width) {
-			LOG(MicrochipISC, Debug) << "Clamping capture width: "
-						 << captureSize.width << " -> " << maxVideoSize.width;
-			captureSize.width = maxVideoSize.width;
-		}
-		if (captureSize.height > maxVideoSize.height) {
-			LOG(MicrochipISC, Debug) << "Clamping capture height: "
-						 << captureSize.height << " -> " << maxVideoSize.height;
-			captureSize.height = maxVideoSize.height;
-		}
+		captureSize.width = std::min(captureSize.width, maxVideoSize.width);
+		captureSize.height = std::min(captureSize.height, maxVideoSize.height);
 	}
-
-	LOG(MicrochipISC, Debug) << "Trying pipeline: code=" << code
-				 << " sensor=" << size.toString()
-				 << " capture=" << captureSize.toString();
 
 	/*
 	 * Negotiate the subdevice chain at the NATIVE sensor size. This
@@ -1683,10 +1604,8 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size,
 	format.size = size;
 
 	int ret = setupFormats(&format, V4L2Subdevice::TryFormat);
-	if (ret < 0) {
-		LOG(MicrochipISC, Debug) << "Format not supported for this pipeline";
+	if (ret < 0)
 		return;
-	}
 
 	/*
 	 * format.size is now the hardware-negotiated native sensor output size.
@@ -1731,9 +1650,6 @@ void MicrochipISCCameraData::tryPipeline(unsigned int code, const Size &size,
 		config.outputSizes = SizeRange{ captureSize, captureSize };
 
 		configs_.push_back(config);
-		LOG(MicrochipISC, Debug) << "Added configuration: " << pixelFormat.toString()
-					 << " capture=" << captureSize.toString()
-					 << " native=" << nativeSize.toString();
 	}
 }
 
@@ -1754,11 +1670,6 @@ int MicrochipISCCameraData::initStatsDevice()
 		return 0;
 	}
 
-	/* Log the stats format details */
-	LOG(MicrochipISC, Debug) << "Stats device format: " << statsFormat.fourcc
-				 << " size: " << statsFormat.size.width << "x" << statsFormat.size.height;
-
-	LOG(MicrochipISC, Debug) << "ISC hardware stats device ready - signal connected and waiting for histogram data";
 	return 0;
 }
 
@@ -2100,7 +2011,6 @@ void PipelineHandlerMicrochipISC::completeFrameBuffer(MicrochipISCCameraData *da
 
 void PipelineHandlerMicrochipISC::statsBufferReady(FrameBuffer *buffer)
 {
-	LOG(MicrochipISC, Debug) << "statsBufferReady called cookie=" << buffer->cookie();
 	MicrochipISCCameraData *data = activeData_;
 	if (!data) {
 		LOG(MicrochipISC, Error) << "No active camera data";

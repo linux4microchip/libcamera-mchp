@@ -166,7 +166,7 @@ void IscPostProcessor::loadConfig(const YamlObject &config)
 			  [](const CtLscGrid &a, const CtLscGrid &b) {
 				  return a.ct < b.ct;
 			  });
-		LOG(IscPostProc, Info)
+		LOG(IscPostProc, Debug)
 			<< "Loaded " << lscPerCt_.size() << " per-CT " << gw << "x"
 			<< gh << " lens-shading map(s)";
 		return;
@@ -180,7 +180,7 @@ void IscPostProcessor::loadConfig(const YamlObject &config)
 		return;
 	}
 
-	LOG(IscPostProc, Info)
+	LOG(IscPostProc, Debug)
 		<< "Loaded " << gw << "x" << gh << " lens-shading map";
 }
 
@@ -203,7 +203,7 @@ void IscPostProcessor::loadAutoLevelsConfig(const YamlObject &config)
 	}
 
 	autoLevels_ = al;
-	LOG(IscPostProc, Info)
+	LOG(IscPostProc, Debug)
 		<< "AutoLevels " << (al.enable ? "enabled" : "disabled")
 		<< " black=" << al.blackTarget << " white=" << al.whiteTarget
 		<< " maxGain=" << al.maxGain;
