@@ -3,9 +3,8 @@
 #
 # mchp_capture.sh — Calibration image capture for Microchip ISC IPA tuning
 #
-# Run this script DIRECTLY ON THE BOARD (via serial console or local terminal).
-# Do NOT run it over SSH — the SSH timeout/disconnect path causes mchpcam-still
-# to receive SIGKILL or SIGHUP, leaving the sensor in an unrecoverable state.
+# Runs on the board. Over SSH it auto-detaches and logs to a file so a dropped
+# connection cannot kill a capture mid-stream. Pass --foreground to opt out.
 #
 # After capture, copy the output files to the host:
 #   scp root@<board-ip>:/tmp/calib/*.jpg /path/to/calib_images/
@@ -47,6 +46,8 @@
 #       --dry-run         Print the capture plan (filenames + mchpcam-still
 #                         commands) without touching the camera. Use to verify a
 #                         gain × frame sweep before committing board time.
+#       --foreground      Keep output on the terminal instead of auto-detaching
+#                         over SSH. SIGHUP is ignored either way.
 #   -h, --help            Show this help
 #
 # Filename convention (parsed by microchip_isc_lt.py):
@@ -86,6 +87,10 @@
 
 set -e
 
+# Ignore SIGHUP so a dropped terminal cannot kill a capture mid-stream, which is
+# what locks the sensor. Children inherit the ignored disposition.
+trap '' HUP
+
 # ── Defaults ──────────────────────────────────────────────────────────────────
 TARGET="grey_card"
 CCT=""
@@ -113,12 +118,18 @@ N_FRAMES=3
 # Print the capture plan (filenames + mchpcam-still commands) without touching
 # the camera. Use to verify a sweep before committing board time.
 DRY_RUN=0
-# Refuse to capture over an SSH session by default: a disconnect delivers
-# SIGHUP/SIGKILL mid-capture and locks up the ISC/sensor. Run on the board
-# console, or under tmux/screen/nohup, or pass --allow-ssh to override.
+# Keep output on the terminal instead of auto-detaching over SSH.
+FOREGROUND=0
+# Back-compat no-op: SSH capture is safe by default now (auto-detached).
 ALLOW_SSH=0
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
+# Save argv for the SSH re-exec below; the parse loop consumes "$@".
+ORIG_ARGS=
+for _a in "$@"; do
+    ORIG_ARGS="$ORIG_ARGS '$(printf '%s' "$_a" | sed "s/'/'\\\\''/g")'"
+done
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -t|--target)    TARGET="$2";  shift 2 ;;
@@ -136,6 +147,7 @@ while [ $# -gt 0 ]; do
         --noir)         NOIR=1;       shift   ;;
         --raw)          RAW=1;        shift   ;;
         --dry-run)      DRY_RUN=1;    shift   ;;
+        --foreground)   FOREGROUND=1; shift   ;;
         --allow-ssh)    ALLOW_SSH=1;  shift   ;;
         --timeout)      TIMEOUT="$2"; shift 2 ;;
         -h|--help)
@@ -146,6 +158,15 @@ while [ $# -gt 0 ]; do
             exit 1 ;;
     esac
 done
+
+# Sweep temp files on any exit and, when detached, drop the done-marker the
+# watcher polls for (written on success or failure so it never waits forever).
+# Installed before validation so an early failure still releases the watcher.
+_cleanup() {
+    rm -f "$OUTDIR"/_calib_tmp_* "$OUTDIR"/_calib_stdout_* 2>/dev/null || true
+    [ -n "$MCHP_DONE" ] && : > "$MCHP_DONE" 2>/dev/null || true
+}
+trap _cleanup EXIT INT TERM
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 if [ -z "$CCT" ]; then
@@ -199,19 +220,35 @@ else
     GAIN_LIST="$GAIN"
 fi
 
+# ── Detach over SSH ───────────────────────────────────────────────────────────
+# Args are validated above, so a bad invocation fails here on the terminal
+# rather than silently in the detached logfile. Over SSH, re-exec in a new
+# session logging to a file so neither a disconnect (SIGHUP) nor a killed
+# session (SIGKILL) can reach the capture mid-stream. --foreground opts out;
+# MCHP_DETACHED breaks the re-exec loop; a dry-run never detaches.
+if [ -z "$MCHP_DETACHED" ] && [ "$FOREGROUND" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && \
+   { [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; }; then
+    mkdir -p "$OUTDIR"
+    _log="$OUTDIR/capture_$(date +%Y%m%d_%H%M%S).log"
+    _done="$OUTDIR/.capture_done"
+    rm -f "$_done"
+    echo "SSH detected — detaching so a disconnect cannot lock the sensor."
+    echo "  log   : $_log"
+    echo "  watch : tail -f $_log"
+    echo "  done  : $_done appears when finished"
+    echo "  (pass --foreground to keep output on this terminal)"
+    if command -v setsid > /dev/null 2>&1; then
+        eval "MCHP_DETACHED=1 MCHP_DONE=\"\$_done\" setsid sh \"\$0\" $ORIG_ARGS > \"\$_log\" 2>&1 &"
+    else
+        eval "MCHP_DETACHED=1 MCHP_DONE=\"\$_done\" nohup sh \"\$0\" $ORIG_ARGS > \"\$_log\" 2>&1 &"
+    fi
+    echo "  pid   : $!"
+    exit 0
+fi
+
 # ── Check prerequisites ───────────────────────────────────────────────────────
 # A dry-run only prints the plan, so it needs neither the app nor the camera.
 if [ "$DRY_RUN" -eq 0 ]; then
-    # Refuse an SSH session unless explicitly overridden: a disconnect kills the
-    # capture mid-stream and locks up the ISC/sensor.
-    if [ "$ALLOW_SSH" -eq 0 ] && \
-       { [ -n "$SSH_CONNECTION" ] || [ -n "$SSH_CLIENT" ] || [ -n "$SSH_TTY" ]; }; then
-        echo "ERROR: refusing to capture over SSH (a disconnect locks the sensor)." >&2
-        echo "  Run on the board console, or under tmux/screen/nohup, or pass" >&2
-        echo "  --allow-ssh if you have a persistent session." >&2
-        exit 1
-    fi
-
     if ! command -v mchpcam-still > /dev/null 2>&1; then
         echo "ERROR: mchpcam-still not found" >&2
         echo "  Deploy libcamera-mchp to the board first." >&2
