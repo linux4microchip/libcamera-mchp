@@ -68,6 +68,9 @@ private:
 	 */
 	float saturation_ = 0.6f;
 
+	/* CCM->CBHS saturation coupling coefficient (YAML: sat_boost_factor) */
+	float satBoostFactor_ = 0.25f;
+
 	/* ---- Runtime state — NOT tuning params ---- */
 	float lastCt_ = 0.0f;
 };

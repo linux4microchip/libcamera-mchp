@@ -211,6 +211,8 @@ algorithms:
     smoothing_factor: 0.7
       # Fallback CT for NoIR: slightly warmer than standard due to IR shift.
     ct_fallback: 5000
+    # CCM->CBHS saturation coupling (satBoost = 1 + k * off_diag_sum / trace).
+    sat_boost_factor: 0.25
     ct_snap:
       snap_threshold: 1500
       fast_threshold: 500

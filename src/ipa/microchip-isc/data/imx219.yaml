@@ -279,6 +279,9 @@ algorithms:
       # unsigned pixel range; at full strength it drives green negative (black)
       # on blue scenes. Blending toward identity bounds it; row sums stay unity.
       saturation: 0.6
+      # CCM->CBHS saturation coupling. satBoost = 1 + k * off_diag_sum / trace;
+      # CBC reads satBoost to scale down the CBHS saturation register.
+      sat_boost_factor: 0.25
       # Adaptive snap thresholds for CT-change-based matrix transitions.
       # When |ct_delta| > snap_threshold the matrix snaps immediately;
       # when > fast_threshold the transition speed is multiplied by fast_factor.

@@ -98,9 +98,11 @@ int Ccm::init(IPAContext &context,
 	smoothingFactor_ = tuningData["smoothing_factor"].get<float>(smoothingFactor_);
 	ctFallback_ = tuningData["ct_fallback"].get<float>(ctFallback_);
 	saturation_ = tuningData["saturation"].get<float>(saturation_);
+	satBoostFactor_ = tuningData["sat_boost_factor"].get<float>(satBoostFactor_);
 	smoothingFactor_ = std::clamp(smoothingFactor_, 0.0f, 0.99f);
 	ctFallback_ = std::clamp(ctFallback_, 2500.0f, 10000.0f);
 	saturation_ = std::clamp(saturation_, 0.0f, 1.0f);
+	satBoostFactor_ = std::clamp(satBoostFactor_, 0.0f, 2.0f);
 
 	if (tuningData.contains("ct_snap")) {
 		const YamlObject &snap = tuningData["ct_snap"];
@@ -364,12 +366,11 @@ void Ccm::process(IPAContext &context,
 
 	/*
 	 * Estimate the saturation boost from the matrix off-diagonals:
-	 *   satBoost = 1 + k * Σ|off_diagonals| / trace   (k = 0.25, IMX219)
+	 *   satBoost = 1 + k * Σ|off_diagonals| / trace   (k = sat_boost_factor)
 	 * CBC reads this to scale down the CBHS saturation register so the
 	 * combined CCM × CBHS saturation stays near the nominal value.
 	 */
 	{
-		constexpr float kSatBoostFactor = 0.25f;
 		float trace = matrix[0] + matrix[4] + matrix[8];
 		float offDiagSum = 0.0f;
 		for (size_t i = 0; i < 9; i++) {
@@ -386,7 +387,7 @@ void Ccm::process(IPAContext &context,
 		 * floor (0.5 = 1/6 of nominal 3.0) and fall back to no boost.
 		 */
 		ccm.satBoost = (trace >= 0.5f)
-				       ? 1.0f + kSatBoostFactor * offDiagSum / trace
+				       ? 1.0f + satBoostFactor_ * offDiagSum / trace
 				       : 1.0f;
 	}
 
