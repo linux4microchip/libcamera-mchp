@@ -259,28 +259,6 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 		ControlInfo(std::vector<ControlValue>{ ControlValue(controls::MeteringMatrix) },
 			    ControlValue(controls::MeteringMatrix));
 
-	LOG(ISC_AGC, Debug)
-		<< "AGC initialized: target=" << targetBrightness_
-		<< " speed=" << convergenceSpeed_
-		<< " startupSpeed=" << startupSpeed_
-		<< " startupFrames=" << startupFrames_
-		<< " nearTargetFraction=" << nearTargetFraction_
-		<< " lockFrames=" << aeLockFrames_
-		<< " threshold=" << stabilityThreshold_
-		<< " frames=" << convergenceFrames_
-		<< " clipThreshold=" << clipThreshold_
-		<< " ratioRange=[" << ratioMin_ << "," << ratioMax_ << "]"
-		<< " clipCap=" << clipRatioCap_
-		<< " gainThresholds=[" << gainReductionThreshold_
-		<< "," << gainBoostThreshold_ << "]";
-
-	/* Verify new parameters are loaded */
-	LOG(ISC_AGC, Debug)
-		<< "AGC init extras: evBias=" << evBias_
-		<< " p85thresh=" << highlightP85Threshold_
-		<< " zoneStrength=" << zoneMeteringStrength_
-		<< " targetBrightness=" << targetBrightness_;
-
 	return 0;
 }
 
@@ -336,13 +314,6 @@ int Agc::configure(IPAContext &context,
 
 	/* Initialise CBC contrast gain to unity so AGC target is unmodified before first CBC cycle */
 	context.activeState.cbc.contrastGainLinear = 1.0f;
-
-	LOG(ISC_AGC, Debug)
-		<< "AGC configured: exposure=" << context.activeState.agc.exposure
-		<< " gain=" << context.activeState.agc.analogueGain
-		<< " evBias=" << evBias_
-		<< " p85thresh=" << highlightP85Threshold_
-		<< " targetBrightness=" << targetBrightness_;
 
 	return 0;
 }

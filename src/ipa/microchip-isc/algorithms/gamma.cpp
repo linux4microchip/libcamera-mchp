@@ -54,12 +54,6 @@ int Gamma::init([[maybe_unused]] IPAContext &context,
 		tuningData["tone_rolloff_slope"].get<float>(rolloffSlopeFactor_),
 		0.05f, 1.0f);
 
-	LOG(ISC_Gamma, Debug)
-		<< "Gamma initialized: gamma=" << gamma_
-		<< " strength=" << strength_
-		<< " targetOutput=" << targetOutput_
-		<< " smoothing=" << smoothingFactor_;
-
 	return 0;
 }
 
@@ -80,10 +74,6 @@ int Gamma::configure(IPAContext &context,
 	context.activeState.gamma.lutG = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutR = context.activeState.gamma.lutB;
 	context.activeState.gamma.lutValid = true;
-
-	LOG(ISC_Gamma, Debug)
-		<< "Gamma configured: gammaEff=" << gamma_
-		<< " bipartite=" << bipartite;
 
 	return 0;
 }

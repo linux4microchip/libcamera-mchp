@@ -90,9 +90,6 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 			  [](const RefGainEntry &a, const RefGainEntry &b) {
 				  return a.ct < b.ct;
 			  });
-		LOG(ISC_AWB, Debug)
-			<< "Loaded " << refGainTable_.size()
-			<< " per-CT reference gain entries";
 	}
 
 	highlightWeight_ = tuningData["highlight_weight"].get<float>(highlightWeight_);
@@ -128,7 +125,6 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		if (matList && matList->size() == 9) {
 			std::copy(matList->begin(), matList->end(),
 				  context.configuration.sensor.ctColorMatrix.begin());
-			LOG(ISC_AWB, Debug) << "Loaded ct_color_matrix from tuning";
 		}
 	}
 
@@ -151,9 +147,6 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 				     const CtCorrectionPoint &b) {
 					  return a.robertson < b.robertson;
 				  });
-			LOG(ISC_AWB, Debug)
-				<< "Loaded " << ctCorrectionPwl_.size()
-				<< " ct_correction_pwl points";
 		} else {
 			LOG(ISC_AWB, Warning)
 				<< "ct_correction_pwl ignored: need an even "
@@ -182,16 +175,6 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		ControlInfo(static_cast<int32_t>(ctMin_),
 			    static_cast<int32_t>(ctMax_),
 			    5500);
-
-	LOG(ISC_AWB, Debug)
-		<< "AWB initialized: smoothing=" << smoothingFactor_
-		<< " damping=" << damping_
-		<< " threshold=" << stabilityThreshold_
-		<< " frames=" << convergenceFrames_
-		<< " darkThreshold=" << darkSceneThreshold_
-		<< " gainRange=[" << gainMin_ << "," << gainMax_ << "]"
-		<< " ref=[R=" << refRGain_ << " B=" << refBGain_ << "]"
-		<< " ctRange=[" << ctMin_ << "," << ctMax_ << "]";
 
 	return 0;
 }
@@ -233,13 +216,6 @@ int Awb::configure(IPAContext &context,
 	context.activeState.awb.grGain = refGrGain_;
 	context.activeState.awb.gbGain = refGbGain_;
 	awbStable_ = false;
-
-	LOG(ISC_AWB, Debug)
-		<< "AWB configured with reference gains: R="
-		<< context.activeState.awb.rGain
-		<< " GR=" << refGrGain_ << " GB=" << refGbGain_
-		<< " B=" << context.activeState.awb.bGain
-		<< " (CT=" << startCt << " K)";
 
 	return 0;
 }

@@ -83,14 +83,6 @@ int Cbc::init(IPAContext &context, const YamlObject &tuningData)
 			ControlInfo(-180, 180, 0);
 	}
 
-	LOG(ISC_CBC, Debug)
-		<< "CBC initialized: defaultBrightness=" << defaultBrightness_
-		<< " contrastStrength=" << contrastStrength_
-		<< " targetSpread=" << targetSpread_
-		<< " smoothing=" << smoothingFactor_
-		<< " saturation=" << defaultSaturation_
-		<< " hue=" << defaultHue_;
-
 	return 0;
 }
 

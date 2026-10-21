@@ -80,9 +80,6 @@ int Ccm::init(IPAContext &context,
 			profile.offsets = { 0.0f, 0.0f, 0.0f };
 
 		profiles_.push_back(std::move(profile));
-
-		LOG(ISC_CCM, Debug)
-			<< "CCM profile: " << name << " ct=" << *ct;
 	}
 
 	/*
@@ -115,12 +112,6 @@ int Ccm::init(IPAContext &context,
 	ctSnapThreshold_ = std::clamp(ctSnapThreshold_, 100.0f, 5000.0f);
 	ctFastThreshold_ = std::clamp(ctFastThreshold_, 50.0f, ctSnapThreshold_);
 	ctFastFactor_ = std::clamp(ctFastFactor_, 0.0f, 1.0f);
-
-	LOG(ISC_CCM, Debug)
-		<< "CCM initialized with " << profiles_.size() << " profiles"
-		<< " smoothing=" << smoothingFactor_
-		<< " snapThreshold=" << ctSnapThreshold_
-		<< " fastThreshold=" << ctFastThreshold_;
 
 	return 0;
 }

@@ -98,10 +98,6 @@ int BlackLevelCorrection::init(IPAContext &context,
 		if (bl16 > 0) {
 			helperBl = static_cast<uint32_t>(bl16) >> 6;
 			helperAvailable = true;
-			LOG(ISC_BLC, Debug)
-				<< "Sensor helper black level: "
-				<< bl16 << " (16-bit) = "
-				<< helperBl << " DN (10-bit)";
 		}
 	}
 
@@ -153,13 +149,6 @@ int BlackLevelCorrection::init(IPAContext &context,
 	context.configuration.sensor.blackLevelGB = blGB;
 	context.configuration.sensor.blackLevelB = blB;
 
-	LOG(ISC_BLC, Debug)
-		<< "Black levels (10-bit): "
-		<< "R=" << blR << " GR=" << blGR
-		<< " GB=" << blGB << " B=" << blB
-		<< " (scalar=" << bl << ")"
-		<< (helperAvailable ? " [sensor helper]" : " [YAML/fallback]");
-
 	return 0;
 }
 
@@ -191,8 +180,6 @@ int BlackLevelCorrection::configure(IPAContext &context,
 		context.activeState.awb.bOffset = 0;
 		context.activeState.awb.grOffset = 0;
 		context.activeState.awb.gbOffset = 0;
-		LOG(ISC_BLC, Debug)
-			<< "BLC: hasDpc=true — WB offsets default 0, AWB owns them";
 	} else {
 		/*
 		 * No hardware DPC — subtract the pedestal through the WB offset
@@ -210,12 +197,6 @@ int BlackLevelCorrection::configure(IPAContext &context,
 			-static_cast<int32_t>(sensor.blackLevelGR);
 		context.activeState.awb.gbOffset =
 			-static_cast<int32_t>(sensor.blackLevelGB);
-		LOG(ISC_BLC, Debug)
-			<< "BLC: hasDpc=false — WB offsets R="
-			<< context.activeState.awb.rOffset
-			<< " GR=" << context.activeState.awb.grOffset
-			<< " GB=" << context.activeState.awb.gbOffset
-			<< " B=" << context.activeState.awb.bOffset;
 	}
 
 	return 0;
