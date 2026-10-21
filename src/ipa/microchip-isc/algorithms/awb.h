@@ -66,6 +66,13 @@ private:
 	/* Minimum scene luminance for AWB update (YAML: min_scene_luminance) */
 	float darkSceneThreshold_ = 8.0f;
 
+	/* Grey-world confidence gate (YAML: noise_floor.bins/band) */
+	float noiseFloorBins_ = 8.0f;
+	float noiseFloorBand_ = 10.0f;
+
+	/* Max grey-world deviation from the anchor gain (YAML: noise_floor.max_deviation) */
+	float gwMaxDev_ = 1.5f;
+
 	/* Per-channel gain limits (YAML: r_b_min, r_b_max) */
 	float gainMin_ = 0.2f;
 	float gainMax_ = 16.0f;

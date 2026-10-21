@@ -46,6 +46,13 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 		darkSceneThreshold_ = conv["min_scene_luminance"].get<float>(darkSceneThreshold_);
 	}
 
+	if (tuningData.contains("noise_floor")) {
+		const YamlObject &nf = tuningData["noise_floor"];
+		noiseFloorBins_ = nf["bins"].get<float>(noiseFloorBins_);
+		noiseFloorBand_ = nf["band"].get<float>(noiseFloorBand_);
+		gwMaxDev_ = nf["max_deviation"].get<float>(gwMaxDev_);
+	}
+
 	if (tuningData.contains("gain_limits")) {
 		const YamlObject &gl = tuningData["gain_limits"];
 		gainMin_ = gl["r_b_min"].get<float>(gainMin_);
@@ -106,6 +113,9 @@ int Awb::init([[maybe_unused]] IPAContext &context,
 	gbGainMax_ = std::clamp(gbGainMax_, 1.0f, 2.0f);
 	ctMin_ = std::clamp(ctMin_, 1000.0f, 4000.0f);
 	ctMax_ = std::clamp(ctMax_, 5000.0f, 20000.0f);
+	noiseFloorBins_ = std::clamp(noiseFloorBins_, 0.0f, 511.0f);
+	noiseFloorBand_ = std::clamp(noiseFloorBand_, 1.0f, 512.0f);
+	gwMaxDev_ = std::max(gwMaxDev_, 1.0f);
 
 	/*
 	 * Load the sensor-to-XYZ colour matrix for Robertson (1968) CCT
@@ -418,6 +428,14 @@ void Awb::process(IPAContext &context,
 	float meanB = hist.channelMeans[kHistChannelB];
 
 	/*
+	 * Raw R/B before EV normalization. The confidence gate below must see
+	 * actual channel starvation; the normalized means rescale B up to the
+	 * GR frame and would mask a near-floor channel during an AE slew.
+	 */
+	float rawMeanR = meanR;
+	float rawMeanB = meanB;
+
+	/*
 	 * Normalize R, GB, B means to the GR frame's exposure.
 	 * ratio = (exposure_GR * gain_GR) / (exposure_ch * gain_ch)
 	 * Each channel mean is multiplied by this ratio so that all means
@@ -571,55 +589,39 @@ void Awb::process(IPAContext &context,
 		rawCt = applyCtCorrection(rawCt);
 
 		/*
-		 * CT-based gain lookup: interpolate the calibrated R/B gains
-		 * from reference_gains_table at the current estimated CT.
-		 *
-		 * This mirrors the reference colour-gain-curve lookup:
-		 *   gainR = 1.0 / ctR.eval(temperatureK)
-		 *   gainB = 1.0 / ctB.eval(temperatureK)
-		 * and libipa/awb_grey.cpp gainsFromColourTemperature():
-		 *   gains = colourGainCurve_->getInterpolated(colourTemperature)
-		 *
-		 * WHY NOT pure grey-world (GR/B ratio):
-		 *   For a NoIR sensor under warm illumination (4450K), the B
-		 *   channel has inherently low signal (B_net ≈ 10-25 bins at
-		 *   the correct exposure).  The SAMA7G5 histogram tap is
-		 *   pre-WB pre-demosaic (ISC_HIS_CFG_RAR), so the raw B mean
-		 *   approaches the noise floor at reduced exposure settings.
-		 *   Grey-world then computes bGain = GR/B ≈ 3-5× — far above
-		 *   the calibrated 2.0× — creating an AE/AWB feedback loop:
-		 *   AE reduces exposure → B drops → bGain spikes → output
-		 *   stays bright → AE cannot reach the target luminance.
-		 *
-		 *   CT-based gains from the calibration table are computed at
-		 *   a specific illuminant level and are STABLE regardless of
-		 *   sensor exposure — they represent the physical R/B channel
-		 *   imbalance for a given scene colour temperature, not the
-		 *   momentary histogram ratio which is exposure-dependent.
-		 *
-		 * If no reference_gains_table is available, fall back to
-		 * grey-world (consistent with libipa/awb_grey.cpp behaviour).
+		 * Grey-world target faded toward the CT anchor as a channel
+		 * nears the noise floor. The pre-WB tap starves the B mean under
+		 * warm light; without the fade GR/B spikes and drives the AE/AWB
+		 * loop. Gate on raw pre-normalization means, not EV-normalized.
+		 * rawCt is this frame's estimate; awb.ct lags by one frame.
 		 */
-		float targetR, targetB;
+		float ctForGains = (rawCt > 0.0f) ? rawCt : defaultCt_;
+		float anchorR = refRGain_;
+		float anchorB = refBGain_;
 		if (!refGainTable_.empty()) {
-			/*
-			 * Use rawCt (computed just above) rather than the
-			 * smoothed awb.ct from the previous frame.  awb.ct is
-			 * only updated after the gain computation below, so
-			 * reading it here would lag the CT estimate by one
-			 * frame, causing the colour matrix and the gains to
-			 * track different colour temperatures during illuminant
-			 * transitions.
-			 */
-			float ctForGains = (rawCt > 0.0f) ? rawCt : defaultCt_;
 			auto [refR, refB] = interpolateRefGains(ctForGains);
-			targetR = refR;
-			targetB = refB;
-		} else {
-			/* Grey-world fallback when no calibration table */
-			targetR = meanGR / std::max(meanR, 1.0f);
-			targetB = meanGR / std::max(meanB, 1.0f);
+			anchorR = refR;
+			anchorB = refB;
 		}
+
+		/* Bound grey-world to the anchor band so a starved channel
+		 * cannot rail the target. */
+		auto boundGw = [&](float mean, float anchor) {
+			float gw = meanGR / std::max(mean, 1.0f);
+			return std::clamp(gw, anchor / gwMaxDev_, anchor * gwMaxDev_);
+		};
+		float gwR = boundGw(meanR, anchorR);
+		float gwB = boundGw(meanB, anchorB);
+
+		auto confidence = [&](float mean) {
+			return std::clamp((mean - noiseFloorBins_) / noiseFloorBand_,
+					  0.0f, 1.0f);
+		};
+		float confR = confidence(rawMeanR);
+		float confB = confidence(rawMeanB);
+
+		float targetR = confR * gwR + (1.0f - confR) * anchorR;
+		float targetB = confB * gwB + (1.0f - confB) * anchorB;
 
 		float rGain = std::clamp(targetR, gainMin_, gainMax_);
 		float bGain = std::clamp(targetB, gainMin_, gainMax_);

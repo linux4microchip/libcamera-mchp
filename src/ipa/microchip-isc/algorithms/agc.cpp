@@ -548,18 +548,18 @@ void Agc::process(IPAContext &context,
 	 *      so normalised-WB-corrected luminance drops linearly — the AE
 	 *      feedback loop closes correctly.
 	 *
-	 * CONTRAST WITH PURE GREY-WORLD (previous bug):
-	 *   Pure grey-world gains (GR/B ratio) are EXPOSURE-DEPENDENT:
+	 * COEXISTENCE WITH AWB:
+	 *   Unbounded grey-world gains (GR/B ratio) are EXPOSURE-DEPENDENT:
 	 *   at low exposure, B_net ≈ 5-10 bins for NoIR at 4450K (B near
 	 *   noise floor) → bGain = GR/B spikes to 3-5× instead of the
 	 *   calibrated 2.0× → WB-corrected luminance over-estimates the
 	 *   scene brightness → AE drives higher exposure to compensate →
 	 *   the loop diverges instead of converging.
 	 *
-	 * With the AWB now using CT-based reference_gains_table (not
-	 * grey-world), the gains are stable across exposure levels, so
-	 * the normalised correction here accurately predicts the post-WB
-	 * output luminance regardless of exposure setting.
+	 * AWB's noise-floor gate fades a starved channel's grey-world gain
+	 * to the exposure-stable table anchor, so awb.rGain/bGain read here
+	 * stay bounded across exposure and the normalised correction tracks
+	 * post-WB output luminance.
 	 *
 	 * TARGET CALIBRATION (SAMA7G5 + IMX219 NoIR):
 	 *   18% grey → pixel DN = 0.18 × 1023 = 184.
