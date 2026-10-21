@@ -234,9 +234,7 @@ public:
 	{
 	}
 
-	~PipelineHandlerMicrochipISC()
-	{
-	}
+	~PipelineHandlerMicrochipISC() = default;
 
 	std::unique_ptr<CameraConfiguration> generateConfiguration(Camera *camera,
 								   Span<const StreamRole> roles) override;
