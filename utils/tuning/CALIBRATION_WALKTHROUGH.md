@@ -240,3 +240,70 @@ there is no runtime noise-reduction consumer yet, so the writer is parked.
 - **NoIR warm-CCT blue looks impossibly low** — expected; NIR contaminates
   R/G and suppresses apparent blue. The validator relaxes NoIR thresholds
   accordingly.
+
+---
+
+## 9. Without an X-Rite ColorChecker
+
+The §1 flow assumes an X-Rite ColorChecker Classic: the solver geometry and the
+24 patch reference colours are hardcoded to it. If you only have a Datacolor
+SpyderCheckr or a bare grey card, calibrate what the hardware you have can
+actually measure and leave the rest on the shipped values.
+
+### 9.1 What each substitute can do
+
+| Target | White balance (`reference_gains_table`, `ct_color_matrix`) | Colour matrix (`Ccm.matrices`) |
+|---|---|---|
+| X-Rite ColorChecker | Yes, reference grade | Yes, reference grade |
+| SpyderCheckr 24 | Yes, local grade | Stopgap only — see 9.3 |
+| Bare grey card | Capture passes, but the generator cannot use it — see 9.2 | No |
+
+A neutral patch is neutral regardless of brand, so the grey-ramp channel ratios
+that feed white balance transfer from any chart. The 24-colour least-squares CCM
+solve does not: it needs each patch's published reference value, and only the
+X-Rite values are hardcoded.
+
+### 9.2 Why a bare grey card is not enough for the generator
+
+`mchp_capture.sh -t grey_card` captures fine, but the host generator reads the
+neutral ramp through the located chart geometry (`libtuning/image.py`
+`get_patches()` warps the frame to the known 6x4 grid, then indexes the neutral
+row by position). A lone grey card has no chart corners to locate, so there are
+no patches to index and the AWB block is skipped. Use a full chart, or tune
+white balance by hand against a grey card with `mchpcam-still --awbgains`.
+
+### 9.3 SpyderCheckr as a local-grade substitute
+
+The Spyder has a neutral ramp and colour patches, but a different layout and
+unofficial, web-sourced reference colours. Treat it as a chart for capture:
+
+```sh
+for CCT in 3000 4500 6500; do
+    echo "Set lightbox to ${CCT}K, press Enter when ready"; read _
+    /tmp/mchp_capture.sh -t colorchecker -c $CCT --raw --noir
+done
+```
+
+The white-balance half (`reference_gains_table`, `ct_color_matrix`) is sound.
+The CCM half is **not**: the solver assumes the X-Rite patch layout and
+references, so a Spyder CCM solve is silently wrong until `CHART_COLOR_REFS` is
+remapped to the Spyder 6x4 order. Until then, keep the shipped `Ccm.matrices`
+(the Raspberry Pi IMX219 reference calibration, §7) and let the generator rewrite
+only the WB blocks.
+
+### 9.4 Tuning CCM saturation by eye (no chart at all)
+
+The one CCM knob that needs no reference is the `saturation` scale in
+`imx219.yaml` (0-1, blends the matrices toward identity). Capture a colourful,
+evenly lit scene and sweep it:
+
+```sh
+# edit saturation: in imx219.yaml and redeploy between runs
+for S in 0.5 0.6 0.7 0.8; do
+    mchpcam-still --capture=1 --output=sat_${S}.jpg
+done
+```
+
+Pick the highest value where greens do not crush to black and skin tones are
+not oversaturated. This is a look decision, not a measurement, so it does not
+go through the generator.
