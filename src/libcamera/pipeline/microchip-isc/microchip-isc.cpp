@@ -97,7 +97,7 @@ public:
 	int initStatsDevice();
 	int allocateStatsBuffers();
 	void freeStatsBuffers();
-	void statsProcessed(unsigned int request, const ControlList &metadata);
+	void statsProcessed(unsigned int sequence, const ControlList &metadata);
 	void setSensorControls(const ControlList &controls);
 	void setIspControls(const ControlList &controls);
 
@@ -341,7 +341,7 @@ void MicrochipISCCameraData::freeStatsBuffers()
 	statsBuffers_.clear();
 }
 
-void MicrochipISCCameraData::statsProcessed(unsigned int request,
+void MicrochipISCCameraData::statsProcessed(unsigned int sequence,
 					    const ControlList &metadata)
 {
 	/*
@@ -354,7 +354,7 @@ void MicrochipISCCameraData::statsProcessed(unsigned int request,
 	latestIpaMetadata_ = metadata;
 
 	/* Also apply directly if the originating frame is still pending */
-	auto it = frameInfo_.find(request);
+	auto it = frameInfo_.find(sequence);
 	if (it != frameInfo_.end()) {
 		FrameInfo &info = it->second;
 		info.request->_d()->metadata().merge(metadata,
