@@ -2,6 +2,7 @@
 
 subdir('codegen')
 subdir('ipu3')
+subdir('tuning')
 
 gen_shader_headers = files('gen-shader-headers.sh')
 
