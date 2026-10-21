@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (C) 2024 Microchip Technology Inc.  All rights reserved.
+ * Copyright (C) 2024, Microchip Technology Inc.
  *
  * mchpcam — common camera application base class
  */
