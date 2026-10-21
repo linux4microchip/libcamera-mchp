@@ -24,7 +24,10 @@
 #   - Macbeth under known illuminant(s)   -> Awb, Agc (lux), Ccm
 
 import logging
+import os
 import sys
+
+from numbers import Number
 
 import coloredlogs
 import libtuning as lt
@@ -58,6 +61,8 @@ class MicrochipTuner(lt.Tuner):
     _MEASURED_KEYS = {'Awb': 'awb', 'Agc': 'agc', 'Ccm': 'ccm', 'Gamma': 'gamma'}
 
     def run(self, argv):
+        # Let the formatter read self.config to tell measured from authored.
+        self.generator._tuner = self
         rc = super().run(argv)
         if rc == 0:
             sections = {m.out_name: self.output[m]
@@ -95,21 +100,27 @@ class MacbethQAModule(Module):
 
 class MicrochipYamlOutput(YamlOutput):
     # Still-path sections are not IPA algorithms and must never appear in the
-    # tuning file's 'algorithms:' list. Lens-shading and noise data instead go
-    # into a top-level 'modules:' list carried in the same tuning file (mirroring
-    # the dw100 dewarp module block in rkisp1). The ISC pipeline handler re-opens
-    # the tuning file and reads these blocks for its CPU still-path corrector and
-    # denoiser; the IPA never sees them. out_name -> module block key (the key
-    # the pipeline handler looks up).
+    # tuning file's 'algorithms:' list. Lens-shading instead goes into a
+    # top-level 'modules:' list carried in the same tuning file (mirroring the
+    # dw100 dewarp module block in rkisp1); the ISC pipeline handler re-opens the
+    # tuning file and reads it for its CPU still-path corrector. out_name ->
+    # module block key (the key the pipeline handler looks up).
     _MODULE_BLOCKS = {
         'LensShadingCorrection': 'LensShadingCorrection',
-        'NoiseProfile': 'NoiseReduction',
     }
 
-    # Sections that must never be written into the tuning file's 'algorithms:'
-    # list. The still-path sections go to the 'modules:' block (above); MacbethQA
-    # is a health-only diagnostic and is dropped entirely.
-    _NON_IPA_OUT_NAMES = set(_MODULE_BLOCKS) | {'MacbethQA'}
+    # Health-only diagnostics, never in 'algorithms:'. The parked noise writer
+    # has no runtime consumer but its fit still feeds the health summary.
+    _NON_IPA_OUT_NAMES = set(_MODULE_BLOCKS) | {'MacbethQA', 'NoiseProfile'}
+
+    # Merged only when a module recomputed them (differs from authored config).
+    # Tone/gamma, Cbc and the AGC metering knobs stay authored.
+    _MERGE_KEYS = {
+        'Awb': ('reference_gains_table', 'ct_color_matrix'),
+        'Agc': ('lux_reference',),
+        'Ccm': ('matrices',),
+    }
+    _CFG_KEYS = {'Awb': 'awb', 'Agc': 'agc', 'Ccm': 'ccm'}
 
     # Tool-internal diagnostics (e.g. CCM CIEDE2000) are carried on the emitted
     # sections under underscore-prefixed keys so the health score can read them.
@@ -123,11 +134,46 @@ class MicrochipYamlOutput(YamlOutput):
             return [cls._strip_diagnostics(v) for v in value]
         return value
 
+    # Match the shipped inline style: small scalar-only maps and flat number
+    # lists as flow, everything else block.
+    @classmethod
+    def _stylize(cls, value):
+        from ruamel.yaml.comments import CommentedMap, CommentedSeq
+        if isinstance(value, dict):
+            cm = CommentedMap()
+            for k, v in value.items():
+                cm[k] = cls._stylize(v)
+            if value and len(value) <= 3 and \
+               all(not isinstance(v, (dict, list)) for v in value.values()):
+                cm.fa.set_flow_style()
+            return cm
+        if isinstance(value, list):
+            if value and all(isinstance(x, Number) for x in value):
+                cs = CommentedSeq(value)
+                cs.fa.set_flow_style()
+                return cs
+            return CommentedSeq([cls._stylize(x) for x in value])
+        return value
+
     def write(self, output_file, output_dict, output_order):
         # Copy with diagnostics stripped; the original dicts (with diagnostics)
         # remain in the tuner's output for the post-write health summary.
         output_dict = {m: self._strip_diagnostics(sect)
                        for m, sect in output_dict.items()}
+
+        # Merge into an existing file to keep the authored look and comments;
+        # only a first-time (absent) target is fully written.
+        if os.path.exists(output_file):
+            try:
+                self._merge_write(output_file, output_dict, output_order)
+                return
+            except Exception as e:
+                logger.error(f'Merge into {output_file} failed ({e}); '
+                             'falling back to full regeneration')
+
+        self._full_write(output_file, output_dict, output_order)
+
+    def _full_write(self, output_file, output_dict, output_order):
         ipa_order = [m for m in output_order
                      if getattr(m, 'out_name', None) not in self._NON_IPA_OUT_NAMES]
         super().write(output_file, output_dict, ipa_order)
@@ -159,6 +205,118 @@ class MicrochipYamlOutput(YamlOutput):
         logger.info('Still-path tuning data written to the "modules:" block of '
                     f'{output_file} (consumed by the ISC pipeline handler, not '
                     'the IPA)')
+
+    # Round-trip through ruamel, replacing only measured keys; authored values
+    # and comments are untouched. A no-capture regeneration is a no-op.
+    # Update parent[key] in place, reusing the container so ruamel keeps
+    # comments anchored. Only scalars and absent keys are assigned fresh.
+    @classmethod
+    def _apply(cls, parent, key, new):
+        cur = parent[key] if key in parent else None
+        if isinstance(new, dict) and isinstance(cur, dict):
+            for k in list(cur.keys()):
+                if k not in new:
+                    del cur[k]
+            for k, v in new.items():
+                cls._apply(cur, k, v)
+        elif isinstance(new, list) and isinstance(cur, list):
+            # A block comment following the list belongs to the next key but
+            # ruamel bundles it into the last item's EOL token; salvage it.
+            trailer = cls._seq_trailer(cur)
+            cur[:] = [cls._stylize(x) for x in new]
+            if hasattr(cur, 'ca'):
+                cur.ca.items.clear()
+            if trailer is not None and cur:
+                cur.ca.items[len(cur) - 1] = [trailer, None, None, None]
+        else:
+            parent[key] = cls._stylize(new)
+
+    # Extract the block comment ruamel bundled after a sequence's last item,
+    # dropping that item's own inline comment. None if there is none.
+    @staticmethod
+    def _seq_trailer(seq):
+        ca = getattr(seq, 'ca', None)
+        if not ca or not seq:
+            return None
+        entry = ca.items.get(len(seq) - 1)
+        if not entry or entry[0] is None:
+            return None
+        val = entry[0].value
+        nl = val.find('\n')
+        tail = val[nl + 1:] if nl >= 0 else ''
+        if '#' not in tail:
+            return None
+        entry[0].value = '\n' + tail
+        return entry[0]
+
+    def _merge_write(self, output_file, output_dict, output_order):
+        from ruamel.yaml import YAML
+
+        emitted = {getattr(m, 'out_name', None): sect
+                   for m, sect in output_dict.items()}
+        authored = getattr(getattr(self, '_tuner', None), 'config', {}) or {}
+
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        yaml.width = 4096
+        # Match the shipped file's block style so untouched blocks round-trip
+        # byte-identical.
+        yaml.indent(mapping=2, sequence=4, offset=2)
+        yaml.explicit_start = True
+        yaml.explicit_end = True
+        with open(output_file, encoding='utf-8') as f:
+            doc = yaml.load(f)
+
+        changed = []
+        for block in (doc.get('algorithms') or []):
+            if not isinstance(block, dict):
+                continue
+            for name in list(block.keys()):
+                if name not in self._MERGE_KEYS:
+                    continue
+                sect = emitted.get(name)
+                if not sect:
+                    continue
+                acfg = authored.get(self._CFG_KEYS.get(name, ''), {}) or {}
+                for key in self._MERGE_KEYS[name]:
+                    if key not in sect:
+                        continue
+                    if key in acfg and acfg[key] == sect[key]:
+                        continue
+                    self._apply(block[name], key, sect[key])
+                    changed.append(f'{name}.{key}')
+
+        self._merge_module_blocks(doc, emitted, changed)
+
+        with open(output_file, 'w', encoding='utf-8') as f:
+            yaml.dump(doc, f)
+        logger.info(f'Merged measured blocks into {output_file}: '
+                    + (', '.join(changed) if changed else '(none measured)'))
+
+    # Insert or replace the still-path 'modules:' blocks, leaving authored
+    # blocks (e.g. AutoLevels) and their comments in place.
+    def _merge_module_blocks(self, doc, emitted, changed):
+        from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+        for out_name, block_key in self._MODULE_BLOCKS.items():
+            sect = emitted.get(out_name)
+            if not sect:
+                continue
+            styled = self._stylize(sect)
+            modules = doc.get('modules')
+            if modules is None:
+                modules = CommentedSeq()
+                doc['modules'] = modules
+            existing = next((e for e in modules
+                             if isinstance(e, dict) and block_key in e), None)
+            if existing is not None:
+                existing[block_key] = styled
+                changed.append(f'modules.{block_key}')
+            else:
+                entry = CommentedMap()
+                entry[block_key] = styled
+                modules.append(entry)
+                changed.append(f'modules.{block_key} (inserted)')
 
 
 coloredlogs.install(level=logging.INFO,
@@ -203,12 +361,11 @@ lsc = LSCMicrochipISC(debug=[lt.Debug.Plot],
                       sector_average_function=lt.average.Mean(),
                       smoothing_function=lt.smoothing.MedianBlur(3))
 
-# Still-path denoiser noise profile. Read-noise variance, shot-noise slope and
-# gain exponent measured from a flat-field gain sweep (mchp_capture.sh gain axis
-# + --frames repeats), emitted to the tuning file's 'modules:' block as
-# NoiseReduction. Like the lens-shading map it is applied by the ISC pipeline
-# handler's still path, not the IPA; a run without a flat-field sweep omits it
-# (the module returns nothing) and the denoiser keeps its built-in defaults.
+# Noise profile: read-noise variance, shot-noise slope and gain exponent from a
+# flat-field gain sweep (mchp_capture.sh gain axis + --frames repeats). The
+# still-path denoiser has no runtime consumer yet, so the writer is parked
+# (NoiseProfile is dropped from the file); the fit still runs and feeds the
+# health summary as an advisory. A run without a flat-field sweep emits nothing.
 noise = NoiseMicrochipISC(debug=[lt.Debug.Plot])
 
 # Capture-quality gate over the located Macbeth charts. Emits no IPA section;
