@@ -9,6 +9,8 @@
 
 #include <vector>
 
+#include "libipa/pwl.h"
+
 #include "algorithm.h"
 #include "common.h"
 
@@ -22,7 +24,6 @@ public:
 	Agc() = default;
 	~Agc() = default;
 
-	/* Public: used by interpolateYTarget() free function in agc.cpp */
 	struct YTargetPoint {
 		float lux;
 		float target; /* normalised [0,1], multiplied by kHistogramMax at use */
@@ -124,8 +125,8 @@ private:
 	float luxRefGain_ = 1.0f;
 	float luxRefLux_ = 400.0f; /* fallback indoor office lux */
 
-	/* Lux-adaptive brightness target table (YAML: y_target) */
-	std::vector<YTargetPoint> yTargetTable_;
+	/* Lux-adaptive brightness target curve (YAML: y_target) */
+	ipa::Pwl yTargetPwl_;
 
 	/* ---- Runtime state — NOT tuning params, kept zero-initialised ---- */
 	unsigned int aeLockCount_ = 0;

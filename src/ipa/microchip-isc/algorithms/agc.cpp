@@ -26,46 +26,6 @@ LOG_DEFINE_CATEGORY(ISC_AGC)
 namespace ipa::microchip_isc {
 
 /**
- * \brief Interpolate y_target from a lux-indexed PWL table
- * \param table  Vector of {lux, target} pairs, sorted ascending by lux
- * \param lux    Current estimated scene illuminance
- * \param fallback  Value to return when table is empty
- * \return Interpolated brightness target in histogram units (0–511)
- *
- * Implements the standard piecewise-linear evaluation (libipa
- * Pwl::eval). Linear interpolation between adjacent table points;
- * clamps to first/last entry outside the table range.
- */
-static float interpolateYTarget(const std::vector<Agc::YTargetPoint> &table,
-				float lux,
-				float fallback)
-{
-	if (table.empty())
-		return fallback;
-
-	/* Below first point: return first target */
-	if (lux <= table.front().lux)
-		return table.front().target * kHistogramMax;
-
-	/* Above last point: return last target */
-	if (lux >= table.back().lux)
-		return table.back().target * kHistogramMax;
-
-	/* Find bounding segment and interpolate */
-	for (size_t i = 1; i < table.size(); i++) {
-		if (lux <= table[i].lux) {
-			float t = (lux - table[i - 1].lux) /
-				  (table[i].lux - table[i - 1].lux);
-			float target = table[i - 1].target +
-				       t * (table[i].target - table[i - 1].target);
-			return target * kHistogramMax;
-		}
-	}
-
-	return table.back().target * kHistogramMax;
-}
-
-/**
  * \brief Initialize AGC from YAML tuning data
  * \param[in] context The IPA context
  * \param[in] tuningData YAML tuning parameters for AGC
@@ -173,6 +133,7 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	 *   If absent, falls back to fixed targetBrightness_.
 	 */
 	if (tuningData.contains("y_target")) {
+		std::vector<YTargetPoint> points;
 		const auto &pts = tuningData["y_target"].asList();
 		for (auto it = pts.begin(); it != pts.end();) {
 			float lux = it->get<float>(0.0f);
@@ -181,18 +142,15 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 				break;
 			float target = it->get<float>(0.0f);
 			++it;
-			yTargetTable_.push_back({ lux, target });
+			points.push_back({ lux, target });
 		}
-		/*
-		 * Sort ascending by lux so interpolateYTarget() binary search
-		 * is correct regardless of YAML entry order. Without this, an
-		 * out-of-order YAML table (e.g. 300K before 100K) causes the
-		 * first matching segment to be wrong and returns a biased target.
-		 */
-		std::sort(yTargetTable_.begin(), yTargetTable_.end(),
+		/* Pwl::append() requires ascending x; sort by lux first. */
+		std::sort(points.begin(), points.end(),
 			  [](const YTargetPoint &a, const YTargetPoint &b) {
 				  return a.lux < b.lux;
 			  });
+		for (const auto &p : points)
+			yTargetPwl_.append(p.lux, p.target);
 	}
 
 	/*
@@ -670,10 +628,16 @@ void Agc::process(IPAContext &context,
 	 */
 	bool rawOutput = context.configuration.hw.isRawOutput;
 	float currentLux = context.activeState.lux.lux;
-	float baseTarget = rawOutput
-			 ? rawTargetBrightness_
-			 : interpolateYTarget(yTargetTable_, currentLux,
-					      targetBrightness_);
+	float baseTarget;
+	if (rawOutput) {
+		baseTarget = rawTargetBrightness_;
+	} else if (yTargetPwl_.empty()) {
+		baseTarget = targetBrightness_;
+	} else {
+		/* Clamp to the curve domain: eval() extrapolates past the ends. */
+		float lux = yTargetPwl_.domain().clamp(currentLux);
+		baseTarget = yTargetPwl_.eval(lux) * kHistogramMax;
+	}
 
 	/*
 	 * EV scale: 2^ev. Avoid std::pow() in the common case (ev=0) since
