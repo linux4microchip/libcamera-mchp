@@ -1505,25 +1505,41 @@ int MicrochipISCCameraData::setupLinks()
 		return ret;
 	}
 
-	for (const MediaEntity *entity : media_->entities()) {
+	/*
+	 * Enable only the links on the sensor -> CSI -> ISC data path. The ISC
+	 * media graph is linear with a single source link per pad, so walk
+	 * downstream from the sensor's source pad and enable each link until an
+	 * entity has no source pad (the ISC video sink). The visited set guards
+	 * against a malformed cyclic graph.
+	 */
+	const MediaEntity *entity = sensor_->entity();
+	std::set<const MediaEntity *> visited;
+
+	while (entity && visited.insert(entity).second) {
+		const MediaEntity *next = nullptr;
+
 		for (const MediaPad *pad : entity->pads()) {
 			if (!(pad->flags() & MEDIA_PAD_FL_SOURCE))
 				continue;
 
 			for (MediaLink *link : pad->links()) {
-				if (link->flags() & MEDIA_LNK_FL_IMMUTABLE)
-					continue;
-
-				ret = link->setEnabled(true);
-				if (ret < 0) {
-					LOG(MicrochipISC, Error) << "Failed to enable link: "
-								 << link->source()->entity()->name()
-								 << " -> "
-								 << link->sink()->entity()->name();
-					return ret;
+				if (!(link->flags() & MEDIA_LNK_FL_IMMUTABLE)) {
+					ret = link->setEnabled(true);
+					if (ret < 0) {
+						LOG(MicrochipISC, Error)
+							<< "Failed to enable link: "
+							<< link->source()->entity()->name()
+							<< " -> "
+							<< link->sink()->entity()->name();
+						return ret;
+					}
 				}
+
+				next = link->sink()->entity();
 			}
 		}
+
+		entity = next;
 	}
 
 	return 0;
