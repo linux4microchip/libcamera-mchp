@@ -270,7 +270,7 @@ int MchpCamCommon::init(const std::string &cameraId)
 	}
 
 	/*
-	 * Raw Bayer capture mode: override pixel format to SGRBG10 and force
+	 * Raw Bayer capture mode: override pixel format to SRGGB10 and force
 	 * unity WB gains so the ISC WB block (which cannot be disabled for
 	 * Bayer output — bits_pipeline = WB_ENABLE) is a mathematical no-op.
 	 * Unity = 512 in the ISC 0:4:9 fixed-point gain scale (1.0 × 512).

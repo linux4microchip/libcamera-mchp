@@ -178,7 +178,7 @@ public:
 	/*
 	 * Raw Bayer capture mode (--raw / calibration use).
 	 *
-	 * Requests SGRBG10 output format (ISC raw passthrough).
+	 * Requests SRGGB10 output format (ISC raw passthrough).
 	 * The ISC kernel driver keeps WB_ENABLE active even for Bayer output
 	 * (bits_pipeline = WB_ENABLE — confirmed in isc_try_configure_pipeline
 	 * default: case).  To make this a mathematical no-op, rawCapture_ mode
