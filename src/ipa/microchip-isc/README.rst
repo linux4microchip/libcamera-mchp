@@ -26,17 +26,17 @@ and uses ``imx219_noir.yaml``, calibrated from its own captures.
 Requirements
 ------------
 
-White balance and colour temperature, the minimum:
+The minimum:
 
-- An 18% neutral grey card.
+- An X-Rite or Calibrite ColorChecker (24-patch Macbeth chart), evenly lit
+  with no glare. White balance, colour temperature and the colour matrix all
+  read its neutral grey ramp and colour patches, so a chart is required; there
+  is no separate grey-card path.
 - A light source with a known, rated colour temperature, used at two or more
   points such as 2850 K, 4500 K and 6500 K. A small lightbox or a CCT-rated LED
   panel works.
 - A handheld lux meter is optional, and only needed to calibrate the lux
   estimator.
-
-Colour matrix (CCM) accuracy also needs an X-Rite or Calibrite ColorChecker
-(24-patch Macbeth chart), evenly lit with no glare.
 
 Set up the host tools
 ---------------------
@@ -48,9 +48,8 @@ environment, not the system Python::
     . ~/calib-venv/bin/activate
     pip install -r utils/tuning/microchip_isc/requirements.txt
 
-This covers grey-card AWB, CT and lux calibration. CCM from RAW captures also
-needs ``rawpy``, left commented out in the requirements file as it needs the
-libraw headers.
+The ColorChecker captures are RAW Bayer, so the solve also needs ``rawpy``,
+left commented out in the requirements file as it needs the libraw headers.
 
 Activate the environment in each new shell before running the tool::
 
@@ -71,22 +70,19 @@ the sensor in an unrecoverable state.
 
     scp utils/tuning/mchp_capture.sh root@<board>:/tmp/
 
-Capture a grey card at each rated colour temperature. The ``-c`` value is the
-lightbox-rated temperature in Kelvin, not the IPA estimate::
+Capture the ColorChecker as a RAW Bayer frame at each rated colour temperature.
+The ``-c`` value is the lightbox-rated temperature in Kelvin, not the IPA
+estimate. One capture per temperature feeds white balance, colour temperature,
+lux and the colour matrix together, from the same frame::
 
-    /tmp/mchp_capture.sh -t grey_card -c 2850
-    /tmp/mchp_capture.sh -t grey_card -c 4500
-    /tmp/mchp_capture.sh -t grey_card -c 6500
+    /tmp/mchp_capture.sh -t colorchecker -c 2850 --raw
+    /tmp/mchp_capture.sh -t colorchecker -c 4500 --raw
+    /tmp/mchp_capture.sh -t colorchecker -c 6500 --raw
 
 Add ``-l <lux>`` if you have a meter reading, and ``--noir`` for the NoIR
-sensor. Each run writes a JPEG and a JSON sidecar to ``/tmp/calib``. The sidecar
-carries the pre-white-balance histogram channel means that the calibration
-modules read, so the JPEG alone is not enough.
-
-For the colour matrix, capture the ColorChecker chart separately at the same
-temperatures, as a 10-bit Bayer frame::
-
-    /tmp/mchp_capture.sh -t colorchecker -c 4500 --raw
+sensor. White balance reads the chart's neutral grey ramp and the colour matrix
+reads all 24 patches, so the chart must be located in every frame: fill it
+evenly, no glare.
 
 For lens shading, capture a defocused, uniformly-lit white field as RAW. The
 ``flat_field`` target forces ``--raw`` and tags the file ``alsc`` so the tool
@@ -117,10 +113,9 @@ fallbacks and the ColorChecker detection settings::
         -i ./captures/ -o src/ipa/microchip-isc/data/imx219.yaml \
         -c utils/tuning/microchip-isc-config.yaml
 
-Stages with no matching capture fall back to the values in the config, so a run
-with only grey-card images still produces a complete tuning file. The tool
-writes the tuning file in place, so keep it under version control to track
-changes.
+Stages with no matching capture fall back to the values in the config, so a
+partial capture set still produces a complete tuning file. The tool writes the
+tuning file in place, so keep it under version control to track changes.
 
 The colour matrix is solved automatically once ColorChecker captures are in the
 input directory. Detection is controlled by the ``general.macbeth`` section of
@@ -149,8 +144,8 @@ A calibration health summary prints automatically at the end of every run. It
 scores each stage out of 100 and flags any stage that fell back to authored
 config values instead of measured captures, so you can see straight away which
 stages have real calibration behind them. To confirm the result on hardware,
-deploy the tuning file (below) and capture a grey card again, then compare the
-R/G and B/G ratios against a neutral target.
+deploy the tuning file (below) and capture the chart again, then compare the
+neutral ramp's R/G and B/G ratios against a neutral target.
 
 Deploy and re-test
 ------------------
@@ -163,19 +158,15 @@ Copy the tuning file to the board and capture again::
 Without a ColorChecker
 ---------------------
 
-White balance needs only a neutral surface, so a grey card or a non-X-Rite
-chart still calibrates ``reference_gains_table`` and ``ct_color_matrix``. The
-24-patch CCM solve needs the X-Rite reference colours, which are hardcoded, so
-leave the colour matrix on the shipped values when you lack that chart.
+All of white balance, colour temperature and the colour matrix read a located
+chart, so without one the tool cannot calibrate them: every stage falls back to
+the authored config. White balance can still be set by hand with
+``mchpcam-still --awbgains``, judged against a neutral target.
 
-A grey card on its own passes capture but the tool cannot use it: it reads the
-neutral patches by position in the located chart grid, and a lone card has no
-chart to locate. Use a full chart, or set the gains by hand with
-``mchpcam-still --awbgains``.
-
-A Datacolor SpyderCheckr works as a local substitute. Capture it as a chart
-(``-t colorchecker --raw``); the white balance result is sound. Its CCM is not,
-as the solver assumes the X-Rite references, so keep the shipped ``Ccm.matrices``
+A Datacolor SpyderCheckr works as a local substitute: it has a neutral ramp the
+locator can find. Capture it as a chart (``-t colorchecker --raw``); the white
+balance result is sound. Its CCM is not, as the solver assumes the X-Rite
+references, so keep the shipped ``Ccm.matrices``
 and ``git diff`` the tuning file to revert the matrix block if the tool rewrote
 it.
 

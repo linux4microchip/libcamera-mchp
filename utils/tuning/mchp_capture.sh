@@ -20,7 +20,9 @@
 #
 # Options:
 #   -t, --target <type>   Target: grey_card (default) | colorchecker | flat_field
-#                         flat_field forces --raw and tags the file for LSC.
+#                         colorchecker feeds AWB, CT, lux and CCM; flat_field
+#                         feeds LSC and forces --raw; grey_card is a neutrality
+#                         and exposure check, not a tuning input.
 #   -c, --cct <K>         Lightbox-rated colour temperature in Kelvin (required)
 #   -l, --lux <N>         Incident illuminance from handheld lux meter (optional)
 #   -g, --gain <x|auto>   Analogue gain lock (default: 1.0 = unity). Calibration
@@ -59,10 +61,10 @@
 #   flat_field_alsc_ct5000K_exp4200us_gain2.00_g1_f02_20260420_184501_raw.pgm
 #
 # Examples:
-#   # Grey card at 2856K (JPEG — for AWB/CT/Lux calibration; unity gain):
+#   # Grey card at 2856K (JPEG — neutrality/exposure check, unity gain):
 #   mchp_capture.sh -t grey_card -c 2856 -l 2869 --noir
 #
-#   # Macbeth chart at 5000K RAW PGM (unity WB — for CCM calibration):
+#   # Macbeth chart at 5000K RAW PGM (AWB, CT, lux and CCM; unity WB):
 #   mchp_capture.sh -t colorchecker -c 5000 -l 2939 --raw --noir
 #
 #   # Uniformly-lit flat field (forces RAW — for still-path LSC calibration):
@@ -72,7 +74,7 @@
 #   for CCT in 2856 4000 5000 6500; do
 #       echo "Set lightbox to ${CCT}K, press Enter when ready"
 #       read _
-#       mchp_capture.sh -t grey_card -c $CCT --noir
+#       mchp_capture.sh -t colorchecker -c $CCT --raw --noir
 #   done
 #
 #   # Per-CT flat-field gain sweep (noise profile — 5 frames at each gain):
