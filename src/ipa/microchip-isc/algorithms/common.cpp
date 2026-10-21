@@ -461,7 +461,7 @@ float calculateWeightedLuminance(const mchp_isc_stat_buffer *stats,
 }
 
 /*
- * Robertson (1968) 31-point Planckian locus table in CIE 1960 UCS (u, v)
+ * Robertson (1968) 32-point Planckian locus table in CIE 1960 UCS (u, v)
  * space with reciprocal megakelvin (MRD = 1e6/K) values.
  *
  * Source: Robertson, A.R. (1968). "Computation of Correlated Color
@@ -542,7 +542,7 @@ static constexpr std::array<RobertsonEntry, 32> kRobertsonTable = { {
  *   2. Compute CIE 1960 UCS (u, v) from XYZ:
  *        u = 4X / (X + 15Y + 3Z)
  *        v = 6Y / (X + 15Y + 3Z)
- *   3. For each adjacent pair in the 31-point Planckian locus table, compute
+ *   3. For each adjacent pair in the 32-point Planckian locus table, compute
  *      the signed distance from (u,v) to each tangent line:
  *        d_i = (v - v_i) - t_i * (u - u_i)
  *      When d changes sign between entries i-1 and i, interpolate linearly
