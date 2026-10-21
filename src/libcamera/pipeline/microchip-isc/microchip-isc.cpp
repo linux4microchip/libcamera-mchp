@@ -1131,7 +1131,7 @@ int PipelineHandlerMicrochipISC::start(Camera *camera, [[maybe_unused]] const Co
 	 * This matches the pattern used by mainline libcamera pipelines
 	 * (simple, rkisp1) that drive V4L2 devices with the same constraint.
 	 */
-	unsigned int count = 8;
+	unsigned int count = data->streams_[0].configuration().bufferCount;
 	int ret = data->iscVideo_->importBuffers(count);
 	if (ret < 0) {
 		LOG(MicrochipISC, Error) << "Failed to import buffers: " << ret;
