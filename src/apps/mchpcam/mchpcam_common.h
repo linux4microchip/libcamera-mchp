@@ -146,6 +146,9 @@ public:
 	void setAwbEnabled(bool e) { awbEnabled_ = e; }
 	bool isAwbEnabled() const { return awbEnabled_; }
 
+	/* Request the histogram bins in metadata (calibration path only). */
+	void setHistogramBins(bool e) { histogramBins_ = e; }
+
 	/*
 	 * Named AWB mode preset — mirrors rpicam-apps --awb option.
 	 * Maps to controls::AwbMode enum values.
@@ -319,7 +322,8 @@ protected:
 
 	/* AWB */
 	bool awbEnabled_ = true;
-	/* Calibration mode: request IscHistogramBins vendor control. */
+	/* Request the 8 KB histogram bins; off on the normal capture path. */
+	bool histogramBins_ = false;
 	/* awbMode_: named AWB presets not supported by ISC IPA.
 	 * setAwbMode() simulates presets via ColourGains instead. */
 	bool manualColourGains_ = false;

@@ -1035,6 +1035,8 @@ static void printUsage(const char *argv0)
 					 "                             AE converges normally). AWB is disabled.\n"
 					 "                             Output: <file>.pgm  maxval=1023  Bayer RGGB.\n"
 					 "                             Use for CCM calibration with microchip_isc.py.\n"
+					 "  --metadata-bins            Request the 8 KB pre-WB bins in metadata\n"
+					 "                             (calibration only; implied by --raw).\n"
 					 "  --width=N                  Capture width  (default: 1920)\n"
 					 "  --height=N                 Capture height (default: 1080)\n"
 					 "\n"
@@ -1158,6 +1160,7 @@ int main(int argc, char **argv)
 		{ "noir", no_argument, nullptr, 0 },
 		{ "tuning-file", required_argument, nullptr, 0 },
 		{ "raw", no_argument, nullptr, 0 },
+		{ "metadata-bins", no_argument, nullptr, 0 },
 		/* Image controls */
 		{ "brightness", required_argument, nullptr, 0 },
 		{ "contrast", required_argument, nullptr, 0 },
@@ -1296,8 +1299,12 @@ int main(int argc, char **argv)
 			else if (!strcmp(name, "noir"))
 				setenv("LIBCAMERA_MICROCHIP-ISC_TUNING_FILE",
 				       "imx219_noir.yaml", 1);
-			else if (!strcmp(name, "raw"))
+			else if (!strcmp(name, "raw")) {
 				cam.setRawCapture(true);
+				/* Raw is a calibration capture; feed it the bins. */
+				cam.setHistogramBins(true);
+			} else if (!strcmp(name, "metadata-bins"))
+				cam.setHistogramBins(true);
 			else if (!strcmp(name, "tuning-file"))
 				setenv("LIBCAMERA_MICROCHIP-ISC_TUNING_FILE",
 				       optarg, 1);

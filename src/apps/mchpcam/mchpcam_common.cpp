@@ -230,6 +230,9 @@ void MchpCamCommon::applyControls(libcamera::ControlList &controls)
 	/* --digitalgain: manual sensor digital gain (IMX219 1.0–16.0). */
 	if (digitalGain_ >= 1.0f)
 		controls.set(controls::DigitalGain, digitalGain_);
+
+	/* Gate the 8 KB bins payload; means come back regardless. */
+	controls.set(controls::microchip::IscHistogramBinsEnable, histogramBins_);
 }
 
 /* ------------------------------------------------------------------ */
