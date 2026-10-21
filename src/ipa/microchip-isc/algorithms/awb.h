@@ -128,18 +128,6 @@ private:
 	/* ---- Runtime state — NOT tuning params ---- */
 	unsigned int awbFrameCount_ = 0;
 	bool awbStable_ = false;
-
-	/*
-	 * Counter for consecutive frames where the scene was too dark for
-	 * AWB to compute gains. After kDarkStableFrames consecutive dark
-	 * frames, the gains are considered stable (frozen at seed values
-	 * from reference_gains_table) and AwbLocked is set to true.
-	 * There is no explicit AWB lock concept: the IPA indicates
-	 * convergence when gains are stable, regardless of whether they
-	 * were computed or frozen.
-	 */
-	static constexpr unsigned int kDarkStableFrames = 5;
-	unsigned int darkFrameCount_ = 0;
 };
 
 } /* namespace ipa::microchip_isc */
