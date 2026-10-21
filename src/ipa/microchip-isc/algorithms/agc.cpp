@@ -327,12 +327,12 @@ int Agc::configure(IPAContext &context,
 			: 0.0f,
 		0.0f, 1.0f);
 
-	/* Initialise lux estimator reference from YAML — 0 means uncalibrated */
 	/*
-	 * Seed to zero so processStats() uses the first measurement directly
-	 * rather than ramping from the arbitrary indoor fallback.
+	 * Seed lux to the calibrated reference, not zero: a zero seed clamps
+	 * y_target to its near-dark anchor and under-exposes until the estimator
+	 * climbs. Starting at refLux puts baseTarget on the 18%-grey anchor.
 	 */
-	context.activeState.lux.lux = 0.0f;
+	context.activeState.lux.lux = context.configuration.agc.refLux;
 
 	/* Initialise CBC contrast gain to unity so AGC target is unmodified before first CBC cycle */
 	context.activeState.cbc.contrastGainLinear = 1.0f;

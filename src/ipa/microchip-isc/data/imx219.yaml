@@ -114,9 +114,12 @@ algorithms:
         reference_exposure_us: 16433.0
         reference_gain: 1.0
         reference_lux: 2370.0
-      # y_target: lux → WB-normalised bins target. Anchor=69/511=0.1351 at 2370 lux.
-      # Scaled from tb=40 calibration by factor 69/40=1.725 (2026-04-26).
-      y_target: [2370, 0.1351, 1000, 0.0876, 615, 0.0688, 300, 0.0481, 148, 0.0338, 50, 0.0197, 10, 0.0088, 1, 0.0086]
+      # y_target: lux → WB-normalised bins target. Anchor=69/511=0.1351.
+      # Fixed gamma owns tone now (AutoLevels/CBC/adaptive-gamma off), so the
+      # old steep lux rolloff — which metered dim to leave room for downstream
+      # lift — underexposes and lifts noise. Hold the 18%-grey anchor across
+      # the working range; only deep-dark scenes drop toward the noise floor.
+      y_target: [2370, 0.1351, 1000, 0.1351, 615, 0.1300, 300, 0.1200, 148, 0.1000, 50, 0.0700, 10, 0.0300, 1, 0.0120]
       # IIR smoothing for lux estimate: smoothed = alpha*raw + (1-alpha)*prev
       # 0.3 = default (3-4 frame settling). 1.0 = no smoothing.
       lux_smoothing_alpha: 0.30
@@ -137,9 +140,10 @@ algorithms:
       #   threshold: 0.55 = 55% of 511 bins (~bin 281, L=170/255 post-gamma)
       #   strength:  1.0  = full correction
       highlight_p85_threshold: 0.35
-      # Partial correction: full strength stacked with scene_ev_bias drove the
-      # metered mean onto the noise floor (was 1.0).
-      highlight_p85_strength: 0.5
+      # Off: IQM zone metering is the single highlight authority. P85 stacked
+      # multiplicatively on top of it and the hist-max guard, over-suppressing
+      # the target (was 0.5).
+      highlight_p85_strength: 0.0
       # Global operator EV lever, applied once on top of the lux target.
       # 0 = neutral; one lens for overall exposure without touching the biases.
       ev_default: 0.0
@@ -152,18 +156,18 @@ algorithms:
       # 0.02/0.98 = exclude worst 2% shadows and 2% highlights.
       ae_iqm_q_lo: 0.02
       ae_iqm_q_hi: 0.98
-      # Highlight constraint: clamp gain when top ae_highlight_q_hi
-      # fraction of luminance exceeds ae_highlight_target * HIST_MAX.
-      # Highlight-constraint metering mode.
-      ae_highlight_q_hi: 0.02
+      # Off: redundant with IQM zone metering, which already folds in the
+      # top-quantile constraint. Avoids a second multiplicative pull-down.
+      ae_highlight_q_hi: 0.0
       ae_highlight_target: 0.70
       # Scene entropy-based automatic EV bias.
       # When entropy < threshold AND luminance > 1.5x target,
       # the scene is flat/bright. Apply scene_ev_bias stops.
       scene_ev_threshold: 1.0  # always use P10 check only
-      # -0.5 stop: enough headroom for flat/bright scenes without pulling the
-      # metered mean down onto the histogram noise floor (was -1.5).
-      scene_ev_bias: -0.5
+      # No global under-exposure: the fixed gamma LUT has its own highlight
+      # rolloff, so metering a true 18% grey needs no extra headroom bias.
+      # P85/IQM highlight guards still pull bright scenes down on demand.
+      scene_ev_bias: 0.0
       # P10 of pre-gamma luminance above this = no shadow detail.
       # Calibrated 2026-04-26: bright white-wall indoor scene has P10=24 net bins.
       # Threshold=10 fires on any scene where the shadow floor is above 10 bins
