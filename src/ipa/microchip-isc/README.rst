@@ -88,6 +88,13 @@ temperatures, as a 10-bit Bayer frame::
 
     /tmp/mchp_capture.sh -t colorchecker -c 4500 --raw
 
+For lens shading, capture a defocused, uniformly-lit white field as RAW. The
+``flat_field`` target forces ``--raw`` and tags the file ``alsc`` so the tool
+diverts it into the lens-shading map. Shading is wavelength-insensitive, so any
+one temperature works here; pass whatever the lightbox is set to::
+
+    /tmp/mchp_capture.sh -t flat_field -c 4500 --noir
+
 Keep the filenames the helper generates. The tool parses the ``ct<K>`` and
 ``lux<N>`` tags from them.
 
@@ -152,6 +159,29 @@ Copy the tuning file to the board and capture again::
 
     scp src/ipa/microchip-isc/data/imx219.yaml \
         root@<board>:/usr/share/libcamera/ipa/microchip-isc/imx219.yaml
+
+Without a ColorChecker
+---------------------
+
+White balance needs only a neutral surface, so a grey card or a non-X-Rite
+chart still calibrates ``reference_gains_table`` and ``ct_color_matrix``. The
+24-patch CCM solve needs the X-Rite reference colours, which are hardcoded, so
+leave the colour matrix on the shipped values when you lack that chart.
+
+A grey card on its own passes capture but the tool cannot use it: it reads the
+neutral patches by position in the located chart grid, and a lone card has no
+chart to locate. Use a full chart, or set the gains by hand with
+``mchpcam-still --awbgains``.
+
+A Datacolor SpyderCheckr works as a local substitute. Capture it as a chart
+(``-t colorchecker --raw``); the white balance result is sound. Its CCM is not,
+as the solver assumes the X-Rite references, so keep the shipped ``Ccm.matrices``
+and ``git diff`` the tuning file to revert the matrix block if the tool rewrote
+it.
+
+The ``saturation`` scale blends the matrices toward identity and needs no
+reference. Sweep it on a colourful scene and keep the highest value that does
+not crush greens to black.
 
 Recovery and troubleshooting
 ----------------------------

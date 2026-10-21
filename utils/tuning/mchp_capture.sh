@@ -82,7 +82,7 @@
 #       mchp_capture.sh -t flat_field -c $CCT --gain-sweep "1 2 4 8" -n 5 --noir
 #   done
 #
-# See utils/tuning/CALIBRATION_WALKTHROUGH.md for the full lightbox procedure.
+# See src/ipa/microchip-isc/README.rst for the full lightbox procedure.
 # =============================================================================
 
 set -e
