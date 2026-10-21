@@ -419,23 +419,10 @@ void MicrochipISCCameraData::setIspControls(const ControlList &controls)
 }
 
 /*
- * formatsMap_ maps a libcamera PixelFormat to the V4L2 media-bus format
- * code used by the sensor subdevice chain. This map serves TWO purposes:
- *
- *  1. Sensor enumeration (init): only Bayer mbus codes are meaningful here —
- *     the ISC sensor always outputs raw Bayer data. ISC output formats
- *     (RGB565, YUYV, UYVY) are produced by the ISC post-processing pipeline
- *     and are NOT sensor mbus formats. For sensor enumeration, only the Bayer
- *     entries are used; the ISC output entries yield empty sensor size lists
- *     (sensor_->sizes(MEDIA_BUS_FMT_RGB565_2X8_LE) == {}) and are harmless
- *     but wasteful. See sensorMbusFormats_ below for the correct subset.
- *
- *  2. Format advertisement (validate): all entries are valid — the ISC
- *     converts Bayer to any of these output formats.
- *
- * The mix of sensor-mbus and ISC-output-format entries in one map is a
- * historical artefact. The correct fix is to use sensorMbusFormats_ for
- * enumeration and formatsMap_ only for advertisement. This is done in init().
+ * Map a libcamera PixelFormat to its sensor-chain media-bus code. Used only
+ * for format advertisement in validate(); the ISC converts Bayer to any of
+ * these outputs. Sensor enumeration uses the Bayer-only kSensorMbusFormats
+ * below, since the RGB/YUV entries have no sensor size list.
  */
 const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::formatsMap_ = {
 	{ formats::SBGGR8, MEDIA_BUS_FMT_SBGGR8_1X8 },
@@ -456,13 +443,9 @@ const std::map<PixelFormat, unsigned int> MicrochipISCCameraConfiguration::forma
 };
 
 /*
- * Sensor mbus format codes used for pipeline enumeration only.
- * These are the Bayer codes that the ISC sensor outputs; ISC post-processing
- * converts them to ISC output formats (RGB565, YUYV, etc.) downstream.
- * Using only these for sensor_->sizes() enumeration avoids spurious
- * tryPipeline() calls for ISC-output mbus codes that the sensor never
- * produces, which previously caused O(n_formats × n_sizes) duplicate entries
- * in configs_ for every sensor mode.
+ * Bayer mbus codes for sensor enumeration. Restricting sensor_->sizes() to
+ * these avoids tryPipeline() calls for ISC-output codes the sensor never
+ * produces, which would fill configs_ with duplicate entries.
  */
 static const std::vector<unsigned int> kSensorMbusFormats = {
 	MEDIA_BUS_FMT_SBGGR8_1X8,
@@ -1391,27 +1374,11 @@ int MicrochipISCCameraData::init()
 	}
 
 	/*
-	 * Build the configuration list from the formats the sensor actually
-	 * enumerates. Using sensor_->formats() (which calls VIDIOC_ENUM_MBUS_CODE
-	 * on the sensor subdevice) is the correct approach — it only yields
-	 * codes the sensor hardware physically supports, not every theoretically
-	 * possible Bayer code.
-	 *
-	 * Previously we iterated kSensorMbusFormats (all 12 Bayer codes) and
-	 * called sensor_->sizes() for each. IMX219 accepts any Bayer code via
-	 * VIDIOC_S_FMT (the kernel driver reinterprets its RGGB output), so
-	 * sensor_->sizes(SBGGR8_1X8) returned the same 4 sizes as SRGGB10_1X10.
-	 * This produced configs_ entries with SBGGR8 that, after stable_sort,
-	 * appeared before SRGGB10 entries at the same area. validate() then
-	 * selected SBGGR8 for 1920×1080 — negotiate() agreed, subdevs were
-	 * configured with the wrong Bayer order, and start_streaming() returned
-	 * EPIPE because the ISC pipeline validation failed. Using sensor_->formats()
-	 * restricts enumeration to the sensor's truly supported codes.
-	 */
-	/*
-	 * sensor_->mbusCodes() returns only the codes the sensor hardware
-	 * actually enumerates via VIDIOC_ENUM_MBUS_CODE. Filter to Bayer-only
-	 * (kSensorMbusFormats) to skip any non-Bayer sensor outputs.
+	 * Enumerate only the mbus codes the sensor really reports
+	 * (VIDIOC_ENUM_MBUS_CODE), filtered to Bayer. A sensor that accepts any
+	 * Bayer code via S_FMT (e.g. IMX219) would otherwise yield duplicate
+	 * configs_ entries that let validate() pick the wrong Bayer order and
+	 * fail streamOn with EPIPE.
 	 */
 	for (unsigned int mbusCode : sensor_->mbusCodes()) {
 		/* Skip non-Bayer sensor outputs (RGB, YUV, etc.) */
@@ -1436,21 +1403,11 @@ int MicrochipISCCameraData::init()
 	}
 
 	/*
-	 * Sort configs_ smallest→largest by capture area. This ordering is
-	 * assumed by validate() (walk until captureSize >= requested, fall back
-	 * to configs.back() as the largest) and by findOptimalSize() (≤ walk
-	 * picks best-fit). The sensor driver may return sizes in any order so
-	 * we enforce the invariant here rather than relying on driver behaviour.
-	 * Mirrors the Simple pipeline which also sorts its config list before
-	 * use (simple.cpp: configs sorted by resolution in generateConfiguration).
-	 */
-	/*
-	 * stable_sort: preserves insertion order for equal-area entries
-	 * (same sensor mode, different mbus code) — deterministic across runs.
-	 * std::sort gives UB for equal elements with a non-total ordering;
-	 * area comparison is a valid strict weak order but does not distinguish
-	 * entries with the same area, so stable_sort is the correct choice here.
-	 * Mirrors the algorithm priority sort (line ~1645) which also uses stable_sort.
+	 * Sort configs_ smallest→largest by capture area; validate() and
+	 * findOptimalSize() rely on this order and the sensor driver does not
+	 * guarantee it. stable_sort keeps equal-area entries (same mode,
+	 * different mbus code) in insertion order for deterministic selection,
+	 * as the Simple pipeline sorts its own config list.
 	 */
 	std::stable_sort(configs_.begin(), configs_.end(),
 			 [](const Configuration &a, const Configuration &b) {
@@ -1724,31 +1681,11 @@ CameraConfiguration::Status MicrochipISCCameraConfiguration::validate()
 			}
 		} else {
 			/*
-			 * Select the best-fit sensor mode for the requested
-			 * size, following the same pattern as the Simple and
-			 * RkISP1 pipeline handlers.
-			 *
-			 * Pass 1 — sensor mode selection:
-			 *   Walk configs smallest→largest. Pick the first
-			 *   mode whose captureSize covers the request on both
-			 *   axes (no upscaling needed). If the request exceeds
-			 *   all available modes (e.g. app asks for 3280×2464
-			 *   but ISC DMA limit is 3264×2464), fall back to the
-			 *   largest mode — matching Simple pipeline phase-1
-			 *   (simple.cpp:1189) and RkISP1's maxPipeConfig path.
-			 *   Never fall back to the smallest (configs.front()):
-			 *   that silently configured 640×480 for a 3280×2464
-			 *   request and the stream appeared to succeed while
-			 *   producing wrong-size frames.
-			 *
-			 * Pass 2 — stream size clamp:
-			 *   Once the mode is chosen, clamp the requested size
-			 *   to the mode's outputSizes range via boundedTo() /
-			 *   expandedTo() — the same axis-independent clamp
-			 *   used by IPU3 (std::clamp), Mali-C55 (boundedTo),
-			 *   and RkISP1 (boundTo/expandTo). This ensures
-			 *   cfg.size is always within the advertised range and
-			 *   status is set to Adjusted when clamping occurs.
+			 * Best-fit sensor mode, as the Simple and RkISP1 handlers
+			 * do: walk configs smallest→largest and pick the first
+			 * whose captureSize covers the request on both axes, else
+			 * fall back to the largest mode (never the smallest, which
+			 * would silently downscale).
 			 */
 			pipeConfig_ = configs.back();
 			for (const MicrochipISCCameraData::Configuration *config : configs) {
@@ -2146,9 +2083,8 @@ void PipelineHandlerMicrochipISC::stopDevice(Camera *camera)
 	 * the map with bufferDone=true it means hasPendingBuffers() returned
 	 * true at that point. Call completeRequest() to drain it.
 	 * Calling completeBuffer() twice corrupts the framework pending count
-	 * and causes the crash at _ZN9libcamera7Request7Private14completeBufferE.
-	 * Mirrors RkISP1 stopDevice which checks frameInfo.bufferCompleted
-	 * before calling completeBuffer (rkisp1.cpp:stopDevice).
+	 * and crashes in Request::Private::completeBuffer(), as RkISP1's
+	 * stopDevice guards with frameInfo.bufferCompleted.
 	 */
 	for (auto &[seq, info] : data->frameInfo_) {
 		if (!info.request)
