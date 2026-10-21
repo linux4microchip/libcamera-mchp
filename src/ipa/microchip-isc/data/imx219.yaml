@@ -247,16 +247,11 @@ algorithms:
       # Base gamma exponent for the power-law tone curve.
       # 2.2 approximates sRGB encoding; lower values brighten midtones.
       gamma: 2.2
-      # Adaptive strength [0.0-1.0]. 0 = purely parametric, 1 = fully adaptive.
-      # Disabled pending y_target recalibration against actual JPEG output
-      # luminance at each lux level.
+      # Off: pre-WB histogram can't drive the post-WB/CC LUT. Output-domain
+      # contrast is owned by the AutoLevels post-process stage.
       strength: 0.0
-      # Target post-gamma normalised mean luminance [0.0-1.0].
-      # 114/255 = 0.447 = mobile reference. Active when strength > 0.
       target_output: 0.447
-      # Temporal smoothing [0.0-1.0]. Higher values reduce flicker.
       smoothing_factor: 0.3
-      # Normalised luminance floor below which adaptive gamma update is skipped.
       dark_scene_threshold: 0.01
       # Normalised input breakpoint for bipartite linear toe (SAMA7G5 only).
       # Must be an integer multiple of 16/1023 ≈ 0.01565 to align with a LUT
@@ -334,15 +329,16 @@ modules:
   # max_gain caps the stretch so flat/noisy scenes are not blown up. One affine
   # map is applied to R, G, B alike, so it changes contrast, not white balance.
   - AutoLevels:
+      # Output-domain contrast: the only lever that sees the post-WB/CC
+      # distribution. Stretches each frame's own luma percentiles to the
+      # black/white targets, R/G/B alike, leaving WB untouched.
       enable: true
       lo_percentile: 0.01
       hi_percentile: 0.99
-      # black_target low so the stretch anchors the floor to near-black and
-      # removes haze. max_gain high so a compressed input still reaches
-      # white_target. Authored "look", not measured.
-      max_gain: 6.5
-      black_target: 12
-      white_target: 205
+      # max_gain caps amplification so a dim frame is not blown to pastel.
+      max_gain: 3.0
+      black_target: 8
+      white_target: 235
       # Histogram subsample step (1/sample^2 of pixels); percentiles stay stable.
       sample: 4
 ...
