@@ -9,7 +9,7 @@ vendor: microchip
 controls:
   - RedGain:
       type: int32_t
-      direction: inout
+      direction: in
       description: Red Gain Component
       min: 0
       max: 8191
@@ -17,7 +17,7 @@ controls:
 
   - BlueGain:
       type: int32_t
-      direction: inout
+      direction: in
       description: Blue Gain Component
       min: 0
       max: 8191
@@ -25,7 +25,7 @@ controls:
 
   - GreenRedGain:
       type: int32_t
-      direction: inout
+      direction: in
       description: Green-Red Gain Component
       min: 0
       max: 8191
@@ -33,7 +33,7 @@ controls:
 
   - GreenBlueGain:
       type: int32_t
-      direction: inout
+      direction: in
       description: Green-Blue Gain Component
       min: 0
       max: 8191
@@ -41,7 +41,7 @@ controls:
 
   - RedOffset:
       type: int32_t
-      direction: inout
+      direction: in
       description: Red Offset Component
       min: -4095
       max: 4095
@@ -49,7 +49,7 @@ controls:
 
   - BlueOffset:
       type: int32_t
-      direction: inout
+      direction: in
       description: Blue Offset Component
       min: -4095
       max: 4095
@@ -57,7 +57,7 @@ controls:
 
   - GreenRedOffset:
       type: int32_t
-      direction: inout
+      direction: in
       description: Green-Red Offset Component
       min: -4095
       max: 4095
@@ -65,7 +65,7 @@ controls:
 
   - GreenBlueOffset:
       type: int32_t
-      direction: inout
+      direction: in
       description: Green-Blue Offset Component
       min: -4095
       max: 4095
@@ -73,7 +73,7 @@ controls:
 
   - Hue:
       type: int32_t
-      direction: inout
+      direction: in
       description: |
         Hue rotation in degrees. Only effective on SAMA7G5 with CBHS
         hardware (has_cbhs = true in the tuning file). Applied via
