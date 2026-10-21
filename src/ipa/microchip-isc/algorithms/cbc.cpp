@@ -238,25 +238,11 @@ void Cbc::process(IPAContext &context,
 	float lumNorm = frameContext.scene.luminance / 511.0f;
 
 	/*
-	 * Dark scene guard: suppress contrast stretch when scene luminance
-	 * is below darkSceneMinLuminance_.
-	 *
-	 * When the scene is very dark the AGC pushes analogue gain to its
-	 * maximum to reach target_brightness.  Applying a contrast stretch
-	 * on top of already-maxed AGC causes double amplification:
-	 *
-	 *   AGC:  10× analogue gain (sensor noise amplified)
-	 *   CBC:  contrast_max_gain (histogram stretch on noisy input)
-	 *   Net:  10× × 3.5× = 35× effective gain → clipping at 242/255 mean
-	 *
-	 * Below this threshold the scene is too dark for histogram stretch
-	 * to add any useful contrast — it only amplifies sensor noise and
-	 * causes the output to clip.  Keep contrast at unity (= 1.0) and
-	 * let the AGC manage luminance alone.
-	 *
-	 * Threshold: 0.03 normalised ≈ 15 histogram bins ≈ 3% of full scale.
-	 * This is slightly above AGC min_scene_luminance (8 bins / 511 ≈ 0.016)
-	 * to prevent the stretch from engaging just as AE reaches its limit.
+	 * Dark-scene guard: below darkSceneMinLuminance_ the AGC is already at
+	 * max gain, so a contrast stretch only amplifies noise and clips the
+	 * output. Hold contrast at unity and let AGC own luminance. The default
+	 * (0.03 ≈ 15 bins) sits just above the AGC floor (8 bins) so the stretch
+	 * does not engage as AE reaches its limit.
 	 */
 	bool darkScene = (lumNorm < darkSceneMinLuminance_);
 

@@ -90,18 +90,12 @@ int Gamma::configure(IPAContext &context,
  * Standard mode: pure power-law (output = input^(1/gamma)).
  *
  * Bipartite mode (SAMA7G5): a linear segment below toeInput replaces the
- * bottom of the power curve, lifting dark tones and preventing shadow
- * crushing. The linear slope is set so that y(toeInput) is C0 continuous
- * (value matches the power curve at x = toeInput). The derivative is NOT
- * matched (C1 continuity would require a negative offset on the power curve).
+ * bottom of the power curve to lift dark tones. The slope is set for C0
+ * continuity at x = toeInput (value matches; derivative does not).
  *
- * Each LUT entry spans 16/1023 ≈ 0.01565 normalised input units.  To avoid
- * a visible step at the toe kink, toeInput must be aligned to a LUT entry
- * boundary (i.e. an integer multiple of 16/1023).  At the recommended
- * toeInput = 0.0313 (= 32/1023) the kink falls exactly at entry-2 boundary,
- * the transition is absorbed by quantisation, and no step artefact appears.
- * Misaligned values such as 0.04 (mid-entry 2–3) produce a 34-level step
- * that is visible as a faint shadow gradient discontinuity.
+ * Each LUT entry spans 16/1023 input units. Align toeInput to an entry
+ * boundary or the kink produces a visible shadow step; the recommended
+ * 0.0313 (= 32/1023) lands exactly on the entry-2 boundary.
  */
 void Gamma::computeLut(float gammaExp, std::array<uint32_t, 64> &lut,
 		       bool bipartite, float toeInput, float rolloffStart,

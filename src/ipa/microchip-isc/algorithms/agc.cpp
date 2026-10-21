@@ -134,13 +134,9 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	}
 
 	/*
-	 * Lux estimator calibration. Measure once with a handheld lux meter:
-	 *   1. Point camera at a scene under known illumination
-	 *   2. Let AGC converge (AWB+AE locked)
-	 *   3. Record: histogram_Y, exposure_us, analogue_gain, lux reading
-	 *   4. Store in imx219.yaml [Agc] lux_reference block
-	 * If absent, lux estimation is disabled and y_target[1] is used as a
-	 * fixed target (backward-compatible with un-calibrated sensors).
+	 * Lux estimator reference point (Y, exposure, gain, lux) measured once
+	 * under known illumination. Absent: lux estimation is disabled and the
+	 * fixed targetBrightness_ is used.
 	 */
 	if (tuningData.contains("lux_reference")) {
 		const YamlObject &lr = tuningData["lux_reference"];
@@ -200,13 +196,8 @@ int Agc::init(IPAContext &context, const YamlObject &tuningData)
 	}
 
 	/*
-	 * convergenceFrames_ is a backward-compat floor: raises convergenceSpeed_
-	 * to at least 1/N so convergence is guaranteed within N stats deliveries.
-	 * Applied unconditionally when present — an explicit speed= in YAML that
-	 * is faster than 1/frames is unaffected (the if-guard ensures we only
-	 * raise, never lower). If the intent is a maximum N-frame bound, set
-	 * frames= to N; if the intent is a specific speed, set speed= directly
-	 * and leave frames= absent. Do not rely on frames= to limit speed.
+	 * Raise convergenceSpeed_ to at least 1/frames so convergence is bounded
+	 * to N stats deliveries; only ever raises, never lowers a faster speed=.
 	 */
 	if (convergenceFrames_ > 0) {
 		float frameSpeed = 1.0f / static_cast<float>(convergenceFrames_);
@@ -287,15 +278,7 @@ int Agc::configure(IPAContext &context,
 	context.activeState.agc.analogueGain = agc.minAnalogueGain;
 	context.activeState.agc.zoneRatio = 1.0f;
 
-	/*
-	 * Re-read ev_default and zone_metering_strength from the tuning YAML
-	 * in configure() so they take effect on every reconfigure, not just
-	 * at init() time.  configure() is called after YAML is fully parsed
-	 * so this is the most reliable place to read these values.
-	 * This also fixes the init()-vs-configure() race that caused evBias_
-	 * to always read as 0.0 (the init() path was compiled but the YAML
-	 * object pointer it received was not yet valid on some call paths).
-	 */
+	/* Re-read in configure() so a reconfigure picks up tuning changes. */
 	evBias_ = std::clamp(
 		agc.evBias,
 		-2.0f, 2.0f);

@@ -363,21 +363,10 @@ void Ccm::process(IPAContext &context,
 	ccm.offsets = offsets;
 
 	/*
-	 * Estimate the saturation boost introduced by this CCM matrix.
-	 * A colour correction matrix with large off-diagonal elements amplifies
-	 * colour saturation as a by-product of channel cross-talk correction.
-	 * The boost is approximated as:
-	 *
-	 *   satBoost = 1 + k * Σ|off_diagonals| / trace
-	 *
-	 * where k = 0.25 is empirically calibrated on IMX219 to produce a
-	 * compensation factor that keeps perceived saturation constant across
-	 * CCT (avoiding over-saturation at warm CTs where off-diagonals are
-	 * large). CBC reads this to scale down the CBHS saturation register
-	 * proportionally, so the combined pipeline saturation (CCM × CBHS)
-	 * stays close to the nominal value set by the user or YAML tuning.
-	 *
-	 * Row-major 3×3: diagonal at [0], [4], [8]; off-diagonals are the rest.
+	 * Estimate the saturation boost from the matrix off-diagonals:
+	 *   satBoost = 1 + k * Σ|off_diagonals| / trace   (k = 0.25, IMX219)
+	 * CBC reads this to scale down the CBHS saturation register so the
+	 * combined CCM × CBHS saturation stays near the nominal value.
 	 */
 	{
 		constexpr float kSatBoostFactor = 0.25f;
