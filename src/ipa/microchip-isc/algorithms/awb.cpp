@@ -238,6 +238,10 @@ void Awb::queueRequest(IPAContext &context,
 {
 	auto &awb = frameContext.awb;
 
+	awb.emitHistogramBins =
+		controls.get(controls::microchip::IscHistogramBinsEnable)
+			.value_or(false);
+
 	const auto &awbEnable = controls.get(controls::AwbEnable);
 	if (awbEnable.has_value()) {
 		awb.autoEnabled = awbEnable.value();
@@ -283,12 +287,11 @@ void Awb::queueRequest(IPAContext &context,
  * still needs the means and bins.
  *
  * Means array order: [GR, R, GB, B] — matches ISC hardware channel indices
- * ISC_HIS_CFG_MODE_GR=0, R=1, GB=2, B=3. The bins payload is 8 KB per frame
- * (2048 × int32); only the metered still and calibration captures request it,
- * so it is not a burden on the normal preview path.
+ * ISC_HIS_CFG_MODE_GR=0, R=1, GB=2, B=3. Emit the means always; emit the 8 KB
+ * bins payload only when emitBins is set, to keep it off the normal IPC path.
  */
 static void emitHistogramMetadata(const IPAContext &context,
-				  ControlList &metadata)
+				  ControlList &metadata, bool emitBins)
 {
 	const auto &histState = context.activeState.histogram;
 	std::array<float, 4> histMeans = {
@@ -298,6 +301,9 @@ static void emitHistogramMetadata(const IPAContext &context,
 		histState.channelMeans[kHistChannelB],
 	};
 	metadata.set(controls::microchip::IscHistogramMeans, histMeans);
+
+	if (!emitBins)
+		return;
 
 	std::array<int32_t, kIscHistChannels * kHistBins> bins;
 	const unsigned int channels[kIscHistChannels] = {
@@ -371,7 +377,8 @@ void Awb::process(IPAContext &context,
 		 * Still emit the pre-WB histogram: the calibration tool runs
 		 * with AWB off (fixed gains) and needs the raw means and bins.
 		 */
-		emitHistogramMetadata(context, metadata);
+		emitHistogramMetadata(context, metadata,
+				      frameContext.awb.emitHistogramBins);
 		return;
 	}
 
@@ -785,7 +792,8 @@ void Awb::process(IPAContext &context,
 	if (awb.ct > 0)
 		metadata.set(controls::ColourTemperature, static_cast<int32_t>(awb.ct));
 
-	emitHistogramMetadata(context, metadata);
+	emitHistogramMetadata(context, metadata,
+			      frameContext.awb.emitHistogramBins);
 }
 
 /**

@@ -335,6 +335,8 @@ struct IPAFrameContext : public FrameContext {
 
 	struct {
 		bool autoEnabled;
+		/* IscHistogramBinsEnable requested for this frame. */
+		bool emitHistogramBins;
 	} awb;
 
 	struct {

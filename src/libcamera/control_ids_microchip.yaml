@@ -139,7 +139,8 @@ controls:
         channel-major order: [GR[0..511], R[0..511], GB[0..511], B[0..511]].
         Total 2048 int32 values.
 
-        Emitted every frame alongside IscHistogramMeans.
+        Emitted only for frames that set IscHistogramBinsEnable, so the
+        8 KB payload crosses the IPA IPC on the calibration path alone.
 
         Bin index i corresponds to pixel value range [2i, 2i+1] in 10-bit
         sensor units (bin = pixel >> 1). The ISC histogram tap is pre-WB so
@@ -148,4 +149,16 @@ controls:
         Used by microchip_isc.py to compute full spectral statistics
         (P10-P90 trimmed means, spread, CDF) for CCM and AWB calibration
         without requiring a RAW DMA output path.
+
+  - IscHistogramBinsEnable:
+      type: bool
+      direction: in
+      description: |
+        Request the full 512-bin, 4-channel pre-WB histogram
+        (IscHistogramBins) in this frame's result metadata.
+
+        Default off: the 8 KB bins payload crosses the IPA IPC only for
+        frames that set this control, so only the calibration flow pays
+        the per-frame cost. IscHistogramMeans is emitted regardless.
+      default: false
 ...
