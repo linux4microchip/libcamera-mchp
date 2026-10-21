@@ -1464,6 +1464,8 @@ int main(int argc, char **argv)
 					float r = std::stof(s.substr(0, comma));
 					float b = std::stof(s.substr(comma + 1));
 					cam.setColourGains(r, b);
+					/* IPA honours manual gains only with AWB off. */
+					cam.setAwbEnabled(false);
 				}
 			}
 
