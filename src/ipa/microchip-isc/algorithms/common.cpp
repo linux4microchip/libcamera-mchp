@@ -9,7 +9,7 @@
 
 #include <algorithm>
 #include <array>
-#include <math.h>
+#include <cmath>
 
 #include <libcamera/base/log.h>
 
@@ -261,62 +261,6 @@ float calculateHistogramPercentile(const mchp_isc_stat_buffer *stats, float pct)
 }
 
 /**
- * \brief Compute the CDF bin index at a given quantile of the histogram
- * \param[in] combined  Combined BT.601 luminance histogram (512 bins)
- * \param[in] total     Total pixel count
- * \param[in] quantile  Quantile in [0.0, 1.0]
- * \return Fractional bin index corresponding to that quantile
- *
- * Mirrors libipa Histogram::quantile() (BSD-2-Clause, Raspberry Pi Ltd).
- */
-static float histQuantile(const std::array<float, kHistBins> &combined,
-			  float total, float quantile)
-{
-	float target = quantile * total;
-	float cumulative = 0.0f;
-	for (unsigned int i = 0; i < kHistBins; i++) {
-		float prev = cumulative;
-		cumulative += combined[i];
-		if (cumulative >= target) {
-			/* Linear interpolation within the bin */
-			float frac = combined[i] > 0.0f
-					     ? (target - prev) / combined[i]
-					     : 0.0f;
-			return static_cast<float>(i) + frac;
-		}
-	}
-	return static_cast<float>(kHistBins - 1);
-}
-
-/**
- * \brief Compute the mean of histogram bins between two fractional bin indices
- * \param[in] combined  BT.601 luminance histogram
- * \param[in] binLo     Lower fractional bin index
- * \param[in] binHi     Upper fractional bin index
- * \return Weighted mean bin value in [binLo, binHi]
- *
- * Mirrors libipa Histogram::interBinMean() (BSD-2-Clause, Raspberry Pi Ltd).
- */
-static float histInterBinMean(const std::array<float, kHistBins> &combined,
-			      float binLo, float binHi)
-{
-	float sumBinFreq = 0.0f, cumulFreq = 0.0f;
-	for (float binNext = std::floor(binLo) + 1.0f;
-	     binNext <= std::ceil(binHi);
-	     binLo = binNext, binNext += 1.0f) {
-		int bin = static_cast<int>(std::floor(binLo));
-		if (bin < 0 || bin >= static_cast<int>(kHistBins))
-			break;
-		float weight = std::min(binNext, binHi) - binLo;
-		float freq = combined[bin] * weight;
-		sumBinFreq += static_cast<float>(bin) * freq;
-		cumulFreq += freq;
-	}
-	return cumulFreq > 0.0f ? (sumBinFreq / cumulFreq + 0.5f)
-				: binHi;
-}
-
-/**
  * \brief Inter-quantile mean of the combined BT.601 luminance histogram
  * \param[in] stats   ISC statistics buffer
  * \param[in] qLo     Lower quantile [0.0, 1.0]  e.g. 0.02
@@ -325,9 +269,8 @@ static float histInterBinMean(const std::array<float, kHistBins> &combined,
  *
  * Returns the mean of the middle (qHi-qLo) fraction of the luminance
  * distribution, ignoring the darkest qLo fraction and the brightest
- * (1-qHi) fraction.  This is the core metering primitive used by
- * libipa-style AGC implementations to achieve robust AE
- * that is insensitive to small bright objects or dark corners.
+ * (1-qHi) fraction.  This is the core AGC metering primitive: it is
+ * insensitive to small bright objects or dark corners.
  *
  * iqm(0.02, 0.98) ignores the darkest 2% and brightest 2% of pixels,
  * targeting exposure at the genuine midtone content of the scene.
@@ -340,15 +283,19 @@ float calculateInterQuantileMean(const mchp_isc_stat_buffer *stats,
 	std::array<float, kHistBins> combined;
 	float total;
 	buildCombinedLuminanceHistogram(stats, combined, total);
-	if (total == 0.0f)
+	if (total == 0.0f || qHi <= qLo)
 		return 0.0f;
 
-	float pLo = histQuantile(combined, total, qLo);
-	float pHi = histQuantile(combined, total, qHi);
-	if (pHi <= pLo)
-		return pLo;
+	/* ipa::Histogram wants integer bins; the BT.601 weighting is kept. */
+	std::array<uint32_t, kHistBins> bins;
+	for (unsigned int i = 0; i < kHistBins; i++)
+		bins[i] = static_cast<uint32_t>(std::lround(combined[i]));
 
-	return histInterBinMean(combined, pLo, pHi);
+	ipa::Histogram hist{ Span<const uint32_t>(bins) };
+	if (hist.total() == 0)
+		return 0.0f;
+
+	return hist.interQuantileMean(qLo, qHi);
 }
 
 /**
