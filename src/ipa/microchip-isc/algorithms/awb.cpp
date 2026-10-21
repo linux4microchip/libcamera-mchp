@@ -697,14 +697,7 @@ void Awb::process(IPAContext &context,
 				awb.bGain = bGain;
 				awb.grGain = grGain;
 				awb.gbGain = gbGain;
-				/*
-			 * Do not touch the WB offset registers here.  On
-			 * platforms without a DPC block (hasDpc=false) the
-			 * BlackLevelCorrection algorithm sets rOffset/bOffset/
-			 * grOffset/gbOffset to subtract the sensor pedestal via
-			 * the WB stage.  Zeroing them here would re-introduce
-			 * the pedestal on every AWB update frame, defeating BLC.
-			 */
+				/* WB offsets set below (hasDpc) or by BLC (SAMA5D2) */
 
 				LOG(ISC_AWB, Debug)
 					<< "AWB gains: R=" << rGain
@@ -733,6 +726,43 @@ void Awb::process(IPAContext &context,
 				<< " GB=" << meanGB
 				<< " B=" << meanB << ")";
 		}
+	}
+
+	/*
+	 * Per-channel black-level offset (hasDpc). WB computes
+	 * out = gain * (in + offset); re-anchoring each channel's measured
+	 * floor before the gain stops a large gain on a starved channel from
+	 * lifting its shadows into a cast. Mirrors the kernel AWB offset in
+	 * microchip-isc-base.c (min_pixels guard and the -((hist_min-1)<<3)
+	 * formula); hist_min/total_pixels are its outlier-trimmed values.
+	 */
+	if (context.configuration.hw.hasDpc && stats) {
+		uint32_t maxTotal = 0;
+		for (unsigned int c = 0; c < kIscHistChannels; c++)
+			maxTotal = std::max(maxTotal, stats->hist[c].total_pixels);
+		uint32_t minPixels = std::max(maxTotal >> 6, 64u);
+
+		/* bin index >=1 (1 == no adjustment), 9-bit -> 12-bit, negated,
+		 * clamped to the signed 13-bit WB offset register */
+		auto channelOffset = [&](unsigned int c) -> int32_t {
+			if (stats->hist[c].total_pixels < minPixels ||
+			    stats->hist[c].hist_min < 1)
+				return 0;
+			int32_t off = -static_cast<int32_t>(
+				(stats->hist[c].hist_min - 1) << 3);
+			return std::clamp(off, -4095, 4095);
+		};
+
+		awb.grOffset = channelOffset(kHistChannelGR);
+		awb.rOffset = channelOffset(kHistChannelR);
+		awb.gbOffset = channelOffset(kHistChannelGB);
+		awb.bOffset = channelOffset(kHistChannelB);
+
+		LOG(ISC_AWB, Debug)
+			<< "AWB offset: GR=" << awb.grOffset
+			<< " R=" << awb.rOffset
+			<< " GB=" << awb.gbOffset
+			<< " B=" << awb.bOffset;
 	}
 
 	/*

@@ -178,22 +178,21 @@ int BlackLevelCorrection::configure(IPAContext &context,
 	/*
 	 * Pedestal subtraction.
 	 *
-	 * On platforms with a DPC block (hasDpc=true): the hardware subtracts
-	 * the sensor black-level before the WB gain stage.  Setting a negative
-	 * WB offset here would double-subtract the pedestal and drive all
-	 * signal pixels to zero.  WB offsets must be 0.
+	 * On platforms with a DPC block (hasDpc=true): the hardware removes a
+	 * uniform pedestal before the WB stage, so start neutral. AWB then
+	 * sets the per-channel floor offset per frame from the histogram.
 	 *
 	 * On platforms without hardware DPC (hasDpc=false): the pedestal is
 	 * removed via the WB offset registers set below.
 	 */
 	if (context.configuration.hw.hasDpc) {
-		/* DPC BLCEN removes pedestal in hardware — WB offsets must be 0 */
+		/* neutral default — AWB owns the per-channel offset per frame */
 		context.activeState.awb.rOffset = 0;
 		context.activeState.awb.bOffset = 0;
 		context.activeState.awb.grOffset = 0;
 		context.activeState.awb.gbOffset = 0;
 		LOG(ISC_BLC, Debug)
-			<< "BLC: hasDpc=true, BLCEN active — WB offsets = 0";
+			<< "BLC: hasDpc=true — WB offsets default 0, AWB owns them";
 	} else {
 		/*
 		 * No hardware DPC — subtract the pedestal through the WB offset
